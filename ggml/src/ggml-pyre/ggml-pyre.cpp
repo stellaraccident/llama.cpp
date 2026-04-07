@@ -240,6 +240,11 @@ static bool ggml_backend_pyre_is_safe_architecture(const std::string & architect
     return true;
 }
 
+static bool ggml_backend_pyre_rms_norm_disabled() {
+    const char * value = std::getenv("GGML_PYRE_DISABLE_RMS_NORM");
+    return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
 static const char * ggml_backend_pyre_clangxx_path() {
     if (const char * path = std::getenv("GGML_PYRE_CLANGXX")) {
         if (path[0] != '\0') {
@@ -892,7 +897,9 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
         device_context->description = ggml_backend_pyre_device_description(device);
         device_context->architecture = ggml_backend_pyre_device_architecture(device);
         device_context->memory_total = ggml_backend_pyre_total_memory(device);
-        (void) ggml_backend_pyre_compile_rms_norm_executable(device_context.get());
+        if (!ggml_backend_pyre_rms_norm_disabled()) {
+            (void) ggml_backend_pyre_compile_rms_norm_executable(device_context.get());
+        }
 
         context->device_contexts.emplace_back(std::move(device_context));
         context->devices.push_back({
