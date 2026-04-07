@@ -164,6 +164,15 @@ static void * ggml_backend_pyre_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ggml_backend_pyre_get_buffer_context(buffer)->base;
 }
 
+static enum ggml_status ggml_backend_pyre_buffer_init_tensor(
+        ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
+    if (tensor->view_src) {
+        GGML_ASSERT(tensor->view_src->buffer != nullptr);
+        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
 static void ggml_backend_pyre_buffer_memset_tensor(
         ggml_backend_buffer_t buffer, ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
     auto * context = ggml_backend_pyre_get_buffer_context(buffer);
@@ -249,7 +258,7 @@ static void ggml_backend_pyre_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
 static const ggml_backend_buffer_i ggml_backend_pyre_buffer_i = {
     /* .free_buffer   = */ ggml_backend_pyre_buffer_free_buffer,
     /* .get_base      = */ ggml_backend_pyre_buffer_get_base,
-    /* .init_tensor   = */ nullptr,
+    /* .init_tensor   = */ ggml_backend_pyre_buffer_init_tensor,
     /* .memset_tensor = */ ggml_backend_pyre_buffer_memset_tensor,
     /* .set_tensor    = */ ggml_backend_pyre_buffer_set_tensor,
     /* .get_tensor    = */ ggml_backend_pyre_buffer_get_tensor,
