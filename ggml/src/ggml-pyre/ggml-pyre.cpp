@@ -6,6 +6,9 @@
 #include "pyre_runtime.h"
 
 #include <array>
+#include <cerrno>
+#include <cctype>
+#include <cmath>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -14,20 +17,67 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
 static constexpr size_t GGML_PYRE_ALIGNMENT = 256;
 static constexpr uintptr_t GGML_PYRE_FAKE_PTR_BASE = 0x1000;
+static constexpr uint32_t GGML_PYRE_RMS_NORM_WORKGROUP_SIZE = 1;
+
+static const char * GGML_PYRE_RMS_NORM_SOURCE = R"(
+extern "C" __attribute__((global)) void pyre_rms_norm_f32(
+        const float * src, float * dst, long ncols, long nrows, float eps) {
+    const long row = __builtin_amdgcn_workgroup_id_x();
+    if (row >= nrows) {
+        return;
+    }
+
+    const float * src_row = src + row * ncols;
+    float * dst_row = dst + row * ncols;
+    float sum = 0.0f;
+    for (long col = 0; col < ncols; ++col) {
+        const float value = src_row[col];
+        sum += value * value;
+    }
+
+    const float scale = 1.0f / __builtin_sqrtf(sum / (float) ncols + eps);
+    for (long col = 0; col < ncols; ++col) {
+        dst_row[col] = src_row[col] * scale;
+    }
+}
+)";
+
+enum class ggml_backend_pyre_provider_kind {
+    none,
+    direct_executable,
+};
+
+struct ggml_backend_pyre_op_provider {
+    ggml_backend_pyre_provider_kind kind = ggml_backend_pyre_provider_kind::none;
+    pyre_executable_t executable = nullptr;
+    uint32_t export_ordinal = 0;
+    pyre_executable_export_info_t export_info = {};
+
+    ~ggml_backend_pyre_op_provider() {
+        if (executable) {
+            pyre_executable_release(executable);
+        }
+    }
+};
 
 struct ggml_backend_pyre_device_context {
     pyre_device_t device = nullptr;
     std::string name;
     std::string description;
+    std::string architecture;
     size_t memory_total = 0;
+    ggml_backend_pyre_op_provider rms_norm_provider;
 };
 
 struct ggml_backend_pyre_reg_context {
@@ -102,6 +152,8 @@ static ggml_backend_pyre_buffer_context * ggml_backend_pyre_get_buffer_context(g
     return static_cast<ggml_backend_pyre_buffer_context *>(buffer->context);
 }
 
+static void * ggml_backend_pyre_buffer_get_base(ggml_backend_buffer_t buffer);
+
 static size_t ggml_backend_pyre_tensor_offset(const ggml_backend_pyre_buffer_context * context, const ggml_tensor * tensor) {
     return static_cast<size_t>(static_cast<const uint8_t *>(tensor->data) - context->base);
 }
@@ -110,6 +162,26 @@ static pyre_buffer_t ggml_backend_pyre_tensor_buffer(const ggml_tensor * tensor)
     ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     auto * context = ggml_backend_pyre_get_buffer_context(buffer);
     return context->buffer;
+}
+
+static bool ggml_backend_pyre_tensor_buffer_ref(
+        const ggml_tensor * tensor, pyre_buffer_ref_t * out_ref) {
+    ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    if (!buffer || buffer->iface.get_base != ggml_backend_pyre_buffer_get_base) {
+        return false;
+    }
+
+    auto * context = ggml_backend_pyre_get_buffer_context(buffer);
+    if (!context->buffer) {
+        return false;
+    }
+
+    *out_ref = {
+        /* .buffer = */ context->buffer,
+        /* .offset = */ ggml_backend_pyre_tensor_offset(context, tensor),
+        /* .length = */ ggml_nbytes(tensor),
+    };
+    return true;
 }
 
 static size_t ggml_backend_pyre_total_memory(pyre_device_t device) {
@@ -144,6 +216,222 @@ static std::string ggml_backend_pyre_device_description(pyre_device_t device) {
         description += ")";
     }
     return description.empty() ? std::string("Pyre GPU") : description;
+}
+
+static std::string ggml_backend_pyre_device_architecture(pyre_device_t device) {
+    std::array<char, 128> architecture = {};
+    if (!GGML_PYRE_CHECK(pyre_device_get_property(
+            device, PYRE_DEVICE_PROPERTY_ARCHITECTURE,
+            architecture.data(), architecture.size()))) {
+        return std::string();
+    }
+    return std::string(architecture.data());
+}
+
+static bool ggml_backend_pyre_is_safe_architecture(const std::string & architecture) {
+    if (architecture.empty()) {
+        return false;
+    }
+    for (unsigned char c : architecture) {
+        if (!std::isalnum(c) && c != '_') {
+            return false;
+        }
+    }
+    return true;
+}
+
+static const char * ggml_backend_pyre_clangxx_path() {
+    if (const char * path = std::getenv("GGML_PYRE_CLANGXX")) {
+        if (path[0] != '\0') {
+            return path;
+        }
+    }
+#ifdef GGML_PYRE_DEFAULT_CLANGXX
+    return GGML_PYRE_DEFAULT_CLANGXX;
+#else
+    return "clang++";
+#endif
+}
+
+static const char * ggml_backend_pyre_rocm_path() {
+    if (const char * path = std::getenv("GGML_PYRE_ROCM_PATH")) {
+        if (path[0] != '\0') {
+            return path;
+        }
+    }
+#ifdef GGML_PYRE_DEFAULT_ROCM_PATH
+    return GGML_PYRE_DEFAULT_ROCM_PATH;
+#else
+    return "/srv/vm-shared/projects/pyre-workspace/build/therock/dist/rocm";
+#endif
+}
+
+static bool ggml_backend_pyre_write_text_file(const std::string & path, const char * text) {
+    FILE * file = std::fopen(path.c_str(), "wb");
+    if (!file) {
+        GGML_LOG_ERROR("%s: failed to open %s: %s\n",
+            __func__, path.c_str(), std::strerror(errno));
+        return false;
+    }
+
+    const size_t size = std::strlen(text);
+    const bool ok = std::fwrite(text, 1, size, file) == size;
+    if (std::fclose(file) != 0 || !ok) {
+        GGML_LOG_ERROR("%s: failed to write %s: %s\n",
+            __func__, path.c_str(), std::strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+static bool ggml_backend_pyre_compile_rms_norm_executable(
+        ggml_backend_pyre_device_context * device_context) {
+    if (!ggml_backend_pyre_is_safe_architecture(device_context->architecture)) {
+        return false;
+    }
+
+    char tmp_template[] = "/tmp/ggml-pyre-rms-norm-XXXXXX";
+    int tmp_fd = mkstemp(tmp_template);
+    if (tmp_fd < 0) {
+        GGML_LOG_ERROR("%s: mkstemp failed: %s\n", __func__, std::strerror(errno));
+        return false;
+    }
+    close(tmp_fd);
+
+    const std::string stem(tmp_template);
+    const std::string source_path = stem + ".hip.cpp";
+    const std::string hsaco_path = stem + ".hsaco";
+    std::remove(stem.c_str());
+
+    if (!ggml_backend_pyre_write_text_file(source_path, GGML_PYRE_RMS_NORM_SOURCE)) {
+        std::remove(source_path.c_str());
+        std::remove(hsaco_path.c_str());
+        return false;
+    }
+
+    std::ostringstream command;
+    command << ggml_backend_pyre_clangxx_path()
+            << " -x hip --offload-device-only"
+            << " --offload-arch=" << device_context->architecture
+            << " -nogpuinc -nogpulib"
+            << " -O2 -c " << source_path
+            << " -o " << hsaco_path
+            << " >/dev/null 2>&1";
+
+    if (std::system(command.str().c_str()) != 0) {
+        GGML_LOG_WARN("%s: failed to compile RMS_NORM kernel for %s with %s\n",
+            __func__, device_context->architecture.c_str(), ggml_backend_pyre_clangxx_path());
+        std::remove(source_path.c_str());
+        std::remove(hsaco_path.c_str());
+        return false;
+    }
+
+    pyre_executable_t executable = nullptr;
+    if (!GGML_PYRE_CHECK(pyre_executable_load_file(
+            device_context->device, hsaco_path.c_str(), "FPIH", &executable))) {
+        std::remove(source_path.c_str());
+        std::remove(hsaco_path.c_str());
+        return false;
+    }
+
+    uint32_t export_ordinal = 0;
+    pyre_executable_export_info_t export_info = {};
+    bool ok = GGML_PYRE_CHECK(pyre_executable_lookup_export_by_name(
+                  executable, "pyre_rms_norm_f32", &export_ordinal)) &&
+              GGML_PYRE_CHECK(pyre_executable_export_info(
+                  executable, export_ordinal, &export_info)) &&
+              export_info.binding_count == 2 &&
+              export_info.constant_count >= 3;
+    if (!ok) {
+        pyre_executable_release(executable);
+        std::remove(source_path.c_str());
+        std::remove(hsaco_path.c_str());
+        return false;
+    }
+
+    device_context->rms_norm_provider.kind = ggml_backend_pyre_provider_kind::direct_executable;
+    device_context->rms_norm_provider.executable = executable;
+    device_context->rms_norm_provider.export_ordinal = export_ordinal;
+    device_context->rms_norm_provider.export_info = export_info;
+
+    std::remove(source_path.c_str());
+    std::remove(hsaco_path.c_str());
+    return true;
+}
+
+static bool ggml_backend_pyre_supports_rms_norm(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    return device_context->rms_norm_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           op->src[0] &&
+           op->src[0]->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           ggml_is_contiguous(op->src[0]) &&
+           ggml_is_contiguous(op) &&
+           ggml_are_same_shape(op->src[0], op);
+}
+
+struct ggml_backend_pyre_rms_norm_constants {
+    int64_t ncols;
+    int64_t nrows;
+    float eps;
+};
+
+static ggml_status ggml_backend_pyre_dispatch_rms_norm(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    pyre_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[1])) {
+        GGML_LOG_ERROR("%s: RMS_NORM tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    float eps = 0.0f;
+    std::memcpy(&eps, dst->op_params, sizeof(eps));
+
+    ggml_backend_pyre_rms_norm_constants constants = {
+        /* .ncols = */ src0->ne[0],
+        /* .nrows = */ ggml_nrows(src0),
+        /* .eps   = */ eps,
+    };
+
+    const auto & provider = context->device_context->rms_norm_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.nrows),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ?
+                provider.export_info.workgroup_size[0] :
+                GGML_PYRE_RMS_NORM_WORKGROUP_SIZE,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            2,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
 }
 
 // buffer type interface
@@ -380,6 +668,7 @@ static void ggml_backend_pyre_synchronize(ggml_backend_t backend) {
 }
 
 static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    auto * context = static_cast<ggml_backend_pyre_context *>(backend->context);
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         switch (node->op) {
@@ -388,6 +677,15 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
             case GGML_OP_VIEW:
             case GGML_OP_PERMUTE:
             case GGML_OP_TRANSPOSE:
+                break;
+            case GGML_OP_RMS_NORM:
+                if (!ggml_backend_pyre_supports_rms_norm(context->device_context, node)) {
+                    GGML_LOG_ERROR("%s: RMS_NORM shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                if (ggml_backend_pyre_dispatch_rms_norm(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
                 break;
             default:
                 GGML_LOG_ERROR("%s: unsupported op %s\n", __func__, ggml_op_desc(node));
@@ -486,7 +784,7 @@ static ggml_backend_t ggml_backend_pyre_device_init_backend(ggml_backend_dev_t d
 }
 
 static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    GGML_UNUSED(dev);
+    auto * context = ggml_backend_pyre_get_device_context(dev);
     switch (op->op) {
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
@@ -494,6 +792,8 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
             return true;
+        case GGML_OP_RMS_NORM:
+            return ggml_backend_pyre_supports_rms_norm(context, op);
         default:
             return false;
     }
@@ -590,7 +890,9 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
         device_context->device = device;
         device_context->name = std::string(GGML_PYRE_NAME) + std::to_string(i);
         device_context->description = ggml_backend_pyre_device_description(device);
+        device_context->architecture = ggml_backend_pyre_device_architecture(device);
         device_context->memory_total = ggml_backend_pyre_total_memory(device);
+        (void) ggml_backend_pyre_compile_rms_norm_executable(device_context.get());
 
         context->device_contexts.emplace_back(std::move(device_context));
         context->devices.push_back({
