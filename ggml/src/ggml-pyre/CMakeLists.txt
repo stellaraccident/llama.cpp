@@ -44,9 +44,13 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16_batched.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f32_batched.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q4_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q5_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q6_k.hip.cpp"
@@ -55,6 +59,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/scale_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f16.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/ssm_conv_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/pyre_kernel_catalog.h"
         VERBATIM
     )
