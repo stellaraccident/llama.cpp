@@ -16,6 +16,14 @@ KERNELS = [
         "workgroup_size": (512, 1, 1),
     },
     {
+        "name": "pyre_rms_norm_mul_f32",
+        "source": "rms_norm_mul_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 144,
+        "workgroup_size": (512, 1, 1),
+    },
+    {
         "name": "pyre_add_f32",
         "source": "add_f32.hip.cpp",
         "format": "FPIH",
@@ -190,6 +198,14 @@ KERNELS = [
         "binding_count": 3,
         "constants_size": 120,
         "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_topk_moe_f32",
+        "source": "topk_moe_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 64,
+        "workgroup_size": (64, 1, 1),
     },
     {
         "name": "pyre_ssm_conv_f32",

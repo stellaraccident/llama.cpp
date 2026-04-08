@@ -37,24 +37,31 @@ extern "C" __global__ void pyre_mul_mat_vec_q5_k_f32(
     const float * src1_col = src1 + col * k;
     float sum = 0.0f;
 
-    for (long long i = tid; i < k; i += 256) {
-        const long long block_idx = i / 256;
-        const int in_block = static_cast<int>(i - block_idx * 256);
-        const int group = in_block / 32;
-        const int lane = in_block & 31;
+    const int block_lane = tid & 63;
+    const int block_slot = tid >> 6;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 4) {
         const pyre_block_q5_K * block = row_blocks + block_idx;
 
         uint8_t sc = 0;
         uint8_t m = 0;
         pyre_get_scale_min_k4(group, block->scales, &sc, &m);
 
-        const uint8_t low = block->qs[(group / 2) * 32 + lane];
-        const float q = static_cast<float>(
-            ((group & 1) ? (low >> 4) : (low & 0x0F)) +
-            ((block->qh[lane] & (1u << group)) ? 16 : 0));
         const float d = __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc);
         const float min = __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m);
-        sum += (d * q - min) * src1_col[i];
+        const long long src_base = block_idx * 256 + group * 32 + lane;
+        const int qs_base = (group >> 1) * 32 + lane;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const uint8_t low = block->qs[qs_base + j];
+            const float q = static_cast<float>(
+                ((group & 1) ? (low >> 4) : (low & 0x0F)) +
+                ((block->qh[lane + j] & (1u << group)) ? 16 : 0));
+            sum += (d * q - min) * src1_col[src_base + j];
+        }
     }
 
     sumsh[tid] = sum;

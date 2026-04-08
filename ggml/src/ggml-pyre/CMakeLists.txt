@@ -63,6 +63,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q5_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q6_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q8_0.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm_mul_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rope_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/row_reduce_f32.hip.cpp"
@@ -71,6 +72,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/soft_max_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/ssm_conv_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/topk_moe_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/unary_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/pyre_kernel_catalog.h"
         VERBATIM

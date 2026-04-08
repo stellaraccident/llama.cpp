@@ -54,10 +54,18 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_f32(
     const float * src1_col = src1 + col * k;
     float sum = 0.0f;
 
-    for (long long i = tid; i < k; i += 256) {
-        const long long block_idx = i / 256;
-        const int in_block = static_cast<int>(i - block_idx * 256);
-        sum += pyre_dequant_q6_k(row_blocks + block_idx, in_block) * src1_col[i];
+    const int block_lane = tid & 63;
+    const int block_slot = tid >> 6;
+    const int in_block_base = block_lane << 2;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 4) {
+        const pyre_block_q6_K * block = row_blocks + block_idx;
+        const long long src_base = block_idx * 256 + in_block_base;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            sum += pyre_dequant_q6_k(block, in_block_base + j) * src1_col[src_base + j];
+        }
     }
 
     sumsh[tid] = sum;

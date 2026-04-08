@@ -44,6 +44,7 @@ enum class ggml_backend_pyre_kernel_provider_mode {
 struct ggml_backend_pyre_provider_policy {
     ggml_backend_pyre_kernel_provider_mode kernel_provider = ggml_backend_pyre_kernel_provider_mode::pure_hip;
     bool trace_providers = false;
+    bool disable_fusion = false;
     bool disable_rms_norm = false;
     bool disable_mul_mat_vec = false;
     bool disable_mul_mat_id = false;
@@ -70,6 +71,7 @@ struct ggml_backend_pyre_device_context {
     size_t memory_total = 0;
     ggml_backend_pyre_provider_policy policy;
     ggml_backend_pyre_op_provider rms_norm_provider;
+    ggml_backend_pyre_op_provider rms_norm_mul_provider;
     ggml_backend_pyre_op_provider add_provider;
     ggml_backend_pyre_op_provider add_broadcast_provider;
     ggml_backend_pyre_op_provider mul_provider;
@@ -92,6 +94,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider soft_max_f32_mask_provider;
     ggml_backend_pyre_op_provider argsort_f32_provider;
     ggml_backend_pyre_op_provider rope_f32_provider;
+    ggml_backend_pyre_op_provider topk_moe_f32_provider;
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
@@ -158,6 +161,7 @@ struct ggml_backend_pyre_context {
     uint64_t soft_max_count = 0;
     uint64_t argsort_count = 0;
     uint64_t rope_count = 0;
+    uint64_t topk_moe_count = 0;
     uint64_t unary_count = 0;
     uint64_t reduction_count = 0;
     uint64_t ssm_conv_count = 0;
@@ -308,6 +312,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
     return {
         /* .kernel_provider     = */ ggml_backend_pyre_kernel_provider_mode_from_env(),
         /* .trace_providers    = */ ggml_backend_pyre_env_enabled("GGML_PYRE_TRACE_PROVIDERS"),
+        /* .disable_fusion     = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_FUSION"),
         /* .disable_rms_norm   = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_RMS_NORM"),
         /* .disable_mul_mat_vec = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_VEC"),
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
@@ -428,6 +433,14 @@ static bool ggml_backend_pyre_load_rms_norm_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_rms_norm_f32"),
         &device_context->rms_norm_provider);
+}
+
+static bool ggml_backend_pyre_load_rms_norm_mul_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_rms_norm_mul_f32"),
+        &device_context->rms_norm_mul_provider);
 }
 
 static bool ggml_backend_pyre_load_add_provider(
@@ -606,6 +619,14 @@ static bool ggml_backend_pyre_load_rope_f32_provider(
         &device_context->rope_f32_provider);
 }
 
+static bool ggml_backend_pyre_load_topk_moe_f32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_topk_moe_f32"),
+        &device_context->topk_moe_f32_provider);
+}
+
 static bool ggml_backend_pyre_load_ssm_conv_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -714,6 +735,32 @@ static bool ggml_backend_pyre_supports_rms_norm(
            op->src[0]->nb[0] == sizeof(float) &&
            op->nb[0] == sizeof(float) &&
            ggml_are_same_shape(op->src[0], op);
+}
+
+static bool ggml_backend_pyre_supports_rms_norm_mul(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * rms_norm,
+        const ggml_tensor * mul) {
+    if (device_context->rms_norm_mul_provider.kind !=
+            ggml_backend_pyre_provider_kind::direct_executable ||
+        !ggml_backend_pyre_supports_rms_norm(device_context, rms_norm) ||
+        !mul ||
+        mul->op != GGML_OP_MUL ||
+        mul->type != GGML_TYPE_F32 ||
+        !ggml_are_same_shape(rms_norm, mul) ||
+        (mul->src[0] != rms_norm && mul->src[1] != rms_norm)) {
+        return false;
+    }
+
+    const ggml_tensor * weight = mul->src[0] == rms_norm ? mul->src[1] : mul->src[0];
+    return weight &&
+           weight->type == GGML_TYPE_F32 &&
+           (weight->ne[0] == rms_norm->ne[0] || weight->ne[0] == 1) &&
+           (weight->ne[1] == rms_norm->ne[1] || weight->ne[1] == 1) &&
+           (weight->ne[2] == rms_norm->ne[2] || weight->ne[2] == 1) &&
+           (weight->ne[3] == rms_norm->ne[3] || weight->ne[3] == 1) &&
+           (weight->ne[0] == 1 || weight->nb[0] == sizeof(float)) &&
+           mul->nb[0] == sizeof(float);
 }
 
 static bool ggml_backend_pyre_supports_binary_elementwise_f32(
@@ -1091,6 +1138,40 @@ static bool ggml_backend_pyre_supports_argsort_f32(
            ggml_is_contiguous(op);
 }
 
+static bool ggml_backend_pyre_supports_topk_moe_f32(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * soft_max,
+        const ggml_tensor * weights,
+        const ggml_tensor * ids) {
+    if (device_context->topk_moe_f32_provider.kind !=
+            ggml_backend_pyre_provider_kind::direct_executable ||
+        !soft_max || !weights || !ids ||
+        soft_max->op != GGML_OP_SOFT_MAX ||
+        !soft_max->src[0] ||
+        soft_max->src[0]->type != GGML_TYPE_F32 ||
+        soft_max->type != GGML_TYPE_F32 ||
+        weights->type != GGML_TYPE_F32 ||
+        ids->type != GGML_TYPE_I32 ||
+        soft_max->src[1] || soft_max->src[2] ||
+        soft_max->src[0]->ne[0] <= 0 ||
+        soft_max->src[0]->ne[0] > 256 ||
+        (soft_max->src[0]->ne[0] & (soft_max->src[0]->ne[0] - 1)) != 0 ||
+        ggml_nrows(soft_max->src[0]) != 1 ||
+        ggml_nelements(weights) > 32 ||
+        ggml_nelements(weights) != ggml_nelements(ids) ||
+        !ggml_is_contiguous(soft_max->src[0]) ||
+        weights->nb[0] != sizeof(float) ||
+        ids->nb[0] != sizeof(int32_t)) {
+        return false;
+    }
+
+    float scale = 1.0f;
+    float max_bias = 0.0f;
+    std::memcpy(&scale, reinterpret_cast<const float *>(soft_max->op_params) + 0, sizeof(float));
+    std::memcpy(&max_bias, reinterpret_cast<const float *>(soft_max->op_params) + 1, sizeof(float));
+    return scale == 1.0f && max_bias == 0.0f;
+}
+
 static bool ggml_backend_pyre_supports_rope_f32(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
@@ -1224,6 +1305,28 @@ struct ggml_backend_pyre_rms_norm_constants {
     int32_t _pad;
 };
 
+struct ggml_backend_pyre_rms_norm_mul_constants {
+    int64_t ncols;
+    int64_t nrows;
+    int64_t ne1;
+    int64_t ne2;
+    int64_t src_nb1;
+    int64_t src_nb2;
+    int64_t src_nb3;
+    int64_t weight_ne0;
+    int64_t weight_ne1;
+    int64_t weight_ne2;
+    int64_t weight_ne3;
+    int64_t weight_nb1;
+    int64_t weight_nb2;
+    int64_t weight_nb3;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+    int64_t dst_nb3;
+    float eps;
+    int32_t _pad;
+};
+
 static ggml_status ggml_backend_pyre_dispatch_rms_norm(
         ggml_backend_pyre_context * context,
         const ggml_tensor * dst) {
@@ -1279,6 +1382,83 @@ static ggml_status ggml_backend_pyre_dispatch_rms_norm(
             sizeof(constants),
             bindings,
             2,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->rms_norm_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_rms_norm_mul(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * rms_norm,
+        const ggml_tensor * mul) {
+    const ggml_tensor * src0 = rms_norm->src[0];
+    const ggml_tensor * weight = mul->src[0] == rms_norm ? mul->src[1] : mul->src[0];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(weight, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(mul, &bindings[2])) {
+        GGML_LOG_ERROR("%s: RMS_NORM_MUL tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    float eps = 0.0f;
+    std::memcpy(&eps, rms_norm->op_params, sizeof(eps));
+
+    ggml_backend_pyre_rms_norm_mul_constants constants = {
+        /* .ncols      = */ src0->ne[0],
+        /* .nrows      = */ ggml_nrows(src0),
+        /* .ne1        = */ src0->ne[1],
+        /* .ne2        = */ src0->ne[2],
+        /* .src_nb1    = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src_nb2    = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src_nb3    = */ static_cast<int64_t>(src0->nb[3]),
+        /* .weight_ne0 = */ weight->ne[0],
+        /* .weight_ne1 = */ weight->ne[1],
+        /* .weight_ne2 = */ weight->ne[2],
+        /* .weight_ne3 = */ weight->ne[3],
+        /* .weight_nb1 = */ static_cast<int64_t>(weight->nb[1]),
+        /* .weight_nb2 = */ static_cast<int64_t>(weight->nb[2]),
+        /* .weight_nb3 = */ static_cast<int64_t>(weight->nb[3]),
+        /* .dst_nb1    = */ static_cast<int64_t>(mul->nb[1]),
+        /* .dst_nb2    = */ static_cast<int64_t>(mul->nb[2]),
+        /* .dst_nb3    = */ static_cast<int64_t>(mul->nb[3]),
+        /* .eps        = */ eps,
+        /* ._pad       = */ 0,
+    };
+
+    const auto & provider = context->device_context->rms_norm_mul_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.nrows),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ?
+                provider.export_info.workgroup_size[0] :
+                GGML_PYRE_RMS_NORM_WORKGROUP_SIZE,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            3,
             PYRE_DISPATCH_FLAG_NONE))) {
         return GGML_STATUS_FAILED;
     }
@@ -1380,6 +1560,19 @@ struct ggml_backend_pyre_argsort_f32_constants {
     int64_t nrows;
     int32_t order;
     int32_t ncols_pad;
+};
+
+struct ggml_backend_pyre_topk_moe_f32_constants {
+    int64_t n_experts;
+    int64_t n_rows;
+    int64_t n_expert_used;
+    int64_t logits_nb1;
+    int64_t weights_nb1;
+    int64_t ids_nb1;
+    float scale;
+    float clamp_min;
+    float clamp_max;
+    int32_t with_norm;
 };
 
 struct ggml_backend_pyre_rope_f32_constants {
@@ -2400,6 +2593,70 @@ static ggml_status ggml_backend_pyre_dispatch_argsort_f32(
     }
     context->dispatch_count++;
     context->argsort_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_topk_moe_f32(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * soft_max,
+        const ggml_tensor * weights,
+        const ggml_tensor * ids,
+        const ggml_tensor * clamp) {
+    const ggml_tensor * logits = soft_max->src[0];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(logits, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(weights, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(ids, &bindings[2])) {
+        GGML_LOG_ERROR("%s: TOPK_MOE tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    float scale = 1.0f;
+    std::memcpy(&scale, reinterpret_cast<const float *>(soft_max->op_params) + 0, sizeof(float));
+    float clamp_min = -std::numeric_limits<float>::infinity();
+    float clamp_max = std::numeric_limits<float>::infinity();
+    if (clamp) {
+        std::memcpy(&clamp_min, reinterpret_cast<const float *>(clamp->op_params) + 0, sizeof(float));
+        std::memcpy(&clamp_max, reinterpret_cast<const float *>(clamp->op_params) + 1, sizeof(float));
+    }
+
+    ggml_backend_pyre_topk_moe_f32_constants constants = {
+        /* .n_experts     = */ logits->ne[0],
+        /* .n_rows        = */ ggml_nrows(logits),
+        /* .n_expert_used = */ ggml_nelements(weights) / ggml_nrows(logits),
+        /* .logits_nb1    = */ static_cast<int64_t>(logits->nb[1]),
+        /* .weights_nb1   = */ static_cast<int64_t>(weights->nb[1]),
+        /* .ids_nb1       = */ static_cast<int64_t>(ids->nb[1]),
+        /* .scale         = */ scale,
+        /* .clamp_min     = */ clamp_min,
+        /* .clamp_max     = */ clamp_max,
+        /* .with_norm     = */ clamp ? 1 : 0,
+    };
+
+    const auto & provider = context->device_context->topk_moe_f32_provider;
+    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+        provider.export_info.workgroup_size[0] : 64;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.n_rows),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ { workgroup_size, 1, 1 },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream, provider.executable, provider.export_ordinal, &config,
+            &constants, sizeof(constants), bindings, 3, PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->topk_moe_count++;
 
     if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
         return GGML_STATUS_FAILED;
@@ -3446,7 +3703,8 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             " mul_mat_id=%" PRIu64 " copy=%" PRIu64
             " set_rows=%" PRIu64 " get_rows=%" PRIu64
             " concat=%" PRIu64 " soft_max=%" PRIu64
-            " argsort=%" PRIu64 " rope=%" PRIu64 " unary=%" PRIu64
+            " argsort=%" PRIu64 " rope=%" PRIu64
+            " topk_moe=%" PRIu64 " unary=%" PRIu64
             " reduction=%" PRIu64 " ssm_conv=%" PRIu64
             " gated_delta_net=%" PRIu64
             " metadata=%" PRIu64 " synchronize=%" PRIu64 "\n",
@@ -3463,6 +3721,7 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             context->soft_max_count,
             context->argsort_count,
             context->rope_count,
+            context->topk_moe_count,
             context->unary_count,
             context->reduction_count,
             context->ssm_conv_count,
@@ -3485,10 +3744,150 @@ static void ggml_backend_pyre_synchronize(ggml_backend_t backend) {
     }
 }
 
+struct ggml_backend_pyre_topk_moe_fusion {
+    const ggml_tensor * soft_max = nullptr;
+    const ggml_tensor * weights = nullptr;
+    const ggml_tensor * ids = nullptr;
+    const ggml_tensor * clamp = nullptr;
+    int last_idx = -1;
+    int ids_idx = -1;
+    int weights_idx = -1;
+    std::vector<int> idxs;
+    std::vector<ggml_op> ops;
+};
+
+static bool ggml_backend_pyre_try_topk_moe_fusion(
+        const ggml_cgraph * cgraph,
+        int start,
+        const ggml_backend_pyre_device_context * device_context,
+        ggml_backend_pyre_topk_moe_fusion * fusion) {
+    if (start >= cgraph->n_nodes || cgraph->nodes[start]->op != GGML_OP_SOFT_MAX) {
+        return false;
+    }
+    auto add = [&](int idx) {
+        fusion->idxs.push_back(idx);
+        fusion->ops.push_back(cgraph->nodes[idx]->op);
+    };
+    auto next = [&](int & idx) -> const ggml_tensor * {
+        return idx < cgraph->n_nodes ? cgraph->nodes[idx] : nullptr;
+    };
+
+    fusion->idxs.clear();
+    fusion->ops.clear();
+    fusion->soft_max = cgraph->nodes[start];
+    add(start);
+
+    int idx = start + 1;
+    const ggml_tensor * probs = fusion->soft_max;
+    if (next(idx) && next(idx)->op == GGML_OP_RESHAPE && next(idx)->src[0] == probs) {
+        probs = next(idx);
+        add(idx++);
+    }
+
+    const ggml_tensor * argsort = next(idx);
+    if (!argsort || argsort->op != GGML_OP_ARGSORT || argsort->src[0] != fusion->soft_max ||
+        ggml_get_op_params_i32(argsort, 0) != GGML_SORT_ORDER_DESC) {
+        return false;
+    }
+    add(idx++);
+
+    const ggml_tensor * ids = next(idx);
+    if (!ids || ids->op != GGML_OP_VIEW || ids->src[0] != argsort) {
+        return false;
+    }
+    fusion->ids = ids;
+    fusion->ids_idx = idx;
+    add(idx++);
+
+    const ggml_tensor * selected = next(idx);
+    if (!selected || selected->op != GGML_OP_GET_ROWS ||
+        selected->src[0] != probs || selected->src[1] != ids) {
+        return false;
+    }
+    add(idx++);
+
+    const ggml_tensor * weights_base = selected;
+    if (next(idx) && next(idx)->op == GGML_OP_RESHAPE && next(idx)->src[0] == weights_base) {
+        weights_base = next(idx);
+        add(idx++);
+    }
+
+    const ggml_tensor * sum_rows = next(idx);
+    if (sum_rows && sum_rows->op == GGML_OP_SUM_ROWS && sum_rows->src[0] == weights_base) {
+        add(idx++);
+        const ggml_tensor * clamp = next(idx);
+        if (!clamp || clamp->op != GGML_OP_CLAMP || clamp->src[0] != sum_rows) {
+            return false;
+        }
+        fusion->clamp = clamp;
+        add(idx++);
+
+        const ggml_tensor * div = next(idx);
+        if (!div || div->op != GGML_OP_DIV || div->src[0] != weights_base || div->src[1] != clamp) {
+            return false;
+        }
+        weights_base = div;
+        add(idx++);
+
+        if (next(idx) && next(idx)->op == GGML_OP_RESHAPE && next(idx)->src[0] == weights_base) {
+            weights_base = next(idx);
+            add(idx++);
+        }
+    }
+
+    fusion->weights = weights_base;
+    fusion->weights_idx = fusion->idxs.back();
+    fusion->last_idx = fusion->idxs.back();
+
+    if (!ggml_backend_pyre_supports_topk_moe_f32(
+            device_context, fusion->soft_max, fusion->weights, fusion->ids)) {
+        return false;
+    }
+
+    const int outputs[2] = { fusion->ids_idx, fusion->weights_idx };
+    return ggml_can_fuse_subgraph_ext(
+        cgraph,
+        fusion->idxs.data(),
+        static_cast<int>(fusion->idxs.size()),
+        fusion->ops.data(),
+        outputs,
+        2);
+}
+
 static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * context = static_cast<ggml_backend_pyre_context *>(backend->context);
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
+        ggml_backend_pyre_topk_moe_fusion fusion;
+        if (!context->device_context->policy.disable_fusion &&
+            ggml_backend_pyre_try_topk_moe_fusion(cgraph, i, context->device_context, &fusion)) {
+            ggml_backend_pyre_trace_provider(
+                context->device_context,
+                "claim TOPK_MOE provider=pure_hip_f32 experts=%" PRId64 " k=%" PRId64 " nrows=%" PRId64 "\n",
+                fusion.soft_max->src[0]->ne[0], ggml_nelements(fusion.weights), ggml_nrows(fusion.soft_max->src[0]));
+            if (ggml_backend_pyre_dispatch_topk_moe_f32(
+                    context, fusion.soft_max, fusion.weights, fusion.ids, fusion.clamp) != GGML_STATUS_SUCCESS) {
+                return GGML_STATUS_FAILED;
+            }
+            i = fusion.last_idx;
+            continue;
+        }
+        if (node->op == GGML_OP_RMS_NORM &&
+            !context->device_context->policy.disable_fusion &&
+            i + 1 < cgraph->n_nodes &&
+            cgraph->nodes[i + 1]->op == GGML_OP_MUL &&
+            ggml_backend_pyre_supports_rms_norm_mul(context->device_context, node, cgraph->nodes[i + 1]) &&
+            ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL }, { i + 1 })) {
+            const ggml_tensor * mul = cgraph->nodes[i + 1];
+            ggml_backend_pyre_trace_provider(
+                context->device_context, "claim RMS_NORM_MUL provider=pure_hip_f32 ncols=%" PRId64 " nrows=%" PRId64 "\n",
+                node->src[0]->ne[0], ggml_nrows(node->src[0]));
+            if (ggml_backend_pyre_dispatch_rms_norm_mul(context, node, mul) != GGML_STATUS_SUCCESS) {
+                return GGML_STATUS_FAILED;
+            }
+            i++;
+            continue;
+        }
         switch (node->op) {
             case GGML_OP_NONE:
             case GGML_OP_RESHAPE:
@@ -4115,6 +4514,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
         if (device_context->policy.kernel_provider == ggml_backend_pyre_kernel_provider_mode::pure_hip &&
             !device_context->policy.disable_rms_norm) {
             (void) ggml_backend_pyre_load_rms_norm_provider(device_context.get());
+            (void) ggml_backend_pyre_load_rms_norm_mul_provider(device_context.get());
         }
         if (device_context->policy.kernel_provider == ggml_backend_pyre_kernel_provider_mode::pure_hip) {
             (void) ggml_backend_pyre_load_add_provider(device_context.get());
@@ -4139,6 +4539,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_soft_max_f32_mask_provider(device_context.get());
             (void) ggml_backend_pyre_load_argsort_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_topk_moe_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_ssm_conv_provider(device_context.get());
             (void) ggml_backend_pyre_load_gated_delta_net_provider(device_context.get());
         }

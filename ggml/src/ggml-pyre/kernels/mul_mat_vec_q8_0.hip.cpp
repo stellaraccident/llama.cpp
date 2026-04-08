@@ -23,13 +23,20 @@ extern "C" __global__ void pyre_mul_mat_vec_q8_0_f32(
     const float * src1_col = src1 + col * k;
     float sum = 0.0f;
 
-    for (long long i = tid; i < k; i += 256) {
-        const long long block_idx = i / 32;
-        const int in_block = static_cast<int>(i - block_idx * 32);
+    const int block_lane = tid & 7;
+    const int block_slot = tid >> 3;
+    const int in_block_base = block_lane << 2;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 32) {
         const pyre_block_q8_0 * block = row_blocks + block_idx;
-        const float value = __half2float(__ushort_as_half(block->d)) *
-            static_cast<float>(block->qs[in_block]);
-        sum += value * src1_col[i];
+        const float d = __half2float(__ushort_as_half(block->d));
+        const long long src_base = block_idx * 32 + in_block_base;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const float value = d * static_cast<float>(block->qs[in_block_base + j]);
+            sum += value * src1_col[src_base + j];
+        }
     }
 
     sumsh[tid] = sum;
