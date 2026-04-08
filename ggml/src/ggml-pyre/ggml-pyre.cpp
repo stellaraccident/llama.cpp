@@ -50,6 +50,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_mul_mat_id = false;
     bool disable_add_add_fusion = false;
     bool disable_add_rms_norm_mul_fusion = false;
+    bool disable_mul_mat_swiglu_fusion = false;
     bool disable_mul_mat_id_swiglu_fusion = false;
     bool disable_topk_subgroup = false;
     bool enable_q8_1_mmvq = false;
@@ -107,6 +108,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_provider;
@@ -374,6 +376,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
         /* .disable_add_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_ADD_FUSION"),
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
+        /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
         /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
         /* .enable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ"),
@@ -751,6 +754,14 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_f32"),
         &device_context->mul_mat_vec_bf16_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_bf16_swiglu_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_swiglu_f32"),
+        &device_context->mul_mat_vec_bf16_swiglu_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_vec_f32_provider(
@@ -3423,6 +3434,29 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_bf16(
            ggml_is_contiguous(op);
 }
 
+static bool ggml_backend_pyre_supports_mul_mat_vec_bf16_swiglu(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * gate,
+        const ggml_tensor * up,
+        const ggml_tensor * swiglu) {
+    return device_context->mul_mat_vec_bf16_swiglu_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           gate && up && swiglu &&
+           gate->op == GGML_OP_MUL_MAT &&
+           up->op == GGML_OP_MUL_MAT &&
+           swiglu->op == GGML_OP_GLU &&
+           ggml_get_glu_op(swiglu) == GGML_GLU_OP_SWIGLU &&
+           ggml_get_op_params_i32(swiglu, 1) == 0 &&
+           swiglu->src[0] == gate &&
+           swiglu->src[1] == up &&
+           ggml_backend_pyre_supports_mul_mat_vec_bf16(device_context, gate) &&
+           ggml_backend_pyre_supports_mul_mat_vec_bf16(device_context, up) &&
+           gate->src[1] == up->src[1] &&
+           ggml_are_same_shape(gate->src[0], up->src[0]) &&
+           ggml_are_same_shape(gate, up) &&
+           ggml_are_same_shape(swiglu, up);
+}
+
 static bool ggml_backend_pyre_supports_mul_mat_vec_f32(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
@@ -4213,6 +4247,60 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
     return GGML_STATUS_SUCCESS;
 }
 
+static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_bf16_swiglu(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * gate,
+        const ggml_tensor * up,
+        const ggml_tensor * swiglu) {
+    const ggml_tensor * src1 = up->src[1];
+    pyre_buffer_ref_t bindings[4] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(gate->src[0], &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(up->src[0], &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[2]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(swiglu, &bindings[3])) {
+        GGML_LOG_ERROR("%s: MUL_MAT_SWIGLU tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_mul_mat_vec_constants constants = {
+        /* .k    = */ up->src[0]->ne[0],
+        /* .rows = */ up->src[0]->ne[1],
+        /* .cols = */ src1->ne[1],
+    };
+
+    const auto & provider = context->device_context->mul_mat_vec_bf16_swiglu_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.rows),
+            static_cast<uint32_t>(constants.cols),
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            4,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->mul_mat_vec_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
 static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
         ggml_backend_pyre_context * context,
         const ggml_tensor * dst) {
@@ -4972,6 +5060,33 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
             }
             i++;
             continue;
+        }
+        if (node->op == GGML_OP_MUL_MAT &&
+            !context->device_context->policy.disable_fusion &&
+            !context->device_context->policy.disable_mul_mat_swiglu_fusion &&
+            i + 2 < cgraph->n_nodes &&
+            cgraph->nodes[i + 1]->op == GGML_OP_MUL_MAT &&
+            cgraph->nodes[i + 2]->op == GGML_OP_GLU) {
+            const ggml_tensor * first = node;
+            const ggml_tensor * second = cgraph->nodes[i + 1];
+            const ggml_tensor * swiglu = cgraph->nodes[i + 2];
+            const ggml_tensor * gate = swiglu->src[0];
+            const ggml_tensor * up = swiglu->src[1];
+            if (((gate == first && up == second) || (gate == second && up == first)) &&
+                ggml_backend_pyre_supports_mul_mat_vec_bf16_swiglu(context->device_context, gate, up, swiglu) &&
+                ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU }, { i + 2 })) {
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim MUL_MAT_SWIGLU provider=pure_hip_bf16 k=%" PRId64
+                    " rows=%" PRId64 " cols=%" PRId64 "\n",
+                    up->src[0]->ne[0], up->src[0]->ne[1], up->src[1]->ne[1]);
+                if (ggml_backend_pyre_dispatch_mul_mat_vec_bf16_swiglu(context, gate, up, swiglu) !=
+                        GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                i += 2;
+                continue;
+            }
         }
         if (node->op == GGML_OP_MUL_MAT_ID &&
             !context->device_context->policy.disable_fusion &&
@@ -5770,6 +5885,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
         if (device_context->policy.kernel_provider == ggml_backend_pyre_kernel_provider_mode::pure_hip &&
             !device_context->policy.disable_mul_mat_vec) {
             (void) ggml_backend_pyre_load_mul_mat_vec_bf16_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_bf16_swiglu_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f16_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f16_batched_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f32_provider(device_context.get());
