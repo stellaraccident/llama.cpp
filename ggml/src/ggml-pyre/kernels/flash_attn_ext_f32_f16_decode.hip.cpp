@@ -21,7 +21,7 @@ struct pyre_flash_attn_ext_f32_f16_decode_constants {
     long long mask_nb0;
     long long mask_nb1;
     float scale;
-    int _pad;
+    int has_mask;
 };
 
 static __device__ __forceinline__ float pyre_load_f16(const __half * base, long long byte_offset) {
@@ -56,8 +56,10 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
             const float qv = *reinterpret_cast<const float *>(q_head + d * static_cast<long long>(sizeof(float)));
             score += qv * pyre_load_f16(reinterpret_cast<const __half *>(k_row), d * static_cast<long long>(sizeof(__half)));
         }
-        score = score * c.scale +
-            pyre_load_f16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
+        score *= c.scale;
+        if (c.has_mask) {
+            score += pyre_load_f16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
+        }
         logits[t] = static_cast<float>(score);
         local_max = fmax(local_max, score);
     }

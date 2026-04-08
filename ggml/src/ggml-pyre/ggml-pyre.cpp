@@ -1440,11 +1440,11 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
     std::memcpy(&logit_softcap, reinterpret_cast<const int32_t *>(op->op_params) + 2, sizeof(float));
     return device_context->flash_attn_ext_f32_f16_decode_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
-           q && k && v && mask && !sinks &&
+           q && k && v && !sinks &&
            q->type == GGML_TYPE_F32 &&
            k->type == GGML_TYPE_F16 &&
            v->type == GGML_TYPE_F16 &&
-           mask->type == GGML_TYPE_F16 &&
+           (!mask || mask->type == GGML_TYPE_F16) &&
            op->type == GGML_TYPE_F32 &&
            max_bias == 0.0f &&
            logit_softcap == 0.0f &&
@@ -1464,16 +1464,17 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
            q->ne[2] % k->ne[2] == 0 &&
            q->ne[1] == op->ne[2] &&
            op->ne[3] == 1 &&
-           mask->ne[0] == k->ne[1] &&
-           mask->ne[1] >= q->ne[1] &&
-           mask->ne[2] == 1 &&
-           mask->ne[3] == 1 &&
            q->nb[0] == sizeof(float) &&
            k->nb[0] == ggml_type_size(k->type) &&
            v->nb[0] == ggml_type_size(v->type) &&
-           mask->nb[0] == ggml_type_size(mask->type) &&
            op->nb[0] == sizeof(float) &&
-           ggml_is_contiguous(mask) &&
+           (!mask ||
+            (mask->ne[0] == k->ne[1] &&
+             mask->ne[1] >= q->ne[1] &&
+             mask->ne[2] == 1 &&
+             mask->ne[3] == 1 &&
+             mask->nb[0] == ggml_type_size(mask->type) &&
+             ggml_is_contiguous(mask))) &&
            ggml_is_contiguous(op);
 }
 
@@ -2383,7 +2384,7 @@ struct ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants {
     int64_t mask_nb0;
     int64_t mask_nb1;
     float scale;
-    int32_t _pad;
+    int32_t has_mask;
 };
 
 struct ggml_backend_pyre_argsort_f32_constants {
@@ -3509,10 +3510,13 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
     if (!ggml_backend_pyre_tensor_buffer_ref(q, &bindings[0]) ||
         !ggml_backend_pyre_tensor_buffer_ref(k, &bindings[1]) ||
         !ggml_backend_pyre_tensor_buffer_ref(v, &bindings[2]) ||
-        !ggml_backend_pyre_tensor_buffer_ref(mask, &bindings[3]) ||
+        (mask && !ggml_backend_pyre_tensor_buffer_ref(mask, &bindings[3])) ||
         !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[4])) {
         GGML_LOG_ERROR("%s: FLASH_ATTN_EXT tensor is not backed by a PYRE buffer\n", __func__);
         return GGML_STATUS_FAILED;
+    }
+    if (!mask) {
+        bindings[3] = bindings[0];
     }
 
     float scale = 1.0f;
@@ -3531,10 +3535,10 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .v_nb2    = */ static_cast<int64_t>(v->nb[2]),
         /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
         /* .dst_nb2  = */ static_cast<int64_t>(dst->nb[2]),
-        /* .mask_nb0 = */ static_cast<int64_t>(mask->nb[0]),
-        /* .mask_nb1 = */ static_cast<int64_t>(mask->nb[1]),
+        /* .mask_nb0 = */ mask ? static_cast<int64_t>(mask->nb[0]) : 0,
+        /* .mask_nb1 = */ mask ? static_cast<int64_t>(mask->nb[1]) : 0,
         /* .scale    = */ scale,
-        /* ._pad     = */ 0,
+        /* .has_mask = */ mask ? 1 : 0,
     };
 
     const auto & provider = context->device_context->flash_attn_ext_f32_f16_decode_provider;
