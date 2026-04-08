@@ -1477,17 +1477,16 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_decode(
            q->ne[0] == v->ne[0] &&
            q->ne[0] == op->ne[0] &&
            q->ne[0] <= 256 &&
-           q->ne[3] == 1 &&
            q->ne[1] <= 1024 &&
            k->ne[1] == v->ne[1] &&
            k->ne[1] <= 1024 &&
            k->ne[2] == v->ne[2] &&
-           k->ne[3] == 1 &&
-           v->ne[3] == 1 &&
+           q->ne[3] == k->ne[3] &&
+           q->ne[3] == v->ne[3] &&
            q->ne[2] == op->ne[1] &&
            q->ne[2] % k->ne[2] == 0 &&
            q->ne[1] == op->ne[2] &&
-           op->ne[3] == 1 &&
+           q->ne[3] == op->ne[3] &&
            q->nb[0] == sizeof(float) &&
            k->nb[0] == ggml_type_size(k->type) &&
            v->nb[0] == ggml_type_size(v->type) &&
@@ -1496,7 +1495,7 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_decode(
             (mask->ne[0] == k->ne[1] &&
              mask->ne[1] >= q->ne[1] &&
              mask->ne[2] == 1 &&
-             mask->ne[3] == 1 &&
+             mask->ne[3] == q->ne[3] &&
              mask->nb[0] == ggml_type_size(mask->type) &&
              ggml_is_contiguous(mask))) &&
            ggml_is_contiguous(op);
@@ -2397,16 +2396,22 @@ struct ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants {
     int64_t N;
     int64_t H;
     int64_t H_KV;
+    int64_t S;
     int64_t q_nb1;
     int64_t q_nb2;
+    int64_t q_nb3;
     int64_t k_nb1;
     int64_t k_nb2;
+    int64_t k_nb3;
     int64_t v_nb1;
     int64_t v_nb2;
+    int64_t v_nb3;
     int64_t dst_nb1;
     int64_t dst_nb2;
+    int64_t dst_nb3;
     int64_t mask_nb0;
     int64_t mask_nb1;
+    int64_t mask_nb3;
     float scale;
     int32_t has_mask;
     float max_bias;
@@ -3573,16 +3578,22 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .N        = */ q->ne[1],
         /* .H        = */ q->ne[2],
         /* .H_KV     = */ k->ne[2],
+        /* .S        = */ q->ne[3],
         /* .q_nb1    = */ static_cast<int64_t>(q->nb[1]),
         /* .q_nb2    = */ static_cast<int64_t>(q->nb[2]),
+        /* .q_nb3    = */ static_cast<int64_t>(q->nb[3]),
         /* .k_nb1    = */ static_cast<int64_t>(k->nb[1]),
         /* .k_nb2    = */ static_cast<int64_t>(k->nb[2]),
+        /* .k_nb3    = */ static_cast<int64_t>(k->nb[3]),
         /* .v_nb1    = */ static_cast<int64_t>(v->nb[1]),
         /* .v_nb2    = */ static_cast<int64_t>(v->nb[2]),
+        /* .v_nb3    = */ static_cast<int64_t>(v->nb[3]),
         /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
         /* .dst_nb2  = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3  = */ static_cast<int64_t>(dst->nb[3]),
         /* .mask_nb0 = */ mask ? static_cast<int64_t>(mask->nb[0]) : 0,
         /* .mask_nb1 = */ mask ? static_cast<int64_t>(mask->nb[1]) : 0,
+        /* .mask_nb3 = */ mask ? static_cast<int64_t>(mask->nb[3]) : 0,
         /* .scale    = */ scale,
         /* .has_mask = */ mask ? 1 : 0,
         /* .max_bias = */ max_bias,
@@ -3604,7 +3615,7 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.H),
             static_cast<uint32_t>(constants.N),
-            1,
+            static_cast<uint32_t>(constants.S),
         },
         /* .workgroup_size = */ {
             provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
