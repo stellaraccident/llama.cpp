@@ -77,6 +77,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm_mul_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rope_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rope_set_rows_f32_f16.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/row_reduce_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/scale_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f16.hip.cpp"

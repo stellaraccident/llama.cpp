@@ -216,6 +216,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_rope_set_rows_f32_f16",
+        "source": "rope_set_rows_f32_f16.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 192,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_topk_moe_f32",
         "source": "topk_moe_f32.hip.cpp",
         "format": "FPIH",
