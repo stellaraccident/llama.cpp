@@ -49,6 +49,8 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/argsort_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/clamp_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/concat_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/copy_f32_f16.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/copy_strided_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/div_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_bf16_decode.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f32_decode.hip.cpp"

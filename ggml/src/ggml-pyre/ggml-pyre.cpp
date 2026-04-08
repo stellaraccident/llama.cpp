@@ -119,6 +119,8 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider get_rows_f32_provider;
     ggml_backend_pyre_op_provider get_rows_q5_k_provider;
     ggml_backend_pyre_op_provider concat_f32_provider;
+    ggml_backend_pyre_op_provider copy_strided_f32_provider;
+    ggml_backend_pyre_op_provider copy_f32_f16_provider;
     ggml_backend_pyre_op_provider soft_max_f32_provider;
     ggml_backend_pyre_op_provider soft_max_f32_mask_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_decode_provider;
@@ -728,6 +730,22 @@ static bool ggml_backend_pyre_load_concat_f32_provider(
         &device_context->concat_f32_provider);
 }
 
+static bool ggml_backend_pyre_load_copy_strided_f32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_copy_strided_f32"),
+        &device_context->copy_strided_f32_provider);
+}
+
+static bool ggml_backend_pyre_load_copy_f32_f16_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_copy_f32_f16"),
+        &device_context->copy_f32_f16_provider);
+}
+
 static bool ggml_backend_pyre_load_soft_max_f32_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -1306,16 +1324,28 @@ static bool ggml_backend_pyre_supports_silu_mul_f32(
 }
 
 static bool ggml_backend_pyre_supports_cpy(
+        const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
     const ggml_tensor * src0 = op->src[0];
     const ggml_tensor * src1 = op->src[1];
-    return src0 && src1 &&
-           src0->type == src1->type &&
+    if (!src0 || !src1 ||
+        ggml_nelements(src0) != ggml_nelements(op) ||
+        ggml_nbytes(src1) != ggml_nbytes(op) ||
+        !ggml_is_contiguous(op)) {
+        return false;
+    }
+
+    if (src0->type == GGML_TYPE_F32 &&
+        src1->type == GGML_TYPE_F16 &&
+        op->type == GGML_TYPE_F16) {
+        return ggml_is_contiguous(src0) &&
+               device_context->copy_f32_f16_provider.kind ==
+                   ggml_backend_pyre_provider_kind::direct_executable;
+    }
+
+    return src0->type == src1->type &&
            src0->type == op->type &&
-           ggml_nelements(src0) == ggml_nelements(op) &&
            ggml_row_size(src0->type, src0->ne[0]) * ggml_nrows(src0) == ggml_nbytes(op) &&
-           ggml_nbytes(src1) == ggml_nbytes(op) &&
-           ggml_is_contiguous(op) &&
            (ggml_is_contiguous(src0) || src0->nb[0] == ggml_type_size(src0->type));
 }
 
@@ -2449,6 +2479,21 @@ struct ggml_backend_pyre_concat_f32_constants {
     int64_t dst_nb1;
 };
 
+struct ggml_backend_pyre_copy_strided_f32_constants {
+    int64_t ncols;
+    int64_t nrows;
+    int64_t ne1;
+    int64_t ne2;
+    int64_t src_nb1;
+    int64_t src_nb2;
+    int64_t src_nb3;
+    int64_t row_size;
+};
+
+struct ggml_backend_pyre_copy_f32_f16_constants {
+    int64_t n;
+};
+
 struct ggml_backend_pyre_soft_max_f32_constants {
     int64_t ncols;
     int64_t nrows;
@@ -3178,7 +3223,36 @@ static ggml_status ggml_backend_pyre_dispatch_cpy(
     }
 
     const size_t size = ggml_nbytes(dst);
-    if (ggml_is_contiguous(src0)) {
+    if (src0->type == GGML_TYPE_F32 &&
+        dst->type == GGML_TYPE_F16 &&
+        ggml_is_contiguous(src0)) {
+        const auto & provider = context->device_context->copy_f32_f16_provider;
+        if (provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
+            GGML_LOG_ERROR("%s: F32->F16 CPY provider is unavailable\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+        ggml_backend_pyre_copy_f32_f16_constants constants = {
+            /* .n = */ static_cast<int64_t>(ggml_nelements(dst)),
+        };
+        pyre_buffer_ref_t bindings[2] = {src_ref, dst_ref};
+        const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+            provider.export_info.workgroup_size[0] : 256;
+        pyre_dispatch_config_t config = {
+            /* .workgroup_count = */ {
+                static_cast<uint32_t>((constants.n + workgroup_size - 1) / workgroup_size),
+                1,
+                1,
+            },
+            /* .workgroup_size = */ { workgroup_size, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream, provider.executable, provider.export_ordinal, &config,
+                &constants, sizeof(constants), bindings, 2, PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+    } else if (ggml_is_contiguous(src0)) {
         if (src_ref.buffer != dst_ref.buffer || src_ref.offset != dst_ref.offset) {
             if (!GGML_PYRE_CHECK(pyre_stream_copy_buffer(
                     context->stream,
@@ -3191,6 +3265,42 @@ static ggml_status ggml_backend_pyre_dispatch_cpy(
             }
         }
     } else {
+        const auto & provider = context->device_context->copy_strided_f32_provider;
+        if (src0->type == GGML_TYPE_F32 &&
+            provider.kind == ggml_backend_pyre_provider_kind::direct_executable) {
+            const size_t row_size = ggml_row_size(src0->type, src0->ne[0]);
+            ggml_backend_pyre_copy_strided_f32_constants constants = {
+                /* .ncols    = */ src0->ne[0],
+                /* .nrows    = */ ggml_nrows(src0),
+                /* .ne1      = */ src0->ne[1],
+                /* .ne2      = */ src0->ne[2],
+                /* .src_nb1  = */ static_cast<int64_t>(src0->nb[1]),
+                /* .src_nb2  = */ static_cast<int64_t>(src0->nb[2]),
+                /* .src_nb3  = */ static_cast<int64_t>(src0->nb[3]),
+                /* .row_size = */ static_cast<int64_t>(row_size),
+            };
+            pyre_buffer_ref_t bindings[2] = {src_ref, dst_ref};
+            const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+                provider.export_info.workgroup_size[0] : 256;
+            pyre_dispatch_config_t config = {
+                /* .workgroup_count = */ {
+                    static_cast<uint32_t>((constants.ncols + workgroup_size - 1) / workgroup_size),
+                    static_cast<uint32_t>(constants.nrows),
+                    1,
+                },
+                /* .workgroup_size = */ { workgroup_size, 1, 1 },
+                /* .subgroup_size = */ 0,
+            };
+            if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                    context->stream, provider.executable, provider.export_ordinal, &config,
+                    &constants, sizeof(constants), bindings, 2, PYRE_DISPATCH_FLAG_NONE))) {
+                return GGML_STATUS_FAILED;
+            }
+            context->dispatch_count++;
+            context->copy_count++;
+            return GGML_STATUS_SUCCESS;
+        }
+
         const size_t row_size = ggml_row_size(src0->type, src0->ne[0]);
         size_t dst_offset = dst_ref.offset;
         for (int64_t i3 = 0; i3 < src0->ne[3]; ++i3) {
@@ -6360,30 +6470,59 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
-            case GGML_OP_CPY:
-                if (!ggml_backend_pyre_supports_cpy(node)) {
+            case GGML_OP_CPY: {
+                if (!ggml_backend_pyre_supports_cpy(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: CPY shape/type/layout is unsupported\n", __func__);
                     return GGML_STATUS_FAILED;
                 }
+                const bool use_strided_copy_provider =
+                    node->src[0] &&
+                    !ggml_is_contiguous(node->src[0]) &&
+                    node->src[0]->type == GGML_TYPE_F32 &&
+                    context->device_context->copy_strided_f32_provider.kind ==
+                        ggml_backend_pyre_provider_kind::direct_executable;
+                const bool use_f32_f16_copy_provider =
+                    node->src[0] &&
+                    ggml_is_contiguous(node->src[0]) &&
+                    node->src[0]->type == GGML_TYPE_F32 &&
+                    node->type == GGML_TYPE_F16 &&
+                    context->device_context->copy_f32_f16_provider.kind ==
+                        ggml_backend_pyre_provider_kind::direct_executable;
                 ggml_backend_pyre_trace_provider(
-                    context->device_context, "claim CPY provider=buffer_copy type=%s nbytes=%zu\n",
-                    ggml_type_name(node->type), ggml_nbytes(node));
+                    context->device_context,
+                    "claim CPY provider=%s src_type=%s dst_type=%s nbytes=%zu contiguous_src=%d nrows=%" PRId64 "\n",
+                    use_f32_f16_copy_provider ? "pure_hip_f32_f16_copy" :
+                        (use_strided_copy_provider ? "pure_hip_strided_copy" : "buffer_copy"),
+                    node->src[0] ? ggml_type_name(node->src[0]->type) : "none",
+                    ggml_type_name(node->type), ggml_nbytes(node),
+                    ggml_is_contiguous(node->src[0]) ? 1 : 0, ggml_nrows(node->src[0]));
                 if (ggml_backend_pyre_dispatch_cpy(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
                 }
                 break;
-            case GGML_OP_CONT:
+            }
+            case GGML_OP_CONT: {
                 if (!ggml_backend_pyre_supports_cont(node)) {
                     GGML_LOG_ERROR("%s: CONT shape/type/layout is unsupported\n", __func__);
                     return GGML_STATUS_FAILED;
                 }
+                const bool use_strided_copy_provider =
+                    node->src[0] &&
+                    !ggml_is_contiguous(node->src[0]) &&
+                    node->src[0]->type == GGML_TYPE_F32 &&
+                    context->device_context->copy_strided_f32_provider.kind ==
+                        ggml_backend_pyre_provider_kind::direct_executable;
                 ggml_backend_pyre_trace_provider(
-                    context->device_context, "claim CONT provider=buffer_copy type=%s nbytes=%zu\n",
-                    ggml_type_name(node->type), ggml_nbytes(node));
+                    context->device_context,
+                    "claim CONT provider=%s type=%s nbytes=%zu contiguous_src=%d nrows=%" PRId64 "\n",
+                    use_strided_copy_provider ? "pure_hip_strided_copy" : "buffer_copy",
+                    ggml_type_name(node->type), ggml_nbytes(node),
+                    ggml_is_contiguous(node->src[0]) ? 1 : 0, ggml_nrows(node->src[0]));
                 if (ggml_backend_pyre_dispatch_cpy(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            }
             case GGML_OP_SET_ROWS: {
                 if (!ggml_backend_pyre_supports_set_rows(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: SET_ROWS shape/type/layout is unsupported\n", __func__);
@@ -6761,7 +6900,7 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             supported = ggml_backend_pyre_supports_scale(context, op);
             break;
         case GGML_OP_CPY:
-            supported = ggml_backend_pyre_supports_cpy(op);
+            supported = ggml_backend_pyre_supports_cpy(context, op);
             break;
         case GGML_OP_CONT:
             supported = ggml_backend_pyre_supports_cont(op);
@@ -6989,6 +7128,8 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_get_rows_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_get_rows_q5_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_concat_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_copy_strided_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_copy_f32_f16_provider(device_context.get());
             (void) ggml_backend_pyre_load_soft_max_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_soft_max_f32_mask_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_decode_provider(device_context.get());

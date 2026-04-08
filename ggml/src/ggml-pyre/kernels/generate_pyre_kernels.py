@@ -216,6 +216,22 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_copy_strided_f32",
+        "source": "copy_strided_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 2,
+        "constants_size": 64,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_copy_f32_f16",
+        "source": "copy_f32_f16.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 2,
+        "constants_size": 8,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_soft_max_f32",
         "source": "soft_max_f32.hip.cpp",
         "format": "FPIH",
