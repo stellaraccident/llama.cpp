@@ -1479,7 +1479,6 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_decode(
            q->ne[0] <= 256 &&
            q->ne[3] == 1 &&
            q->ne[1] <= 1024 &&
-           (q->nb[1] <= q->nb[2] || q->ne[0] == 256) &&
            k->ne[1] == v->ne[1] &&
            k->ne[1] <= 1024 &&
            k->ne[2] == v->ne[2] &&
