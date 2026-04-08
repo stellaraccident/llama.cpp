@@ -40,6 +40,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_add_add_f32_broadcast",
+        "source": "add_add_f32_broadcast.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 144,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_mul_f32",
         "source": "mul_f32.hip.cpp",
         "format": "FPIH",

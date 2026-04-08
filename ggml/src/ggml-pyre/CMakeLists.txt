@@ -43,6 +43,7 @@ if (Python3_Interpreter_FOUND)
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_add_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/argsort_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/clamp_f32.hip.cpp"
