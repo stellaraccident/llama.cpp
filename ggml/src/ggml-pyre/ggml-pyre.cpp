@@ -120,6 +120,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider soft_max_f32_provider;
     ggml_backend_pyre_op_provider soft_max_f32_mask_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_decode_provider;
+    ggml_backend_pyre_op_provider flash_attn_ext_f32_bf16_decode_provider;
     ggml_backend_pyre_op_provider argsort_f32_provider;
     ggml_backend_pyre_op_provider rope_f32_provider;
     ggml_backend_pyre_op_provider rope_set_rows_f32_f16_provider;
@@ -727,6 +728,14 @@ static bool ggml_backend_pyre_load_flash_attn_ext_f32_f16_decode_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_f16_decode"),
         &device_context->flash_attn_ext_f32_f16_decode_provider);
+}
+
+static bool ggml_backend_pyre_load_flash_attn_ext_f32_bf16_decode_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_bf16_decode"),
+        &device_context->flash_attn_ext_f32_bf16_decode_provider);
 }
 
 static bool ggml_backend_pyre_load_argsort_f32_provider(
@@ -1426,7 +1435,20 @@ static bool ggml_backend_pyre_supports_soft_max_f32(
              src0->ne[3] % src1->ne[3] == 0));
 }
 
-static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
+static const ggml_backend_pyre_op_provider * ggml_backend_pyre_flash_attn_ext_f32_decode_provider(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * k,
+        const ggml_tensor * v) {
+    if (k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16) {
+        return &device_context->flash_attn_ext_f32_f16_decode_provider;
+    }
+    if (k->type == GGML_TYPE_BF16 && v->type == GGML_TYPE_BF16) {
+        return &device_context->flash_attn_ext_f32_bf16_decode_provider;
+    }
+    return nullptr;
+}
+
+static bool ggml_backend_pyre_supports_flash_attn_ext_f32_decode(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
     const ggml_tensor * q = op->src[0];
@@ -1434,14 +1456,17 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
     const ggml_tensor * v = op->src[2];
     const ggml_tensor * mask = op->src[3];
     const ggml_tensor * sinks = op->src[4];
+    if (!q || !k || !v) {
+        return false;
+    }
+    const ggml_backend_pyre_op_provider * provider =
+        ggml_backend_pyre_flash_attn_ext_f32_decode_provider(device_context, k, v);
     float max_bias = 0.0f;
     std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(op->op_params) + 1, sizeof(float));
-    return device_context->flash_attn_ext_f32_f16_decode_provider.kind ==
+    return provider &&
+           provider->kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
-           q && k && v &&
            q->type == GGML_TYPE_F32 &&
-           k->type == GGML_TYPE_F16 &&
-           v->type == GGML_TYPE_F16 &&
            (!mask || mask->type == GGML_TYPE_F16) &&
            (!sinks || (sinks->type == GGML_TYPE_F32 &&
                        sinks->ne[0] == q->ne[2] &&
@@ -3569,7 +3594,13 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .has_sinks = */ sinks ? 1 : 0,
     };
 
-    const auto & provider = context->device_context->flash_attn_ext_f32_f16_decode_provider;
+    const ggml_backend_pyre_op_provider * selected_provider =
+        ggml_backend_pyre_flash_attn_ext_f32_decode_provider(context->device_context, k, v);
+    if (!selected_provider) {
+        GGML_LOG_ERROR("%s: FLASH_ATTN_EXT K/V type is unsupported\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+    const auto & provider = *selected_provider;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.H),
@@ -6341,14 +6372,15 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                 }
                 break;
             case GGML_OP_FLASH_ATTN_EXT:
-                if (!ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(context->device_context, node)) {
+                if (!ggml_backend_pyre_supports_flash_attn_ext_f32_decode(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: FLASH_ATTN_EXT shape/type/layout is unsupported\n", __func__);
                     return GGML_STATUS_FAILED;
                 }
                 ggml_backend_pyre_trace_provider(
                     context->device_context,
-                    "claim FLASH_ATTN_EXT provider=pure_hip_f32_f16_decode D=%" PRId64
+                    "claim FLASH_ATTN_EXT provider=pure_hip_f32_%s_decode D=%" PRId64
                     " KV=%" PRId64 " N=%" PRId64 " H=%" PRId64 " H_KV=%" PRId64 "\n",
+                    node->src[1]->type == GGML_TYPE_BF16 ? "bf16" : "f16",
                     node->src[0]->ne[0], node->src[1]->ne[1], node->src[0]->ne[1],
                     node->src[0]->ne[2], node->src[1]->ne[2]);
                 if (ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(context, node) != GGML_STATUS_SUCCESS) {
@@ -6655,7 +6687,7 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             supported = ggml_backend_pyre_supports_soft_max_f32(context, op);
             break;
         case GGML_OP_FLASH_ATTN_EXT:
-            supported = ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(context, op);
+            supported = ggml_backend_pyre_supports_flash_attn_ext_f32_decode(context, op);
             break;
         case GGML_OP_ARGSORT:
             supported = ggml_backend_pyre_supports_argsort_f32(context, op);
@@ -6866,6 +6898,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_soft_max_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_soft_max_f32_mask_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_decode_provider(device_context.get());
+            (void) ggml_backend_pyre_load_flash_attn_ext_f32_bf16_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_argsort_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_set_rows_f32_f16_provider(device_context.get());
