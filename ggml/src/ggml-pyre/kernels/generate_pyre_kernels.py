@@ -120,6 +120,22 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_set_rows_f32_q8_0",
+        "source": "set_rows_f32_q8_0.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 128,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_set_rows_f32_q4_0",
+        "source": "set_rows_f32_q4_0.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 128,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_silu_f32",
         "source": "unary_f32.hip.cpp",
         "format": "FPIH",
@@ -250,6 +266,14 @@ KERNELS = [
     {
         "name": "pyre_flash_attn_ext_f32_q4_0_decode",
         "source": "flash_attn_ext_f32_q4_0_decode.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 6,
+        "constants_size": 208,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_flash_attn_ext_f32_q8_0_q4_0_decode",
+        "source": "flash_attn_ext_f32_q8_0_q4_0_decode.hip.cpp",
         "format": "FPIH",
         "binding_count": 6,
         "constants_size": 208,

@@ -107,6 +107,8 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider scale_provider;
     ggml_backend_pyre_op_provider set_rows_f32_provider;
     ggml_backend_pyre_op_provider set_rows_f16_provider;
+    ggml_backend_pyre_op_provider set_rows_q8_0_provider;
+    ggml_backend_pyre_op_provider set_rows_q4_0_provider;
     ggml_backend_pyre_op_provider silu_provider;
     ggml_backend_pyre_op_provider sigmoid_provider;
     ggml_backend_pyre_op_provider softplus_provider;
@@ -124,6 +126,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f32_decode_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_q4_0_decode_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_q8_0_decode_provider;
+    ggml_backend_pyre_op_provider flash_attn_ext_f32_q8_0_q4_0_decode_provider;
     ggml_backend_pyre_op_provider argsort_f32_provider;
     ggml_backend_pyre_op_provider rope_f32_provider;
     ggml_backend_pyre_op_provider rope_set_rows_f32_f16_provider;
@@ -629,6 +632,22 @@ static bool ggml_backend_pyre_load_set_rows_f16_provider(
         &device_context->set_rows_f16_provider);
 }
 
+static bool ggml_backend_pyre_load_set_rows_q8_0_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_set_rows_f32_q8_0"),
+        &device_context->set_rows_q8_0_provider);
+}
+
+static bool ggml_backend_pyre_load_set_rows_q4_0_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_set_rows_f32_q4_0"),
+        &device_context->set_rows_q4_0_provider);
+}
+
 static bool ggml_backend_pyre_load_silu_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -763,6 +782,14 @@ static bool ggml_backend_pyre_load_flash_attn_ext_f32_q4_0_decode_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_q4_0_decode"),
         &device_context->flash_attn_ext_f32_q4_0_decode_provider);
+}
+
+static bool ggml_backend_pyre_load_flash_attn_ext_f32_q8_0_q4_0_decode_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_q8_0_q4_0_decode"),
+        &device_context->flash_attn_ext_f32_q8_0_q4_0_decode_provider);
 }
 
 static bool ggml_backend_pyre_load_argsort_f32_provider(
@@ -1311,6 +1338,10 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_set_rows_provider
             return &device_context->set_rows_f32_provider;
         case GGML_TYPE_F16:
             return &device_context->set_rows_f16_provider;
+        case GGML_TYPE_Q8_0:
+            return &device_context->set_rows_q8_0_provider;
+        case GGML_TYPE_Q4_0:
+            return &device_context->set_rows_q4_0_provider;
         default:
             return nullptr;
     }
@@ -1337,6 +1368,7 @@ static bool ggml_backend_pyre_supports_set_rows(
            src0->ne[2] % src1->ne[1] == 0 &&
            src0->ne[3] % src1->ne[2] == 0 &&
            src1->ne[3] == 1 &&
+           (!ggml_is_quantized(op->type) || src0->ne[0] % ggml_blck_size(op->type) == 0) &&
            ggml_is_contiguous_rows(src0) &&
            ggml_is_contiguous_rows(op);
 }
@@ -1478,6 +1510,9 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_flash_attn_ext_f3
     if (k->type == GGML_TYPE_Q8_0 && v->type == GGML_TYPE_Q8_0) {
         return &device_context->flash_attn_ext_f32_q8_0_decode_provider;
     }
+    if (k->type == GGML_TYPE_Q8_0 && v->type == GGML_TYPE_Q4_0) {
+        return &device_context->flash_attn_ext_f32_q8_0_q4_0_decode_provider;
+    }
     if (k->type == GGML_TYPE_Q4_0 && v->type == GGML_TYPE_Q4_0) {
         return &device_context->flash_attn_ext_f32_q4_0_decode_provider;
     }
@@ -1525,8 +1560,6 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_decode(
            q->ne[1] == op->ne[2] &&
            q->ne[3] == op->ne[3] &&
            (k->type != GGML_TYPE_F32 || !permuted_q || q->ne[3] == 1 || q->ne[2] == k->ne[2]) &&
-           (k->type != GGML_TYPE_Q8_0 || !permuted_q || q->ne[2] == k->ne[2]) &&
-           (k->type != GGML_TYPE_Q4_0 || !permuted_q || q->ne[2] == k->ne[2]) &&
            q->nb[0] == sizeof(float) &&
            k->nb[0] == ggml_type_size(k->type) &&
            v->nb[0] == ggml_type_size(v->type) &&
@@ -3224,7 +3257,9 @@ static ggml_status ggml_backend_pyre_dispatch_set_rows(
         return GGML_STATUS_FAILED;
     }
 
-    const int64_t total = constants.nc * constants.nr * constants.ne02 * constants.ne03;
+    const int64_t logical_cols =
+        ggml_is_quantized(dst->type) ? constants.nc / ggml_blck_size(dst->type) : constants.nc;
+    const int64_t total = logical_cols * constants.nr * constants.ne02 * constants.ne03;
     const uint32_t workgroup_size = provider->export_info.workgroup_size[0] ?
         provider->export_info.workgroup_size[0] : 256;
     pyre_dispatch_config_t config = {
@@ -6428,12 +6463,16 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                 }
                 ggml_backend_pyre_trace_provider(
                     context->device_context,
-                    "claim FLASH_ATTN_EXT provider=pure_hip_f32_%s_decode D=%" PRId64
+                    "claim FLASH_ATTN_EXT provider=pure_hip_f32_k_%s_v_%s_decode D=%" PRId64
                     " KV=%" PRId64 " N=%" PRId64 " H=%" PRId64 " H_KV=%" PRId64 "\n",
                     node->src[1]->type == GGML_TYPE_BF16 ? "bf16" :
                     (node->src[1]->type == GGML_TYPE_F32 ? "f32" :
                      (node->src[1]->type == GGML_TYPE_Q8_0 ? "q8_0" :
                       (node->src[1]->type == GGML_TYPE_Q4_0 ? "q4_0" : "f16"))),
+                    node->src[2]->type == GGML_TYPE_BF16 ? "bf16" :
+                    (node->src[2]->type == GGML_TYPE_F32 ? "f32" :
+                     (node->src[2]->type == GGML_TYPE_Q8_0 ? "q8_0" :
+                      (node->src[2]->type == GGML_TYPE_Q4_0 ? "q4_0" : "f16"))),
                     node->src[0]->ne[0], node->src[1]->ne[1], node->src[0]->ne[1],
                     node->src[0]->ne[2], node->src[1]->ne[2]);
                 if (ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(context, node) != GGML_STATUS_SUCCESS) {
@@ -6938,6 +6977,8 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_scale_provider(device_context.get());
             (void) ggml_backend_pyre_load_set_rows_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_set_rows_f16_provider(device_context.get());
+            (void) ggml_backend_pyre_load_set_rows_q8_0_provider(device_context.get());
+            (void) ggml_backend_pyre_load_set_rows_q4_0_provider(device_context.get());
             (void) ggml_backend_pyre_load_silu_provider(device_context.get());
             (void) ggml_backend_pyre_load_sigmoid_provider(device_context.get());
             (void) ggml_backend_pyre_load_softplus_provider(device_context.get());
@@ -6955,6 +6996,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f32_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_q4_0_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_q8_0_decode_provider(device_context.get());
+            (void) ggml_backend_pyre_load_flash_attn_ext_f32_q8_0_q4_0_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_argsort_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_set_rows_f32_f16_provider(device_context.get());
