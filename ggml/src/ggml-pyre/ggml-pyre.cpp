@@ -1435,9 +1435,7 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
     const ggml_tensor * mask = op->src[3];
     const ggml_tensor * sinks = op->src[4];
     float max_bias = 0.0f;
-    float logit_softcap = 0.0f;
     std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(op->op_params) + 1, sizeof(float));
-    std::memcpy(&logit_softcap, reinterpret_cast<const int32_t *>(op->op_params) + 2, sizeof(float));
     return device_context->flash_attn_ext_f32_f16_decode_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            q && k && v && !sinks &&
@@ -1446,8 +1444,7 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
            v->type == GGML_TYPE_F16 &&
            (!mask || mask->type == GGML_TYPE_F16) &&
            op->type == GGML_TYPE_F32 &&
-           max_bias == 0.0f &&
-           logit_softcap == 0.0f &&
+           (max_bias == 0.0f || mask) &&
            q->ne[0] == k->ne[0] &&
            q->ne[0] == v->ne[0] &&
            q->ne[0] == op->ne[0] &&
@@ -2385,6 +2382,11 @@ struct ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants {
     int64_t mask_nb1;
     float scale;
     int32_t has_mask;
+    float max_bias;
+    float m0;
+    float m1;
+    float logit_softcap;
+    int32_t n_head_log2;
 };
 
 struct ggml_backend_pyre_argsort_f32_constants {
@@ -3520,7 +3522,18 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
     }
 
     float scale = 1.0f;
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
     std::memcpy(&scale, reinterpret_cast<const int32_t *>(dst->op_params), sizeof(float));
+    std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(dst->op_params) + 1, sizeof(float));
+    std::memcpy(&logit_softcap, reinterpret_cast<const int32_t *>(dst->op_params) + 2, sizeof(float));
+    if (logit_softcap != 0.0f) {
+        scale /= logit_softcap;
+    }
+
+    const int32_t n_head_log2 = 1 << static_cast<int32_t>(std::floor(std::log2(static_cast<double>(q->ne[2]))));
+    const float m0 = std::pow(2.0f, -(max_bias       ) / n_head_log2);
+    const float m1 = std::pow(2.0f, -(max_bias / 2.0f) / n_head_log2);
     ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants constants = {
         /* .D        = */ q->ne[0],
         /* .KV       = */ k->ne[1],
@@ -3539,6 +3552,11 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .mask_nb1 = */ mask ? static_cast<int64_t>(mask->nb[1]) : 0,
         /* .scale    = */ scale,
         /* .has_mask = */ mask ? 1 : 0,
+        /* .max_bias = */ max_bias,
+        /* .m0       = */ m0,
+        /* .m1       = */ m1,
+        /* .logit_softcap = */ logit_softcap,
+        /* .n_head_log2 = */ n_head_log2,
     };
 
     const auto & provider = context->device_context->flash_attn_ext_f32_f16_decode_provider;

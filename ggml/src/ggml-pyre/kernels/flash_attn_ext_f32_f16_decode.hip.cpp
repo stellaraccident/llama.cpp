@@ -22,10 +22,27 @@ struct pyre_flash_attn_ext_f32_f16_decode_constants {
     long long mask_nb1;
     float scale;
     int has_mask;
+    float max_bias;
+    float m0;
+    float m1;
+    float logit_softcap;
+    int n_head_log2;
 };
 
 static __device__ __forceinline__ float pyre_load_f16(const __half * base, long long byte_offset) {
     return __half2float(*reinterpret_cast<const __half *>(reinterpret_cast<const char *>(base) + byte_offset));
+}
+
+static __device__ __forceinline__ double pyre_alibi_slope(
+        const pyre_flash_attn_ext_f32_f16_decode_constants c,
+        long long head) {
+    if (c.max_bias <= 0.0f) {
+        return 1.0;
+    }
+    const double base = head < c.n_head_log2 ? c.m0 : c.m1;
+    const int exp_h = head < c.n_head_log2 ? static_cast<int>(head + 1) :
+        static_cast<int>(2 * (head - c.n_head_log2) + 1);
+    return pow(base, exp_h);
 }
 
 extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
@@ -47,6 +64,7 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
     const char * k_head = reinterpret_cast<const char *>(k) + kv_head * c.k_nb2;
     const char * v_head = reinterpret_cast<const char *>(v) + kv_head * c.v_nb2;
     const char * mask_row = reinterpret_cast<const char *>(mask) + token * c.mask_nb1;
+    const double slope = pyre_alibi_slope(c, head);
 
     double local_max = -DBL_MAX;
     for (long long t = tid; t < c.KV; t += 256) {
@@ -57,8 +75,11 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
             score += qv * pyre_load_f16(reinterpret_cast<const __half *>(k_row), d * static_cast<long long>(sizeof(__half)));
         }
         score *= c.scale;
+        if (c.logit_softcap != 0.0f) {
+            score = static_cast<double>(c.logit_softcap) * tanh(score);
+        }
         if (c.has_mask) {
-            score += pyre_load_f16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
+            score += slope * pyre_load_f16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
         }
         logits[t] = static_cast<float>(score);
         local_max = fmax(local_max, score);

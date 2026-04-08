@@ -220,7 +220,7 @@ KERNELS = [
         "source": "flash_attn_ext_f32_f16_decode.hip.cpp",
         "format": "FPIH",
         "binding_count": 5,
-        "constants_size": 128,
+        "constants_size": 152,
         "workgroup_size": (256, 1, 1),
     },
     {
