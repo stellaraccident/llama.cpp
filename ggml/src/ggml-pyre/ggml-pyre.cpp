@@ -48,6 +48,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_rms_norm = false;
     bool disable_mul_mat_vec = false;
     bool disable_mul_mat_id = false;
+    bool disable_topk_subgroup = false;
 };
 
 struct ggml_backend_pyre_op_provider {
@@ -95,6 +96,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider argsort_f32_provider;
     ggml_backend_pyre_op_provider rope_f32_provider;
     ggml_backend_pyre_op_provider topk_moe_f32_provider;
+    ggml_backend_pyre_op_provider topk_moe_f32_subgroup_provider;
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
@@ -317,6 +319,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_rms_norm   = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_RMS_NORM"),
         /* .disable_mul_mat_vec = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_VEC"),
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
+        /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
     };
 }
 
@@ -626,6 +629,14 @@ static bool ggml_backend_pyre_load_topk_moe_f32_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_topk_moe_f32"),
         &device_context->topk_moe_f32_provider);
+}
+
+static bool ggml_backend_pyre_load_topk_moe_f32_subgroup_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_topk_moe_f32_subgroup"),
+        &device_context->topk_moe_f32_subgroup_provider);
 }
 
 static bool ggml_backend_pyre_load_ssm_conv_provider(
@@ -2742,16 +2753,24 @@ static ggml_status ggml_backend_pyre_dispatch_topk_moe_f32(
         /* .with_norm     = */ clamp ? 1 : 0,
     };
 
-    const auto & provider = context->device_context->topk_moe_f32_provider;
-    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+    const bool use_subgroup =
+        !context->device_context->policy.disable_topk_subgroup &&
+        context->device_context->topk_moe_f32_subgroup_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
+    const auto & provider = use_subgroup ?
+        context->device_context->topk_moe_f32_subgroup_provider :
+        context->device_context->topk_moe_f32_provider;
+    const uint32_t workgroup_size_x = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 64;
+    const uint32_t workgroup_size_y = provider.export_info.workgroup_size[1] ?
+        provider.export_info.workgroup_size[1] : 1;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
-            static_cast<uint32_t>(constants.n_rows),
+            static_cast<uint32_t>((constants.n_rows + workgroup_size_y - 1) / workgroup_size_y),
             1,
             1,
         },
-        /* .workgroup_size = */ { workgroup_size, 1, 1 },
+        /* .workgroup_size = */ { workgroup_size_x, workgroup_size_y, 1 },
         /* .subgroup_size = */ 0,
     };
 
@@ -4817,6 +4836,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_argsort_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_topk_moe_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_topk_moe_f32_subgroup_provider(device_context.get());
             (void) ggml_backend_pyre_load_ssm_conv_provider(device_context.get());
             (void) ggml_backend_pyre_load_gated_delta_net_provider(device_context.get());
         }

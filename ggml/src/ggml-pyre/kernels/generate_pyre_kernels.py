@@ -208,6 +208,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_topk_moe_f32_subgroup",
+        "source": "topk_moe_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 64,
+        "workgroup_size": (64, 4, 1),
+    },
+    {
         "name": "pyre_ssm_conv_f32",
         "source": "ssm_conv_f32.hip.cpp",
         "format": "FPIH",
