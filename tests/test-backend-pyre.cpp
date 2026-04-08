@@ -538,6 +538,147 @@ static void run_broadcast_mul_case(ggml_backend_t backend, ggml_backend_dev_t de
     expect_near(output, expected, 1.0e-6f, "broadcast_mul_output");
 }
 
+static void run_glue_ops_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * unary_src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 4);
+    ggml_tensor * silu = ggml_silu(ctx.get(), unary_src);
+    ggml_tensor * sigmoid = ggml_sigmoid(ctx.get(), unary_src);
+    ggml_tensor * softplus = ggml_softplus(ctx.get(), unary_src);
+
+    ggml_tensor * gate = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 3, 2);
+    ggml_tensor * up = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 3, 2);
+    ggml_tensor * swiglu = ggml_swiglu_split(ctx.get(), gate, up);
+
+    ggml_tensor * rows = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 4, 2);
+    ggml_tensor * sum_rows = ggml_sum_rows(ctx.get(), rows);
+    ggml_tensor * l2_norm = ggml_l2_norm(ctx.get(), rows, 1.0e-6f);
+
+    ggml_tensor * div_rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 1, 2);
+    ggml_tensor * div = ggml_div(ctx.get(), rows, div_rhs);
+    ggml_tensor * clamp = ggml_clamp(ctx.get(), div_rhs, 0.25f, 0.75f);
+
+    ggml_tensor * gather_src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 2, 4);
+    ggml_tensor * gather_idx = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, 2);
+    ggml_tensor * gather = ggml_get_rows(ctx.get(), gather_src, gather_idx);
+
+    ggml_tensor * cat_lhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 2, 2);
+    ggml_tensor * cat_rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 1, 2);
+    ggml_tensor * concat = ggml_concat(ctx.get(), cat_lhs, cat_rhs, 0);
+
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, silu));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, sigmoid));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, softplus));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, swiglu));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, sum_rows));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, l2_norm));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, div));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, clamp));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, gather));
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, concat));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, silu);
+    ggml_build_forward_expand(graph, sigmoid);
+    ggml_build_forward_expand(graph, softplus);
+    ggml_build_forward_expand(graph, swiglu);
+    ggml_build_forward_expand(graph, sum_rows);
+    ggml_build_forward_expand(graph, l2_norm);
+    ggml_build_forward_expand(graph, div);
+    ggml_build_forward_expand(graph, clamp);
+    ggml_build_forward_expand(graph, gather);
+    ggml_build_forward_expand(graph, concat);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    const std::vector<float> unary_data = { -2.0f, -0.5f, 0.25f, 2.0f };
+    const std::vector<float> gate_data = { -1.0f, 0.5f, 2.0f, -0.25f, 1.0f, 3.0f };
+    const std::vector<float> up_data = { 2.0f, -1.0f, 0.5f, 4.0f, -2.0f, 1.5f };
+    const std::vector<float> rows_data = { 1.0f, 2.0f, 3.0f, 4.0f, -2.0f, 1.0f, -1.0f, 2.0f };
+    const std::vector<float> div_rhs_data = { 2.0f, 4.0f };
+    const std::vector<float> gather_src_data = { 1.0f, 2.0f, 10.0f, 20.0f, 100.0f, 200.0f, -1.0f, -2.0f };
+    const std::vector<int32_t> gather_idx_data = { 2, 1 };
+    const std::vector<float> cat_lhs_data = { 1.0f, 2.0f, 3.0f, 4.0f };
+    const std::vector<float> cat_rhs_data = { 5.0f, 6.0f };
+
+    ggml_backend_tensor_set(unary_src, unary_data.data(), 0, unary_data.size() * sizeof(float));
+    ggml_backend_tensor_set(gate, gate_data.data(), 0, gate_data.size() * sizeof(float));
+    ggml_backend_tensor_set(up, up_data.data(), 0, up_data.size() * sizeof(float));
+    ggml_backend_tensor_set(rows, rows_data.data(), 0, rows_data.size() * sizeof(float));
+    ggml_backend_tensor_set(div_rhs, div_rhs_data.data(), 0, div_rhs_data.size() * sizeof(float));
+    ggml_backend_tensor_set(gather_src, gather_src_data.data(), 0, gather_src_data.size() * sizeof(float));
+    ggml_backend_tensor_set(gather_idx, gather_idx_data.data(), 0, gather_idx_data.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(cat_lhs, cat_lhs_data.data(), 0, cat_lhs_data.size() * sizeof(float));
+    ggml_backend_tensor_set(cat_rhs, cat_rhs_data.data(), 0, cat_rhs_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    auto sigmoid_ref = [](float x) { return 1.0f / (1.0f + std::exp(-x)); };
+    std::vector<float> expected_silu(unary_data.size());
+    std::vector<float> expected_sigmoid(unary_data.size());
+    std::vector<float> expected_softplus(unary_data.size());
+    for (size_t i = 0; i < unary_data.size(); ++i) {
+        expected_sigmoid[i] = sigmoid_ref(unary_data[i]);
+        expected_silu[i] = unary_data[i] * expected_sigmoid[i];
+        expected_softplus[i] = std::log(1.0f + std::exp(unary_data[i]));
+    }
+
+    std::vector<float> expected_swiglu(gate_data.size());
+    for (size_t i = 0; i < gate_data.size(); ++i) {
+        expected_swiglu[i] = gate_data[i] * sigmoid_ref(gate_data[i]) * up_data[i];
+    }
+
+    const std::vector<float> expected_sum_rows = { 10.0f, 0.0f };
+    std::vector<float> expected_l2_norm(rows_data.size());
+    for (int row = 0; row < 2; ++row) {
+        float sum = 0.0f;
+        for (int col = 0; col < 4; ++col) {
+            const float value = rows_data[static_cast<size_t>(row * 4 + col)];
+            sum += value * value;
+        }
+        const float scale = 1.0f / std::max(std::sqrt(sum), 1.0e-6f);
+        for (int col = 0; col < 4; ++col) {
+            expected_l2_norm[static_cast<size_t>(row * 4 + col)] =
+                rows_data[static_cast<size_t>(row * 4 + col)] * scale;
+        }
+    }
+    const std::vector<float> expected_div = { 0.5f, 1.0f, 1.5f, 2.0f, -0.5f, 0.25f, -0.25f, 0.5f };
+    const std::vector<float> expected_clamp = { 0.75f, 0.75f };
+    const std::vector<float> expected_gather = { 100.0f, 200.0f, 10.0f, 20.0f };
+    const std::vector<float> expected_concat = { 1.0f, 2.0f, 5.0f, 3.0f, 4.0f, 6.0f };
+
+    std::vector<float> output(expected_silu.size(), 0.0f);
+    ggml_backend_tensor_get(silu, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_silu, 1.0e-5f, "silu_output");
+    ggml_backend_tensor_get(sigmoid, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_sigmoid, 1.0e-5f, "sigmoid_output");
+    ggml_backend_tensor_get(softplus, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_softplus, 1.0e-5f, "softplus_output");
+
+    output.assign(expected_swiglu.size(), 0.0f);
+    ggml_backend_tensor_get(swiglu, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_swiglu, 1.0e-5f, "swiglu_output");
+    output.assign(expected_l2_norm.size(), 0.0f);
+    ggml_backend_tensor_get(l2_norm, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_l2_norm, 1.0e-5f, "l2_norm_output");
+    output.assign(expected_div.size(), 0.0f);
+    ggml_backend_tensor_get(div, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_div, 1.0e-6f, "div_output");
+
+    output.assign(expected_sum_rows.size(), 0.0f);
+    ggml_backend_tensor_get(sum_rows, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_sum_rows, 1.0e-6f, "sum_rows_output");
+    ggml_backend_tensor_get(clamp, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_clamp, 1.0e-6f, "clamp_output");
+
+    output.assign(expected_gather.size(), 0.0f);
+    ggml_backend_tensor_get(gather, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_gather, 1.0e-6f, "get_rows_output");
+
+    output.assign(expected_concat.size(), 0.0f);
+    ggml_backend_tensor_get(concat, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected_concat, 1.0e-6f, "concat_output");
+}
+
 } // namespace
 
 int main() {
@@ -813,6 +954,7 @@ int main() {
     run_mul_mat_id_q4_broadcast_case(backend.get(), dev);
     run_strided_rms_norm_case(backend.get(), dev);
     run_broadcast_mul_case(backend.get(), dev);
+    run_glue_ops_case(backend.get(), dev);
 
     ggml_backend_ptr cpu_backend(ggml_backend_cpu_init());
     GGML_ASSERT(cpu_backend != nullptr);
