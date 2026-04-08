@@ -69,8 +69,13 @@ struct ggml_backend_pyre_device_context {
     size_t memory_total = 0;
     ggml_backend_pyre_provider_policy policy;
     ggml_backend_pyre_op_provider rms_norm_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_f32_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q5_k_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q6_k_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q8_0_provider;
     uint32_t fallback_trace_count = 0;
     uint32_t mul_mat_fallback_trace_count = 0;
 };
@@ -391,12 +396,52 @@ static bool ggml_backend_pyre_load_mul_mat_vec_f16_provider(
         &device_context->mul_mat_vec_f16_provider);
 }
 
+static bool ggml_backend_pyre_load_mul_mat_vec_bf16_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_f32"),
+        &device_context->mul_mat_vec_bf16_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_f32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f32_f32"),
+        &device_context->mul_mat_vec_f32_provider);
+}
+
 static bool ggml_backend_pyre_load_mul_mat_vec_q4_k_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q4_k_f32"),
         &device_context->mul_mat_vec_q4_k_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q5_k_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q5_k_f32"),
+        &device_context->mul_mat_vec_q5_k_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q6_k_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q6_k_f32"),
+        &device_context->mul_mat_vec_q6_k_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q8_0_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q8_0_f32"),
+        &device_context->mul_mat_vec_q8_0_provider);
 }
 
 static bool ggml_backend_pyre_supports_rms_norm(
@@ -495,7 +540,83 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_f16(
            src0->ne[0] == src1->ne[0] &&
            op->ne[0] == src0->ne[1] &&
            op->ne[1] == src1->ne[1] &&
-           src1->ne[1] >= 1 && src1->ne[1] <= 8 &&
+           src1->ne[1] >= 1 && src1->ne[1] <= 16 &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_bf16(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    return device_context->mul_mat_vec_bf16_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           !device_context->policy.disable_mul_mat_vec &&
+           src0 && src1 &&
+           src0->type == GGML_TYPE_BF16 &&
+           src1->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           src0->ne[2] == 1 && src0->ne[3] == 1 &&
+           src1->ne[2] == 1 && src1->ne[3] == 1 &&
+           op->ne[2] == 1 && op->ne[3] == 1 &&
+           src0->ne[0] == src1->ne[0] &&
+           op->ne[0] == src0->ne[1] &&
+           op->ne[1] == src1->ne[1] &&
+           src1->ne[1] >= 1 && src1->ne[1] <= 16 &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_f32(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    return device_context->mul_mat_vec_f32_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           !device_context->policy.disable_mul_mat_vec &&
+           src0 && src1 &&
+           src0->type == GGML_TYPE_F32 &&
+           src1->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           src0->ne[2] == 1 && src0->ne[3] == 1 &&
+           src1->ne[2] == 1 && src1->ne[3] == 1 &&
+           op->ne[2] == 1 && op->ne[3] == 1 &&
+           src0->ne[0] == src1->ne[0] &&
+           op->ne[0] == src0->ne[1] &&
+           op->ne[1] == src1->ne[1] &&
+           src1->ne[1] >= 1 && src1->ne[1] <= 16 &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op,
+        ggml_type type,
+        const ggml_backend_pyre_op_provider & provider,
+        int64_t k_multiple) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    return provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           !device_context->policy.disable_mul_mat_vec &&
+           src0 && src1 &&
+           src0->type == type &&
+           src1->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           src0->ne[0] % k_multiple == 0 &&
+           src0->ne[2] == 1 && src0->ne[3] == 1 &&
+           src1->ne[2] == 1 && src1->ne[3] == 1 &&
+           op->ne[2] == 1 && op->ne[3] == 1 &&
+           src0->ne[0] == src1->ne[0] &&
+           op->ne[0] == src0->ne[1] &&
+           op->ne[1] == src1->ne[1] &&
+           src1->ne[1] >= 1 && src1->ne[1] <= 16 &&
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(src1) &&
            ggml_is_contiguous(op);
@@ -504,26 +625,29 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_f16(
 static bool ggml_backend_pyre_supports_mul_mat_vec_q4_k(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
-    const ggml_tensor * src0 = op->src[0];
-    const ggml_tensor * src1 = op->src[1];
-    return device_context->mul_mat_vec_q4_k_provider.kind ==
-               ggml_backend_pyre_provider_kind::direct_executable &&
-           !device_context->policy.disable_mul_mat_vec &&
-           src0 && src1 &&
-           src0->type == GGML_TYPE_Q4_K &&
-           src1->type == GGML_TYPE_F32 &&
-           op->type == GGML_TYPE_F32 &&
-           src0->ne[0] % 256 == 0 &&
-           src0->ne[2] == 1 && src0->ne[3] == 1 &&
-           src1->ne[2] == 1 && src1->ne[3] == 1 &&
-           op->ne[2] == 1 && op->ne[3] == 1 &&
-           src0->ne[0] == src1->ne[0] &&
-           op->ne[0] == src0->ne[1] &&
-           op->ne[1] == src1->ne[1] &&
-           src1->ne[1] >= 1 && src1->ne[1] <= 8 &&
-           ggml_is_contiguous(src0) &&
-           ggml_is_contiguous(src1) &&
-           ggml_is_contiguous(op);
+    return ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+        device_context, op, GGML_TYPE_Q4_K, device_context->mul_mat_vec_q4_k_provider, 256);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_q5_k(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    return ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+        device_context, op, GGML_TYPE_Q5_K, device_context->mul_mat_vec_q5_k_provider, 256);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_q6_k(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    return ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+        device_context, op, GGML_TYPE_Q6_K, device_context->mul_mat_vec_q6_k_provider, 256);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_q8_0(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    return ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+        device_context, op, GGML_TYPE_Q8_0, device_context->mul_mat_vec_q8_0_provider, 32);
 }
 
 static const char * ggml_backend_pyre_mul_mat_vec_unsupported_reason(
@@ -541,16 +665,42 @@ static const char * ggml_backend_pyre_mul_mat_vec_unsupported_reason(
     if (!src0 || !src1) {
         return "missing source tensor";
     }
-    if (src0->type != GGML_TYPE_F16 && src0->type != GGML_TYPE_Q4_K) {
-        return "src0 type is not F16 or Q4_K";
+    if (src0->type != GGML_TYPE_F16 &&
+        src0->type != GGML_TYPE_BF16 &&
+        src0->type != GGML_TYPE_F32 &&
+        src0->type != GGML_TYPE_Q4_K &&
+        src0->type != GGML_TYPE_Q5_K &&
+        src0->type != GGML_TYPE_Q6_K &&
+        src0->type != GGML_TYPE_Q8_0) {
+        return "src0 type has no Pyre matvec provider";
     }
     if (src0->type == GGML_TYPE_F16 &&
         device_context->mul_mat_vec_f16_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
         return "F16 provider unavailable";
     }
+    if (src0->type == GGML_TYPE_BF16 &&
+        device_context->mul_mat_vec_bf16_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
+        return "BF16 provider unavailable";
+    }
+    if (src0->type == GGML_TYPE_F32 &&
+        device_context->mul_mat_vec_f32_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
+        return "F32 provider unavailable";
+    }
     if (src0->type == GGML_TYPE_Q4_K &&
         device_context->mul_mat_vec_q4_k_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
         return "Q4_K provider unavailable";
+    }
+    if (src0->type == GGML_TYPE_Q5_K &&
+        device_context->mul_mat_vec_q5_k_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
+        return "Q5_K provider unavailable";
+    }
+    if (src0->type == GGML_TYPE_Q6_K &&
+        device_context->mul_mat_vec_q6_k_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
+        return "Q6_K provider unavailable";
+    }
+    if (src0->type == GGML_TYPE_Q8_0 &&
+        device_context->mul_mat_vec_q8_0_provider.kind != ggml_backend_pyre_provider_kind::direct_executable) {
+        return "Q8_0 provider unavailable";
     }
     if (src1->type != GGML_TYPE_F32) {
         return "src1 type is not F32";
@@ -558,8 +708,12 @@ static const char * ggml_backend_pyre_mul_mat_vec_unsupported_reason(
     if (op->type != GGML_TYPE_F32) {
         return "dst type is not F32";
     }
-    if (src0->type == GGML_TYPE_Q4_K && src0->ne[0] % 256 != 0) {
-        return "Q4_K k is not divisible by 256";
+    if ((src0->type == GGML_TYPE_Q4_K || src0->type == GGML_TYPE_Q5_K || src0->type == GGML_TYPE_Q6_K) &&
+        src0->ne[0] % 256 != 0) {
+        return "K-quant k is not divisible by 256";
+    }
+    if (src0->type == GGML_TYPE_Q8_0 && src0->ne[0] % 32 != 0) {
+        return "Q8_0 k is not divisible by 32";
     }
     if (src0->ne[2] != 1 || src0->ne[3] != 1 ||
         src1->ne[2] != 1 || src1->ne[3] != 1 ||
@@ -575,7 +729,7 @@ static const char * ggml_backend_pyre_mul_mat_vec_unsupported_reason(
     if (op->ne[1] != src1->ne[1]) {
         return "dst cols do not match src1 cols";
     }
-    if (src1->ne[1] < 1 || src1->ne[1] > 8) {
+    if (src1->ne[1] < 1 || src1->ne[1] > 16) {
         return "src1 column count is outside matvec limit";
     }
     if (!ggml_is_contiguous(src0)) {
@@ -594,7 +748,12 @@ static bool ggml_backend_pyre_supports_mul_mat_vec(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
     return ggml_backend_pyre_supports_mul_mat_vec_f16(device_context, op) ||
-           ggml_backend_pyre_supports_mul_mat_vec_q4_k(device_context, op);
+           ggml_backend_pyre_supports_mul_mat_vec_bf16(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_f32(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q4_k(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q5_k(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q6_k(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q8_0(device_context, op);
 }
 
 struct ggml_backend_pyre_mul_mat_vec_constants {
@@ -622,9 +781,33 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
         /* .cols = */ src1->ne[1],
     };
 
-    const auto & provider = src0->type == GGML_TYPE_Q4_K ?
-        context->device_context->mul_mat_vec_q4_k_provider :
-        context->device_context->mul_mat_vec_f16_provider;
+    const ggml_backend_pyre_op_provider * provider = nullptr;
+    switch (src0->type) {
+        case GGML_TYPE_F16:
+            provider = &context->device_context->mul_mat_vec_f16_provider;
+            break;
+        case GGML_TYPE_BF16:
+            provider = &context->device_context->mul_mat_vec_bf16_provider;
+            break;
+        case GGML_TYPE_F32:
+            provider = &context->device_context->mul_mat_vec_f32_provider;
+            break;
+        case GGML_TYPE_Q4_K:
+            provider = &context->device_context->mul_mat_vec_q4_k_provider;
+            break;
+        case GGML_TYPE_Q5_K:
+            provider = &context->device_context->mul_mat_vec_q5_k_provider;
+            break;
+        case GGML_TYPE_Q6_K:
+            provider = &context->device_context->mul_mat_vec_q6_k_provider;
+            break;
+        case GGML_TYPE_Q8_0:
+            provider = &context->device_context->mul_mat_vec_q8_0_provider;
+            break;
+        default:
+            return GGML_STATUS_FAILED;
+    }
+
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.rows),
@@ -632,7 +815,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
             1,
         },
         /* .workgroup_size = */ {
-            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : 256,
             1,
             1,
         },
@@ -641,8 +824,8 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
 
     if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
             context->stream,
-            provider.executable,
-            provider.export_ordinal,
+            provider->executable,
+            provider->export_ordinal,
             &config,
             &constants,
             sizeof(constants),
@@ -936,8 +1119,8 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                 }
                 ggml_backend_pyre_trace_provider(
                     context->device_context,
-                    "claim MUL_MAT provider=%s k=%" PRId64 " rows=%" PRId64 " cols=%" PRId64 "\n",
-                    node->src[0]->type == GGML_TYPE_Q4_K ? "pure_hip_q4_k" : "pure_hip_f16",
+                    "claim MUL_MAT provider=pure_hip_%s k=%" PRId64 " rows=%" PRId64 " cols=%" PRId64 "\n",
+                    ggml_type_name(node->src[0]->type),
                     node->src[0]->ne[0], node->src[0]->ne[1], node->src[1]->ne[1]);
                 if (ggml_backend_pyre_dispatch_mul_mat_vec_f16(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
@@ -1060,11 +1243,8 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             supported = false;
             break;
     }
-    if (context->policy.trace_providers && !supported && op->op != GGML_OP_NONE &&
-        context->fallback_trace_count < GGML_PYRE_TRACE_FALLBACK_LIMIT) {
-        context->fallback_trace_count++;
-        if (op->op == GGML_OP_MUL_MAT &&
-            context->mul_mat_fallback_trace_count < GGML_PYRE_TRACE_MUL_MAT_DETAIL_LIMIT) {
+    if (context->policy.trace_providers && !supported && op->op != GGML_OP_NONE) {
+        if (op->op == GGML_OP_MUL_MAT && context->mul_mat_fallback_trace_count < GGML_PYRE_TRACE_MUL_MAT_DETAIL_LIMIT) {
             context->mul_mat_fallback_trace_count++;
             ggml_backend_pyre_trace_provider(
                 context,
@@ -1073,13 +1253,14 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             ggml_backend_pyre_trace_tensor(context, "  src0", op->src[0]);
             ggml_backend_pyre_trace_tensor(context, "  src1", op->src[1]);
             ggml_backend_pyre_trace_tensor(context, "  dst", op);
-        } else {
+        } else if (context->fallback_trace_count < GGML_PYRE_TRACE_FALLBACK_LIMIT) {
+            context->fallback_trace_count++;
             ggml_backend_pyre_trace_provider(context, "fallback %s\n", ggml_op_desc(op));
-        }
-        if (context->fallback_trace_count == GGML_PYRE_TRACE_FALLBACK_LIMIT) {
-            ggml_backend_pyre_trace_provider(
-                context,
-                "fallback trace limit reached; suppressing additional fallback logs\n");
+            if (context->fallback_trace_count == GGML_PYRE_TRACE_FALLBACK_LIMIT) {
+                ggml_backend_pyre_trace_provider(
+                    context,
+                    "fallback trace limit reached; suppressing additional non-MUL_MAT fallback logs\n");
+            }
         }
     }
     return supported;
@@ -1194,8 +1375,13 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
         }
         if (device_context->policy.kernel_provider == ggml_backend_pyre_kernel_provider_mode::pure_hip &&
             !device_context->policy.disable_mul_mat_vec) {
+            (void) ggml_backend_pyre_load_mul_mat_vec_bf16_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f16_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q8_0_provider(device_context.get());
         }
 
         context->device_contexts.emplace_back(std::move(device_context));

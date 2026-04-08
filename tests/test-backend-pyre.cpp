@@ -93,6 +93,76 @@ static void expect_eq(const std::vector<float> & actual, const std::vector<float
     }
 }
 
+static void run_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev, ggml_type lhs_type, const char * label) {
+    constexpr int64_t k = QK_K;
+    constexpr int64_t rows = 2;
+    constexpr int64_t cols = 1;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * lhs = ggml_new_tensor_2d(ctx.get(), lhs_type, k, rows);
+    ggml_tensor * rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, k, cols);
+    ggml_tensor * dst = ggml_mul_mat(ctx.get(), lhs, rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> lhs_f32(rows * k);
+    std::vector<float> rhs_f32(cols * k);
+    std::vector<float> lhs_reference(lhs_f32.size());
+    for (size_t i = 0; i < lhs_f32.size(); ++i) {
+        lhs_f32[i] = static_cast<float>(static_cast<int>(i % 67) - 33) / 34.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 71) - 35) / 36.0f;
+    }
+
+    if (lhs_type == GGML_TYPE_F32) {
+        lhs_reference = lhs_f32;
+        ggml_backend_tensor_set(lhs, lhs_f32.data(), 0, lhs_f32.size() * sizeof(float));
+    } else if (lhs_type == GGML_TYPE_BF16) {
+        std::vector<ggml_bf16_t> lhs_bf16(lhs_f32.size());
+        ggml_fp32_to_bf16_row(lhs_f32.data(), lhs_bf16.data(), static_cast<int64_t>(lhs_bf16.size()));
+        for (size_t i = 0; i < lhs_reference.size(); ++i) {
+            lhs_reference[i] = ggml_bf16_to_fp32(lhs_bf16[i]);
+        }
+        ggml_backend_tensor_set(lhs, lhs_bf16.data(), 0, lhs_bf16.size() * sizeof(ggml_bf16_t));
+    } else if (lhs_type == GGML_TYPE_Q5_K) {
+        std::vector<block_q5_K> lhs_q5(rows);
+        for (int row = 0; row < rows; ++row) {
+            quantize_row_q5_K_ref(lhs_f32.data() + row * k, lhs_q5.data() + row, k);
+            dequantize_row_q5_K(lhs_q5.data() + row, lhs_reference.data() + row * k, k);
+        }
+        ggml_backend_tensor_set(lhs, lhs_q5.data(), 0, lhs_q5.size() * sizeof(block_q5_K));
+    } else if (lhs_type == GGML_TYPE_Q6_K) {
+        std::vector<block_q6_K> lhs_q6(rows);
+        for (int row = 0; row < rows; ++row) {
+            quantize_row_q6_K_ref(lhs_f32.data() + row * k, lhs_q6.data() + row, k);
+            dequantize_row_q6_K(lhs_q6.data() + row, lhs_reference.data() + row * k, k);
+        }
+        ggml_backend_tensor_set(lhs, lhs_q6.data(), 0, lhs_q6.size() * sizeof(block_q6_K));
+    } else if (lhs_type == GGML_TYPE_Q8_0) {
+        std::vector<block_q8_0> lhs_q8(rows * k / QK8_0);
+        for (int row = 0; row < rows; ++row) {
+            quantize_row_q8_0_ref(lhs_f32.data() + row * k, lhs_q8.data() + row * k / QK8_0, k);
+            dequantize_row_q8_0(lhs_q8.data() + row * k / QK8_0, lhs_reference.data() + row * k, k);
+        }
+        ggml_backend_tensor_set(lhs, lhs_q8.data(), 0, lhs_q8.size() * sizeof(block_q8_0));
+    } else {
+        std::abort();
+    }
+
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(rows * cols, -1.0f);
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, reference_mul_mat(lhs_reference, rhs_f32, k, rows, cols), 1.0e-4f, label);
+}
+
 } // namespace
 
 int main() {
@@ -235,6 +305,12 @@ int main() {
     std::vector<float> q4_output(2, -1.0f);
     ggml_backend_tensor_get(q4_dst, q4_output.data(), 0, q4_output.size() * sizeof(float));
     expect_near(q4_output, reference_mul_mat(q4_lhs_dequant, q4_rhs_f32, QK_K, 2, 1), 1.0e-4f, "q4_output");
+
+    run_matvec_case(backend.get(), dev, GGML_TYPE_F32, "f32_output");
+    run_matvec_case(backend.get(), dev, GGML_TYPE_BF16, "bf16_output");
+    run_matvec_case(backend.get(), dev, GGML_TYPE_Q5_K, "q5_output");
+    run_matvec_case(backend.get(), dev, GGML_TYPE_Q6_K, "q6_output");
+    run_matvec_case(backend.get(), dev, GGML_TYPE_Q8_0, "q8_output");
 
     ggml_backend_ptr cpu_backend(ggml_backend_cpu_init());
     GGML_ASSERT(cpu_backend != nullptr);

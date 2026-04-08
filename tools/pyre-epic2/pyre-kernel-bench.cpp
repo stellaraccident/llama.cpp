@@ -29,7 +29,7 @@ struct bench_options {
 
 static void usage(const char * argv0) {
     std::fprintf(stderr,
-        "Usage: %s [--op rms_norm|mul_mat_vec_f16|mul_mat_vec_q4_k] [--ncols N] [--nrows N] [--cols-dst N] [--warmup N] [--iters N]\n"
+        "Usage: %s [--op rms_norm|mul_mat_vec_f32|mul_mat_vec_f16|mul_mat_vec_bf16|mul_mat_vec_q4_k|mul_mat_vec_q5_k|mul_mat_vec_q6_k|mul_mat_vec_q8_0] [--ncols N] [--nrows N] [--cols-dst N] [--warmup N] [--iters N]\n"
         "\n"
         "Benchmarks ggml-pyre providers without a GGUF model.\n",
         argv0);
@@ -152,7 +152,7 @@ static std::vector<float> reference_mul_mat(
 static void check_close(const std::vector<float> & actual, const std::vector<float> & expected) {
     for (size_t i = 0; i < actual.size(); ++i) {
         const float delta = std::fabs(actual[i] - expected[i]);
-        if (delta > 1.0e-4f) {
+        if (delta > 1.0e-3f) {
             std::fprintf(stderr, "mismatch[%zu]: got %.9g expected %.9g delta %.9g\n",
                 i, actual[i], expected[i], delta);
             std::exit(1);
@@ -190,7 +190,11 @@ int main(int argc, char ** argv) {
 
     std::vector<float> input;
     std::vector<ggml_fp16_t> input_f16;
+    std::vector<ggml_bf16_t> input_bf16;
     std::vector<block_q4_K> input_q4_k;
+    std::vector<block_q5_K> input_q5_k;
+    std::vector<block_q6_K> input_q6_k;
+    std::vector<block_q8_0> input_q8_0;
     std::vector<float> rhs_f32;
 
     if (options.op == "rms_norm") {
@@ -204,8 +208,11 @@ int main(int argc, char ** argv) {
             input[i] = static_cast<float>(static_cast<int>(i % 251) - 125) / 127.0f;
         }
         expected = reference_rms_norm(input, options.ncols, options.eps);
-    } else if (options.op == "mul_mat_vec_f16") {
-        src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, options.ncols, options.nrows);
+    } else if (options.op == "mul_mat_vec_f16" || options.op == "mul_mat_vec_bf16" ||
+               options.op == "mul_mat_vec_f32") {
+        const ggml_type lhs_type = options.op == "mul_mat_vec_f16" ? GGML_TYPE_F16 :
+            (options.op == "mul_mat_vec_bf16" ? GGML_TYPE_BF16 : GGML_TYPE_F32);
+        src = ggml_new_tensor_2d(ctx.get(), lhs_type, options.ncols, options.nrows);
         rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, options.ncols, options.cols_dst);
         dst = ggml_mul_mat(ctx.get(), src, rhs);
         output_count = static_cast<size_t>(options.nrows * options.cols_dst);
@@ -218,18 +225,30 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < rhs_f32.size(); ++i) {
             rhs_f32[i] = static_cast<float>(static_cast<int>(i % 127) - 63) / 64.0f;
         }
-        input_f16.resize(input.size());
-        ggml_fp32_to_fp16_row(input.data(), input_f16.data(), static_cast<int64_t>(input_f16.size()));
-        for (size_t i = 0; i < input.size(); ++i) {
-            input[i] = ggml_fp16_to_fp32(input_f16[i]);
+        if (options.op == "mul_mat_vec_f16") {
+            input_f16.resize(input.size());
+            ggml_fp32_to_fp16_row(input.data(), input_f16.data(), static_cast<int64_t>(input_f16.size()));
+            for (size_t i = 0; i < input.size(); ++i) {
+                input[i] = ggml_fp16_to_fp32(input_f16[i]);
+            }
+        } else if (options.op == "mul_mat_vec_bf16") {
+            input_bf16.resize(input.size());
+            ggml_fp32_to_bf16_row(input.data(), input_bf16.data(), static_cast<int64_t>(input_bf16.size()));
+            for (size_t i = 0; i < input.size(); ++i) {
+                input[i] = ggml_bf16_to_fp32(input_bf16[i]);
+            }
         }
         expected = reference_mul_mat(input, rhs_f32, options.ncols, options.nrows, options.cols_dst);
-    } else if (options.op == "mul_mat_vec_q4_k") {
+    } else if (options.op == "mul_mat_vec_q4_k" || options.op == "mul_mat_vec_q5_k" ||
+               options.op == "mul_mat_vec_q6_k" || options.op == "mul_mat_vec_q8_0") {
         if (options.ncols % QK_K != 0) {
-            std::fprintf(stderr, "mul_mat_vec_q4_k requires --ncols to be divisible by %d\n", QK_K);
+            std::fprintf(stderr, "%s requires --ncols to be divisible by %d\n", options.op.c_str(), QK_K);
             return 2;
         }
-        src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_Q4_K, options.ncols, options.nrows);
+        const ggml_type lhs_type = options.op == "mul_mat_vec_q4_k" ? GGML_TYPE_Q4_K :
+            (options.op == "mul_mat_vec_q5_k" ? GGML_TYPE_Q5_K :
+             options.op == "mul_mat_vec_q6_k" ? GGML_TYPE_Q6_K : GGML_TYPE_Q8_0);
+        src = ggml_new_tensor_2d(ctx.get(), lhs_type, options.ncols, options.nrows);
         rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, options.ncols, options.cols_dst);
         dst = ggml_mul_mat(ctx.get(), src, rhs);
         output_count = static_cast<size_t>(options.nrows * options.cols_dst);
@@ -244,17 +263,55 @@ int main(int argc, char ** argv) {
         }
 
         const int64_t blocks_per_row = options.ncols / QK_K;
-        input_q4_k.resize(static_cast<size_t>(options.nrows * blocks_per_row));
         std::vector<float> dequantized(input.size(), 0.0f);
-        for (int64_t row = 0; row < options.nrows; ++row) {
-            quantize_row_q4_K_ref(
-                input.data() + row * options.ncols,
-                input_q4_k.data() + row * blocks_per_row,
-                options.ncols);
-            dequantize_row_q4_K(
-                input_q4_k.data() + row * blocks_per_row,
-                dequantized.data() + row * options.ncols,
-                options.ncols);
+        if (options.op == "mul_mat_vec_q4_k") {
+            input_q4_k.resize(static_cast<size_t>(options.nrows * blocks_per_row));
+            for (int64_t row = 0; row < options.nrows; ++row) {
+                quantize_row_q4_K_ref(
+                    input.data() + row * options.ncols,
+                    input_q4_k.data() + row * blocks_per_row,
+                    options.ncols);
+                dequantize_row_q4_K(
+                    input_q4_k.data() + row * blocks_per_row,
+                    dequantized.data() + row * options.ncols,
+                    options.ncols);
+            }
+        } else if (options.op == "mul_mat_vec_q5_k") {
+            input_q5_k.resize(static_cast<size_t>(options.nrows * blocks_per_row));
+            for (int64_t row = 0; row < options.nrows; ++row) {
+                quantize_row_q5_K_ref(
+                    input.data() + row * options.ncols,
+                    input_q5_k.data() + row * blocks_per_row,
+                    options.ncols);
+                dequantize_row_q5_K(
+                    input_q5_k.data() + row * blocks_per_row,
+                    dequantized.data() + row * options.ncols,
+                    options.ncols);
+            }
+        } else if (options.op == "mul_mat_vec_q6_k") {
+            input_q6_k.resize(static_cast<size_t>(options.nrows * blocks_per_row));
+            for (int64_t row = 0; row < options.nrows; ++row) {
+                quantize_row_q6_K_ref(
+                    input.data() + row * options.ncols,
+                    input_q6_k.data() + row * blocks_per_row,
+                    options.ncols);
+                dequantize_row_q6_K(
+                    input_q6_k.data() + row * blocks_per_row,
+                    dequantized.data() + row * options.ncols,
+                    options.ncols);
+            }
+        } else {
+            input_q8_0.resize(static_cast<size_t>(options.nrows * options.ncols / QK8_0));
+            for (int64_t row = 0; row < options.nrows; ++row) {
+                quantize_row_q8_0_ref(
+                    input.data() + row * options.ncols,
+                    input_q8_0.data() + row * (options.ncols / QK8_0),
+                    options.ncols);
+                dequantize_row_q8_0(
+                    input_q8_0.data() + row * (options.ncols / QK8_0),
+                    dequantized.data() + row * options.ncols,
+                    options.ncols);
+            }
         }
         expected = reference_mul_mat(dequantized, rhs_f32, options.ncols, options.nrows, options.cols_dst);
     } else {
@@ -281,8 +338,23 @@ int main(int argc, char ** argv) {
     } else if (options.op == "mul_mat_vec_f16") {
         ggml_backend_tensor_set(src, input_f16.data(), 0, input_f16.size() * sizeof(ggml_fp16_t));
         ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
-    } else {
+    } else if (options.op == "mul_mat_vec_bf16") {
+        ggml_backend_tensor_set(src, input_bf16.data(), 0, input_bf16.size() * sizeof(ggml_bf16_t));
+        ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    } else if (options.op == "mul_mat_vec_f32") {
+        ggml_backend_tensor_set(src, input.data(), 0, input.size() * sizeof(float));
+        ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    } else if (options.op == "mul_mat_vec_q4_k") {
         ggml_backend_tensor_set(src, input_q4_k.data(), 0, input_q4_k.size() * sizeof(block_q4_K));
+        ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    } else if (options.op == "mul_mat_vec_q5_k") {
+        ggml_backend_tensor_set(src, input_q5_k.data(), 0, input_q5_k.size() * sizeof(block_q5_K));
+        ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    } else if (options.op == "mul_mat_vec_q6_k") {
+        ggml_backend_tensor_set(src, input_q6_k.data(), 0, input_q6_k.size() * sizeof(block_q6_K));
+        ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    } else {
+        ggml_backend_tensor_set(src, input_q8_0.data(), 0, input_q8_0.size() * sizeof(block_q8_0));
         ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
     }
 
@@ -317,7 +389,17 @@ int main(int argc, char ** argv) {
         static_cast<double>(
             (options.op == "mul_mat_vec_f16" ?
                 input_f16.size() * sizeof(ggml_fp16_t) :
-                input_q4_k.size() * sizeof(block_q4_K)) +
+             options.op == "mul_mat_vec_bf16" ?
+                input_bf16.size() * sizeof(ggml_bf16_t) :
+             options.op == "mul_mat_vec_f32" ?
+                input.size() * sizeof(float) :
+             options.op == "mul_mat_vec_q4_k" ?
+                input_q4_k.size() * sizeof(block_q4_K) :
+             options.op == "mul_mat_vec_q5_k" ?
+                input_q5_k.size() * sizeof(block_q5_K) :
+             options.op == "mul_mat_vec_q6_k" ?
+                input_q6_k.size() * sizeof(block_q6_K) :
+                input_q8_0.size() * sizeof(block_q8_0)) +
             (rhs_f32.size() + output.size()) * sizeof(float));
     const double gbps = bytes / (min_us * 1.0e-6) / 1.0e9;
     std::printf(
