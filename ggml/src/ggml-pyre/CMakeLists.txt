@@ -42,6 +42,8 @@ if (Python3_Interpreter_FOUND)
             --output "${GGML_PYRE_KERNEL_CATALOG_CPP}"
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f32.hip.cpp"
@@ -50,6 +52,9 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q6_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q8_0.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/scale_f32.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f16.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/pyre_kernel_catalog.h"
         VERBATIM
     )
