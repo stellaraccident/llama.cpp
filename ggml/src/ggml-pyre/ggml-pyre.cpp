@@ -119,6 +119,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider concat_f32_provider;
     ggml_backend_pyre_op_provider soft_max_f32_provider;
     ggml_backend_pyre_op_provider soft_max_f32_mask_provider;
+    ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_decode_provider;
     ggml_backend_pyre_op_provider argsort_f32_provider;
     ggml_backend_pyre_op_provider rope_f32_provider;
     ggml_backend_pyre_op_provider rope_set_rows_f32_f16_provider;
@@ -718,6 +719,14 @@ static bool ggml_backend_pyre_load_soft_max_f32_mask_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_soft_max_f32_mask"),
         &device_context->soft_max_f32_mask_provider);
+}
+
+static bool ggml_backend_pyre_load_flash_attn_ext_f32_f16_decode_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_f16_decode"),
+        &device_context->flash_attn_ext_f32_f16_decode_provider);
 }
 
 static bool ggml_backend_pyre_load_argsort_f32_provider(
@@ -1415,6 +1424,55 @@ static bool ggml_backend_pyre_supports_soft_max_f32(
              src1->ne[1] >= src0->ne[1] &&
              src0->ne[2] % src1->ne[2] == 0 &&
              src0->ne[3] % src1->ne[3] == 0));
+}
+
+static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * q = op->src[0];
+    const ggml_tensor * k = op->src[1];
+    const ggml_tensor * v = op->src[2];
+    const ggml_tensor * mask = op->src[3];
+    const ggml_tensor * sinks = op->src[4];
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
+    std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(op->op_params) + 1, sizeof(float));
+    std::memcpy(&logit_softcap, reinterpret_cast<const int32_t *>(op->op_params) + 2, sizeof(float));
+    return device_context->flash_attn_ext_f32_f16_decode_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           q && k && v && mask && !sinks &&
+           q->type == GGML_TYPE_F32 &&
+           k->type == GGML_TYPE_F16 &&
+           v->type == GGML_TYPE_F16 &&
+           mask->type == GGML_TYPE_F16 &&
+           op->type == GGML_TYPE_F32 &&
+           max_bias == 0.0f &&
+           logit_softcap == 0.0f &&
+           q->ne[0] == k->ne[0] &&
+           q->ne[0] == v->ne[0] &&
+           q->ne[0] == op->ne[0] &&
+           q->ne[3] == 1 &&
+           q->ne[1] <= 16 &&
+           k->ne[1] == v->ne[1] &&
+           k->ne[1] <= 1024 &&
+           k->ne[2] == v->ne[2] &&
+           k->ne[3] == 1 &&
+           v->ne[3] == 1 &&
+           q->ne[2] == op->ne[1] &&
+           q->ne[2] % k->ne[2] == 0 &&
+           q->ne[1] == op->ne[2] &&
+           op->ne[3] == 1 &&
+           mask->ne[0] == k->ne[1] &&
+           mask->ne[1] >= q->ne[1] &&
+           mask->ne[2] == 1 &&
+           mask->ne[3] == 1 &&
+           q->nb[0] == sizeof(float) &&
+           k->nb[0] == ggml_type_size(k->type) &&
+           v->nb[0] == ggml_type_size(v->type) &&
+           mask->nb[0] == ggml_type_size(mask->type) &&
+           op->nb[0] == sizeof(float) &&
+           ggml_is_contiguous(mask) &&
+           ggml_is_contiguous(op);
 }
 
 static bool ggml_backend_pyre_supports_argsort_f32(
@@ -2302,6 +2360,26 @@ struct ggml_backend_pyre_soft_max_f32_constants {
     int64_t mask_nb3;
     int64_t mask_ne2;
     int64_t mask_ne3;
+    float scale;
+    int32_t _pad;
+};
+
+struct ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants {
+    int64_t D;
+    int64_t KV;
+    int64_t N;
+    int64_t H;
+    int64_t H_KV;
+    int64_t q_nb1;
+    int64_t q_nb2;
+    int64_t k_nb1;
+    int64_t k_nb2;
+    int64_t v_nb1;
+    int64_t v_nb2;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+    int64_t mask_nb0;
+    int64_t mask_nb1;
     float scale;
     int32_t _pad;
 };
@@ -3413,6 +3491,79 @@ static ggml_status ggml_backend_pyre_dispatch_soft_max_f32(
         return GGML_STATUS_FAILED;
     }
     context->dispatch_count++;
+    context->soft_max_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * q = dst->src[0];
+    const ggml_tensor * k = dst->src[1];
+    const ggml_tensor * v = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+    pyre_buffer_ref_t bindings[5] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(q, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(k, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(v, &bindings[2]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(mask, &bindings[3]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[4])) {
+        GGML_LOG_ERROR("%s: FLASH_ATTN_EXT tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    float scale = 1.0f;
+    std::memcpy(&scale, reinterpret_cast<const int32_t *>(dst->op_params), sizeof(float));
+    ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants constants = {
+        /* .D        = */ q->ne[0],
+        /* .KV       = */ k->ne[1],
+        /* .N        = */ q->ne[1],
+        /* .H        = */ q->ne[2],
+        /* .H_KV     = */ k->ne[2],
+        /* .q_nb1    = */ static_cast<int64_t>(q->nb[1]),
+        /* .q_nb2    = */ static_cast<int64_t>(q->nb[2]),
+        /* .k_nb1    = */ static_cast<int64_t>(k->nb[1]),
+        /* .k_nb2    = */ static_cast<int64_t>(k->nb[2]),
+        /* .v_nb1    = */ static_cast<int64_t>(v->nb[1]),
+        /* .v_nb2    = */ static_cast<int64_t>(v->nb[2]),
+        /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2  = */ static_cast<int64_t>(dst->nb[2]),
+        /* .mask_nb0 = */ static_cast<int64_t>(mask->nb[0]),
+        /* .mask_nb1 = */ static_cast<int64_t>(mask->nb[1]),
+        /* .scale    = */ scale,
+        /* ._pad     = */ 0,
+    };
+
+    const auto & provider = context->device_context->flash_attn_ext_f32_f16_decode_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.H),
+            static_cast<uint32_t>(constants.N),
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            5,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->mul_mat_vec_count++;
     context->soft_max_count++;
 
     return GGML_STATUS_SUCCESS;
@@ -6155,6 +6306,21 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            case GGML_OP_FLASH_ATTN_EXT:
+                if (!ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(context->device_context, node)) {
+                    GGML_LOG_ERROR("%s: FLASH_ATTN_EXT shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim FLASH_ATTN_EXT provider=pure_hip_f32_f16_decode D=%" PRId64
+                    " KV=%" PRId64 " N=%" PRId64 " H=%" PRId64 " H_KV=%" PRId64 "\n",
+                    node->src[0]->ne[0], node->src[1]->ne[1], node->src[0]->ne[1],
+                    node->src[0]->ne[2], node->src[1]->ne[2]);
+                if (ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                break;
             case GGML_OP_ARGSORT:
                 if (!ggml_backend_pyre_supports_argsort_f32(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: ARGSORT shape/type/layout is unsupported\n", __func__);
@@ -6454,6 +6620,9 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SOFT_MAX:
             supported = ggml_backend_pyre_supports_soft_max_f32(context, op);
             break;
+        case GGML_OP_FLASH_ATTN_EXT:
+            supported = ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(context, op);
+            break;
         case GGML_OP_ARGSORT:
             supported = ggml_backend_pyre_supports_argsort_f32(context, op);
             break;
@@ -6508,6 +6677,8 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             ggml_backend_pyre_trace_tensor(context, "  src0", op->src[0]);
             ggml_backend_pyre_trace_tensor(context, "  src1", op->src[1]);
             ggml_backend_pyre_trace_tensor(context, "  src2", op->src[2]);
+            ggml_backend_pyre_trace_tensor(context, "  src3", op->src[3]);
+            ggml_backend_pyre_trace_tensor(context, "  src4", op->src[4]);
             ggml_backend_pyre_trace_tensor(context, "  dst", op);
         } else if (context->fallback_trace_count < GGML_PYRE_TRACE_FALLBACK_LIMIT) {
             context->fallback_trace_count++;
@@ -6515,6 +6686,8 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             ggml_backend_pyre_trace_tensor(context, "  src0", op->src[0]);
             ggml_backend_pyre_trace_tensor(context, "  src1", op->src[1]);
             ggml_backend_pyre_trace_tensor(context, "  src2", op->src[2]);
+            ggml_backend_pyre_trace_tensor(context, "  src3", op->src[3]);
+            ggml_backend_pyre_trace_tensor(context, "  src4", op->src[4]);
             ggml_backend_pyre_trace_tensor(context, "  dst", op);
             if (context->fallback_trace_count == GGML_PYRE_TRACE_FALLBACK_LIMIT) {
                 ggml_backend_pyre_trace_provider(
@@ -6658,6 +6831,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_concat_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_soft_max_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_soft_max_f32_mask_provider(device_context.get());
+            (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_argsort_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rope_set_rows_f32_f16_provider(device_context.get());
