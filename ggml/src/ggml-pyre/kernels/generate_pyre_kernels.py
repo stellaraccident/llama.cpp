@@ -219,8 +219,8 @@ KERNELS = [
         "name": "pyre_flash_attn_ext_f32_f16_decode",
         "source": "flash_attn_ext_f32_f16_decode.hip.cpp",
         "format": "FPIH",
-        "binding_count": 5,
-        "constants_size": 152,
+        "binding_count": 6,
+        "constants_size": 160,
         "workgroup_size": (256, 1, 1),
     },
     {

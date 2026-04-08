@@ -1438,11 +1438,14 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_decode(
     std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(op->op_params) + 1, sizeof(float));
     return device_context->flash_attn_ext_f32_f16_decode_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
-           q && k && v && !sinks &&
+           q && k && v &&
            q->type == GGML_TYPE_F32 &&
            k->type == GGML_TYPE_F16 &&
            v->type == GGML_TYPE_F16 &&
            (!mask || mask->type == GGML_TYPE_F16) &&
+           (!sinks || (sinks->type == GGML_TYPE_F32 &&
+                       sinks->ne[0] == q->ne[2] &&
+                       ggml_is_contiguous(sinks))) &&
            op->type == GGML_TYPE_F32 &&
            (max_bias == 0.0f || mask) &&
            q->ne[0] == k->ne[0] &&
@@ -2387,6 +2390,7 @@ struct ggml_backend_pyre_flash_attn_ext_f32_f16_decode_constants {
     float m1;
     float logit_softcap;
     int32_t n_head_log2;
+    int32_t has_sinks;
 };
 
 struct ggml_backend_pyre_argsort_f32_constants {
@@ -3508,17 +3512,22 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
     const ggml_tensor * k = dst->src[1];
     const ggml_tensor * v = dst->src[2];
     const ggml_tensor * mask = dst->src[3];
-    pyre_buffer_ref_t bindings[5] = {};
+    const ggml_tensor * sinks = dst->src[4];
+    pyre_buffer_ref_t bindings[6] = {};
     if (!ggml_backend_pyre_tensor_buffer_ref(q, &bindings[0]) ||
         !ggml_backend_pyre_tensor_buffer_ref(k, &bindings[1]) ||
         !ggml_backend_pyre_tensor_buffer_ref(v, &bindings[2]) ||
         (mask && !ggml_backend_pyre_tensor_buffer_ref(mask, &bindings[3])) ||
-        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[4])) {
+        (sinks && !ggml_backend_pyre_tensor_buffer_ref(sinks, &bindings[4])) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[5])) {
         GGML_LOG_ERROR("%s: FLASH_ATTN_EXT tensor is not backed by a PYRE buffer\n", __func__);
         return GGML_STATUS_FAILED;
     }
     if (!mask) {
         bindings[3] = bindings[0];
+    }
+    if (!sinks) {
+        bindings[4] = bindings[0];
     }
 
     float scale = 1.0f;
@@ -3557,6 +3566,7 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .m1       = */ m1,
         /* .logit_softcap = */ logit_softcap,
         /* .n_head_log2 = */ n_head_log2,
+        /* .has_sinks = */ sinks ? 1 : 0,
     };
 
     const auto & provider = context->device_context->flash_attn_ext_f32_f16_decode_provider;
@@ -3582,7 +3592,7 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
             &constants,
             sizeof(constants),
             bindings,
-            5,
+            6,
             PYRE_DISPATCH_FLAG_NONE))) {
         return GGML_STATUS_FAILED;
     }

@@ -27,6 +27,7 @@ struct pyre_flash_attn_ext_f32_f16_decode_constants {
     float m1;
     float logit_softcap;
     int n_head_log2;
+    int has_sinks;
 };
 
 static __device__ __forceinline__ float pyre_load_f16(const __half * base, long long byte_offset) {
@@ -46,7 +47,7 @@ static __device__ __forceinline__ double pyre_alibi_slope(
 }
 
 extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
-        const float * q, const __half * k, const __half * v, const __half * mask, float * dst,
+        const float * q, const __half * k, const __half * v, const __half * mask, const float * sinks, float * dst,
         pyre_flash_attn_ext_f32_f16_decode_constants c) {
     __shared__ float logits[1024];
     __shared__ double partial[256];
@@ -65,8 +66,9 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
     const char * v_head = reinterpret_cast<const char *>(v) + kv_head * c.v_nb2;
     const char * mask_row = reinterpret_cast<const char *>(mask) + token * c.mask_nb1;
     const double slope = pyre_alibi_slope(c, head);
+    const double sink = c.has_sinks ? static_cast<double>(sinks[head]) : -DBL_MAX;
 
-    double local_max = -DBL_MAX;
+    double local_max = sink;
     for (long long t = tid; t < c.KV; t += 256) {
         double score = 0.0;
         const char * k_row = k_head + t * c.k_nb1;
@@ -95,7 +97,7 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
     }
     const double max_val = partial[0];
 
-    double local_sum = 0.0;
+    double local_sum = c.has_sinks && tid == 0 ? exp(sink - max_val) : 0.0;
     for (long long t = tid; t < c.KV; t += 256) {
         const double prob = exp(static_cast<double>(logits[t]) - max_val);
         logits[t] = static_cast<float>(prob);
