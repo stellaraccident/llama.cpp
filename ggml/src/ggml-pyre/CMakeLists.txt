@@ -1,6 +1,7 @@
 message(STATUS "Using PYRE backend")
 
 find_package(pyre CONFIG REQUIRED)
+find_package(Python3 COMPONENTS Interpreter)
 
 if (NOT GGML_PYRE_ROCM_PATH)
     set(GGML_PYRE_ROCM_PATH "/srv/vm-shared/projects/pyre-workspace/build/therock/dist/rocm")
@@ -15,17 +16,50 @@ if (NOT GGML_PYRE_CLANGXX)
                 )
 endif()
 
+if (NOT GGML_PYRE_AMDGPU_TARGET)
+    if (AMDGPU_TARGETS)
+        list(GET AMDGPU_TARGETS 0 GGML_PYRE_AMDGPU_TARGET)
+    elseif (DEFINED ENV{AMDGPU_TARGETS})
+        set(GGML_PYRE_AMDGPU_TARGET "$ENV{AMDGPU_TARGETS}")
+    else()
+        set(GGML_PYRE_AMDGPU_TARGET "gfx1100")
+    endif()
+endif()
+
+set(GGML_PYRE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(GGML_PYRE_KERNEL_CATALOG_CPP "${GGML_PYRE_GENERATED_DIR}/pyre_kernel_catalog.cpp")
+file(MAKE_DIRECTORY "${GGML_PYRE_GENERATED_DIR}")
+
+if (Python3_Interpreter_FOUND)
+    add_custom_command(
+        OUTPUT "${GGML_PYRE_KERNEL_CATALOG_CPP}"
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
+            --clang "${GGML_PYRE_CLANGXX}"
+            --rocm-path "${GGML_PYRE_ROCM_PATH}"
+            --arch "${GGML_PYRE_AMDGPU_TARGET}"
+            --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
+            --output "${GGML_PYRE_KERNEL_CATALOG_CPP}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q4_k.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/pyre_kernel_catalog.h"
+        VERBATIM
+    )
+else()
+    file(WRITE "${GGML_PYRE_KERNEL_CATALOG_CPP}"
+        "// Generated fallback: Python3 not found.\n"
+        "#include \"kernels/pyre_kernel_catalog.h\"\n"
+        "const ggml_pyre_kernel_entry * ggml_pyre_kernel_catalog_entries(size_t * count) { if (count) { *count = 0; } return nullptr; }\n")
+endif()
+
 ggml_add_backend_library(ggml-pyre
                          ggml-pyre.cpp
+                         "${GGML_PYRE_KERNEL_CATALOG_CPP}"
                          ../../include/ggml-pyre.h
                         )
 
 target_link_libraries(ggml-pyre PRIVATE pyre::pyre)
-
-if (GGML_PYRE_CLANGXX)
-    target_compile_definitions(ggml-pyre PRIVATE GGML_PYRE_DEFAULT_CLANGXX="${GGML_PYRE_CLANGXX}")
-endif()
-
-if (GGML_PYRE_ROCM_PATH)
-    target_compile_definitions(ggml-pyre PRIVATE GGML_PYRE_DEFAULT_ROCM_PATH="${GGML_PYRE_ROCM_PATH}")
-endif()
+target_include_directories(ggml-pyre PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${GGML_PYRE_GENERATED_DIR}")

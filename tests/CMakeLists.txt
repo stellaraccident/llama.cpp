@@ -240,6 +240,7 @@ llama_build_and_test(test-gguf.cpp)
 llama_build_and_test(test-backend-ops.cpp)
 if (GGML_PYRE)
     llama_build_and_test(test-backend-pyre.cpp)
+    target_include_directories(test-backend-pyre PRIVATE ../ggml/src)
 endif()
 
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")

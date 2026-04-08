@@ -3,6 +3,7 @@
 #include <ggml-cpu.h>
 #include <ggml-cpp.h>
 #include <ggml-pyre.h>
+#include <ggml-quants.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +60,24 @@ static std::vector<float> reference_add(const std::vector<float> & lhs, const st
     std::vector<float> output(lhs.size(), 0.0f);
     for (size_t i = 0; i < lhs.size(); ++i) {
         output[i] = lhs[i] + rhs[i];
+    }
+    return output;
+}
+
+static std::vector<float> reference_mul_mat(
+        const std::vector<float> & lhs, const std::vector<float> & rhs,
+        int64_t k, int64_t rows, int64_t cols) {
+    GGML_ASSERT(static_cast<int64_t>(lhs.size()) == k * rows);
+    GGML_ASSERT(static_cast<int64_t>(rhs.size()) == k * cols);
+    std::vector<float> output(static_cast<size_t>(rows * cols), 0.0f);
+    for (int64_t col = 0; col < cols; ++col) {
+        for (int64_t row = 0; row < rows; ++row) {
+            float sum = 0.0f;
+            for (int64_t i = 0; i < k; ++i) {
+                sum += lhs[static_cast<size_t>(row * k + i)] * rhs[static_cast<size_t>(col * k + i)];
+            }
+            output[static_cast<size_t>(col * rows + row)] = sum;
+        }
     }
     return output;
 }
@@ -149,6 +168,73 @@ int main() {
     std::vector<float> rms_output(rms_input.size(), -1.0f);
     ggml_backend_tensor_get(rms_dst, rms_output.data(), 0, rms_output.size() * sizeof(float));
     expect_near(rms_output, reference_rms_norm(rms_input, 4, 1.0e-6f), 1.0e-5f, "rms_output");
+
+    ggml_context_ptr mat_ctx = make_context();
+    ggml_tensor * mat_lhs = ggml_new_tensor_2d(mat_ctx.get(), GGML_TYPE_F16, 4, 3);
+    ggml_tensor * mat_rhs = ggml_new_tensor_2d(mat_ctx.get(), GGML_TYPE_F32, 4, 2);
+    ggml_tensor * mat_dst = ggml_mul_mat(mat_ctx.get(), mat_lhs, mat_rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, mat_dst));
+
+    ggml_cgraph * mat_graph = ggml_new_graph(mat_ctx.get());
+    ggml_build_forward_expand(mat_graph, mat_dst);
+
+    ggml_backend_buffer_ptr mat_buffer(ggml_backend_alloc_ctx_tensors(mat_ctx.get(), backend.get()));
+    GGML_ASSERT(mat_buffer != nullptr);
+
+    const std::vector<float> mat_lhs_f32 = {
+        1.0f, 2.0f, 3.0f, 4.0f,
+        2.0f, 3.0f, 4.0f, 5.0f,
+        3.0f, 4.0f, 5.0f, 6.0f,
+    };
+    const std::vector<float> mat_rhs_f32 = {
+        1.0f, 0.5f, 0.25f, 0.125f,
+        -1.0f, 0.25f, -0.5f, 2.0f,
+    };
+    std::vector<ggml_fp16_t> mat_lhs_f16(mat_lhs_f32.size());
+    ggml_fp32_to_fp16_row(mat_lhs_f32.data(), mat_lhs_f16.data(), static_cast<int64_t>(mat_lhs_f16.size()));
+    ggml_backend_tensor_set(mat_lhs, mat_lhs_f16.data(), 0, mat_lhs_f16.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(mat_rhs, mat_rhs_f32.data(), 0, mat_rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend.get(), mat_graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> mat_output(6, -1.0f);
+    ggml_backend_tensor_get(mat_dst, mat_output.data(), 0, mat_output.size() * sizeof(float));
+    expect_near(mat_output, reference_mul_mat(mat_lhs_f32, mat_rhs_f32, 4, 3, 2), 1.0e-5f, "mat_output");
+
+    ggml_context_ptr q4_ctx = make_context();
+    ggml_tensor * q4_lhs = ggml_new_tensor_2d(q4_ctx.get(), GGML_TYPE_Q4_K, QK_K, 2);
+    ggml_tensor * q4_rhs = ggml_new_tensor_2d(q4_ctx.get(), GGML_TYPE_F32, QK_K, 1);
+    ggml_tensor * q4_dst = ggml_mul_mat(q4_ctx.get(), q4_lhs, q4_rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, q4_dst));
+
+    ggml_cgraph * q4_graph = ggml_new_graph(q4_ctx.get());
+    ggml_build_forward_expand(q4_graph, q4_dst);
+
+    ggml_backend_buffer_ptr q4_buffer(ggml_backend_alloc_ctx_tensors(q4_ctx.get(), backend.get()));
+    GGML_ASSERT(q4_buffer != nullptr);
+
+    std::vector<float> q4_lhs_f32(2 * QK_K);
+    std::vector<float> q4_rhs_f32(QK_K);
+    for (size_t i = 0; i < q4_lhs_f32.size(); ++i) {
+        q4_lhs_f32[i] = static_cast<float>(static_cast<int>(i % 67) - 33) / 34.0f;
+    }
+    for (size_t i = 0; i < q4_rhs_f32.size(); ++i) {
+        q4_rhs_f32[i] = static_cast<float>(static_cast<int>(i % 71) - 35) / 36.0f;
+    }
+
+    std::vector<block_q4_K> q4_lhs_data(2);
+    std::vector<float> q4_lhs_dequant(q4_lhs_f32.size());
+    for (int row = 0; row < 2; ++row) {
+        quantize_row_q4_K_ref(q4_lhs_f32.data() + row * QK_K, q4_lhs_data.data() + row, QK_K);
+        dequantize_row_q4_K(q4_lhs_data.data() + row, q4_lhs_dequant.data() + row * QK_K, QK_K);
+    }
+
+    ggml_backend_tensor_set(q4_lhs, q4_lhs_data.data(), 0, q4_lhs_data.size() * sizeof(block_q4_K));
+    ggml_backend_tensor_set(q4_rhs, q4_rhs_f32.data(), 0, q4_rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend.get(), q4_graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> q4_output(2, -1.0f);
+    ggml_backend_tensor_get(q4_dst, q4_output.data(), 0, q4_output.size() * sizeof(float));
+    expect_near(q4_output, reference_mul_mat(q4_lhs_dequant, q4_rhs_f32, QK_K, 2, 1), 1.0e-4f, "q4_output");
 
     ggml_backend_ptr cpu_backend(ggml_backend_cpu_init());
     GGML_ASSERT(cpu_backend != nullptr);
