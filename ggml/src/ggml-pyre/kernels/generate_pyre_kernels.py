@@ -152,6 +152,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_gated_delta_net_f32",
+        "source": "gated_delta_net_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 7,
+        "constants_size": 200,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_f16_f32",
         "source": "mul_mat_vec_f16.hip.cpp",
         "format": "FPIH",

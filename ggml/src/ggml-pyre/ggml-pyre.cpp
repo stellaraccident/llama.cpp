@@ -87,6 +87,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider get_rows_f32_provider;
     ggml_backend_pyre_op_provider concat_f32_provider;
     ggml_backend_pyre_op_provider ssm_conv_provider;
+    ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_provider;
@@ -151,6 +152,7 @@ struct ggml_backend_pyre_context {
     uint64_t unary_count = 0;
     uint64_t reduction_count = 0;
     uint64_t ssm_conv_count = 0;
+    uint64_t gated_delta_net_count = 0;
     uint64_t metadata_count = 0;
     uint64_t synchronize_count = 0;
 };
@@ -553,6 +555,14 @@ static bool ggml_backend_pyre_load_ssm_conv_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_ssm_conv_f32"),
         &device_context->ssm_conv_provider);
+}
+
+static bool ggml_backend_pyre_load_gated_delta_net_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_f32"),
+        &device_context->gated_delta_net_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_vec_f16_provider(
@@ -965,6 +975,65 @@ static bool ggml_backend_pyre_supports_ssm_conv(
            op->nb[0] == sizeof(float);
 }
 
+static bool ggml_backend_pyre_supports_gated_delta_net(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * q = op->src[0];
+    const ggml_tensor * k = op->src[1];
+    const ggml_tensor * v = op->src[2];
+    const ggml_tensor * g = op->src[3];
+    const ggml_tensor * beta = op->src[4];
+    const ggml_tensor * state = op->src[5];
+    if (device_context->gated_delta_net_provider.kind != ggml_backend_pyre_provider_kind::direct_executable ||
+        !q || !k || !v || !g || !beta || !state) {
+        return false;
+    }
+
+    const int64_t S_v = v->ne[0];
+    const int64_t H = v->ne[1];
+    const int64_t n_tokens = v->ne[2];
+    const int64_t n_seqs = v->ne[3];
+    return q->type == GGML_TYPE_F32 &&
+           k->type == GGML_TYPE_F32 &&
+           v->type == GGML_TYPE_F32 &&
+           g->type == GGML_TYPE_F32 &&
+           beta->type == GGML_TYPE_F32 &&
+           state->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           S_v > 0 && S_v <= 256 &&
+           H > 0 &&
+           n_tokens > 0 &&
+           n_seqs > 0 &&
+           q->ne[0] == S_v &&
+           k->ne[0] == S_v &&
+           q->ne[1] == k->ne[1] &&
+           q->ne[1] > 0 &&
+           H % q->ne[1] == 0 &&
+           q->ne[2] == n_tokens &&
+           k->ne[2] == n_tokens &&
+           q->ne[3] > 0 &&
+           k->ne[3] > 0 &&
+           n_seqs % q->ne[3] == 0 &&
+           n_seqs % k->ne[3] == 0 &&
+           (g->ne[0] == 1 || g->ne[0] == S_v) &&
+           g->ne[1] == H &&
+           g->ne[2] == n_tokens &&
+           g->ne[3] == n_seqs &&
+           beta->ne[0] == 1 &&
+           beta->ne[1] == H &&
+           beta->ne[2] == n_tokens &&
+           beta->ne[3] == n_seqs &&
+           ggml_nelements(state) == S_v * S_v * H * n_seqs &&
+           ggml_nelements(op) == S_v * H * n_tokens * n_seqs + S_v * S_v * H * n_seqs &&
+           ggml_is_contiguous_rows(q) &&
+           ggml_is_contiguous_rows(k) &&
+           ggml_is_contiguous_rows(v) &&
+           ggml_is_contiguous(g) &&
+           ggml_is_contiguous(beta) &&
+           ggml_is_contiguous(state) &&
+           ggml_is_contiguous(op);
+}
+
 struct ggml_backend_pyre_rms_norm_constants {
     int64_t ncols;
     int64_t nrows;
@@ -1127,6 +1196,35 @@ struct ggml_backend_pyre_ssm_conv_constants {
     int64_t weight_nb1;
     int64_t dst_nb1;
     int64_t dst_nb2;
+};
+
+struct ggml_backend_pyre_gated_delta_net_constants {
+    int64_t S_v;
+    int64_t H;
+    int64_t n_tokens;
+    int64_t n_seqs;
+    int64_t neq1;
+    int64_t nek1;
+    int64_t rq3;
+    int64_t rk3;
+    int64_t q_nb1;
+    int64_t q_nb2;
+    int64_t q_nb3;
+    int64_t k_nb1;
+    int64_t k_nb2;
+    int64_t k_nb3;
+    int64_t v_nb1;
+    int64_t v_nb2;
+    int64_t v_nb3;
+    int64_t g_ne0;
+    int64_t g_nb1;
+    int64_t g_nb2;
+    int64_t g_nb3;
+    int64_t beta_nb1;
+    int64_t beta_nb2;
+    int64_t beta_nb3;
+    float scale;
+    int32_t _pad;
 };
 
 static ggml_status ggml_backend_pyre_dispatch_binary_elementwise_f32(
@@ -1909,6 +2007,92 @@ static ggml_status ggml_backend_pyre_dispatch_ssm_conv(
     }
     context->dispatch_count++;
     context->ssm_conv_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * q = dst->src[0];
+    const ggml_tensor * k = dst->src[1];
+    const ggml_tensor * v = dst->src[2];
+    const ggml_tensor * g = dst->src[3];
+    const ggml_tensor * beta = dst->src[4];
+    const ggml_tensor * state = dst->src[5];
+    pyre_buffer_ref_t bindings[7] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(q, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(k, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(v, &bindings[2]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(g, &bindings[3]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(beta, &bindings[4]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(state, &bindings[5]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[6])) {
+        GGML_LOG_ERROR("%s: GATED_DELTA_NET tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_gated_delta_net_constants constants = {
+        /* .S_v      = */ v->ne[0],
+        /* .H        = */ v->ne[1],
+        /* .n_tokens = */ v->ne[2],
+        /* .n_seqs   = */ v->ne[3],
+        /* .neq1     = */ q->ne[1],
+        /* .nek1     = */ k->ne[1],
+        /* .rq3      = */ v->ne[3] / q->ne[3],
+        /* .rk3      = */ v->ne[3] / k->ne[3],
+        /* .q_nb1    = */ static_cast<int64_t>(q->nb[1]),
+        /* .q_nb2    = */ static_cast<int64_t>(q->nb[2]),
+        /* .q_nb3    = */ static_cast<int64_t>(q->nb[3]),
+        /* .k_nb1    = */ static_cast<int64_t>(k->nb[1]),
+        /* .k_nb2    = */ static_cast<int64_t>(k->nb[2]),
+        /* .k_nb3    = */ static_cast<int64_t>(k->nb[3]),
+        /* .v_nb1    = */ static_cast<int64_t>(v->nb[1]),
+        /* .v_nb2    = */ static_cast<int64_t>(v->nb[2]),
+        /* .v_nb3    = */ static_cast<int64_t>(v->nb[3]),
+        /* .g_ne0    = */ g->ne[0],
+        /* .g_nb1    = */ static_cast<int64_t>(g->nb[1]),
+        /* .g_nb2    = */ static_cast<int64_t>(g->nb[2]),
+        /* .g_nb3    = */ static_cast<int64_t>(g->nb[3]),
+        /* .beta_nb1 = */ static_cast<int64_t>(beta->nb[1]),
+        /* .beta_nb2 = */ static_cast<int64_t>(beta->nb[2]),
+        /* .beta_nb3 = */ static_cast<int64_t>(beta->nb[3]),
+        /* .scale    = */ 1.0f / std::sqrt(static_cast<float>(v->ne[0])),
+        /* ._pad     = */ 0,
+    };
+
+    const auto & provider = context->device_context->gated_delta_net_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.S_v),
+            static_cast<uint32_t>(constants.H),
+            static_cast<uint32_t>(constants.n_seqs),
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            7,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->gated_delta_net_count++;
 
     if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
         return GGML_STATUS_FAILED;
@@ -2733,6 +2917,7 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             " set_rows=%" PRIu64 " get_rows=%" PRIu64
             " concat=%" PRIu64 " unary=%" PRIu64
             " reduction=%" PRIu64 " ssm_conv=%" PRIu64
+            " gated_delta_net=%" PRIu64
             " metadata=%" PRIu64 " synchronize=%" PRIu64 "\n",
             context->name.c_str(),
             context->dispatch_count,
@@ -2747,6 +2932,7 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             context->unary_count,
             context->reduction_count,
             context->ssm_conv_count,
+            context->gated_delta_net_count,
             context->metadata_count,
             context->synchronize_count);
     }
@@ -2974,6 +3160,20 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            case GGML_OP_GATED_DELTA_NET:
+                if (!ggml_backend_pyre_supports_gated_delta_net(context->device_context, node)) {
+                    GGML_LOG_ERROR("%s: GATED_DELTA_NET shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim GATED_DELTA_NET provider=pure_hip_f32 S_v=%" PRId64
+                    " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 "\n",
+                    node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3]);
+                if (ggml_backend_pyre_dispatch_gated_delta_net(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                break;
             case GGML_OP_MUL_MAT:
                 if (!ggml_backend_pyre_supports_mul_mat_vec(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: MUL_MAT shape/type/layout is unsupported\n", __func__);
@@ -3157,6 +3357,9 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SSM_CONV:
             supported = ggml_backend_pyre_supports_ssm_conv(context, op);
             break;
+        case GGML_OP_GATED_DELTA_NET:
+            supported = ggml_backend_pyre_supports_gated_delta_net(context, op);
+            break;
         case GGML_OP_MUL_MAT:
             supported = ggml_backend_pyre_supports_mul_mat_vec(context, op);
             break;
@@ -3328,6 +3531,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_get_rows_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_concat_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_ssm_conv_provider(device_context.get());
+            (void) ggml_backend_pyre_load_gated_delta_net_provider(device_context.get());
         }
         if (device_context->policy.kernel_provider == ggml_backend_pyre_kernel_provider_mode::pure_hip &&
             !device_context->policy.disable_mul_mat_vec) {
