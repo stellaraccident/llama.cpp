@@ -71,6 +71,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_provider_policy policy;
     ggml_backend_pyre_op_provider rms_norm_provider;
     ggml_backend_pyre_op_provider add_provider;
+    ggml_backend_pyre_op_provider add_broadcast_provider;
     ggml_backend_pyre_op_provider mul_provider;
     ggml_backend_pyre_op_provider mul_broadcast_provider;
     ggml_backend_pyre_op_provider div_broadcast_provider;
@@ -85,7 +86,12 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider l2_norm_provider;
     ggml_backend_pyre_op_provider clamp_provider;
     ggml_backend_pyre_op_provider get_rows_f32_provider;
+    ggml_backend_pyre_op_provider get_rows_q5_k_provider;
     ggml_backend_pyre_op_provider concat_f32_provider;
+    ggml_backend_pyre_op_provider soft_max_f32_provider;
+    ggml_backend_pyre_op_provider soft_max_f32_mask_provider;
+    ggml_backend_pyre_op_provider argsort_f32_provider;
+    ggml_backend_pyre_op_provider rope_f32_provider;
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
@@ -149,6 +155,9 @@ struct ggml_backend_pyre_context {
     uint64_t set_rows_count = 0;
     uint64_t get_rows_count = 0;
     uint64_t concat_count = 0;
+    uint64_t soft_max_count = 0;
+    uint64_t argsort_count = 0;
+    uint64_t rope_count = 0;
     uint64_t unary_count = 0;
     uint64_t reduction_count = 0;
     uint64_t ssm_conv_count = 0;
@@ -429,6 +438,14 @@ static bool ggml_backend_pyre_load_add_provider(
         &device_context->add_provider);
 }
 
+static bool ggml_backend_pyre_load_add_broadcast_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_add_f32_broadcast"),
+        &device_context->add_broadcast_provider);
+}
+
 static bool ggml_backend_pyre_load_mul_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -541,12 +558,52 @@ static bool ggml_backend_pyre_load_get_rows_f32_provider(
         &device_context->get_rows_f32_provider);
 }
 
+static bool ggml_backend_pyre_load_get_rows_q5_k_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_get_rows_q5_k_f32"),
+        &device_context->get_rows_q5_k_provider);
+}
+
 static bool ggml_backend_pyre_load_concat_f32_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_concat_f32"),
         &device_context->concat_f32_provider);
+}
+
+static bool ggml_backend_pyre_load_soft_max_f32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_soft_max_f32"),
+        &device_context->soft_max_f32_provider);
+}
+
+static bool ggml_backend_pyre_load_soft_max_f32_mask_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_soft_max_f32_mask"),
+        &device_context->soft_max_f32_mask_provider);
+}
+
+static bool ggml_backend_pyre_load_argsort_f32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_argsort_f32_i32"),
+        &device_context->argsort_f32_provider);
+}
+
+static bool ggml_backend_pyre_load_rope_f32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_rope_f32"),
+        &device_context->rope_f32_provider);
 }
 
 static bool ggml_backend_pyre_load_ssm_conv_provider(
@@ -656,8 +713,6 @@ static bool ggml_backend_pyre_supports_rms_norm(
            op->type == GGML_TYPE_F32 &&
            op->src[0]->nb[0] == sizeof(float) &&
            op->nb[0] == sizeof(float) &&
-           (ggml_is_contiguous(op->src[0]) || (op->src[0]->ne[2] == 1 && op->src[0]->ne[3] == 1)) &&
-           (ggml_is_contiguous(op) || (op->ne[2] == 1 && op->ne[3] == 1)) &&
            ggml_are_same_shape(op->src[0], op);
 }
 
@@ -691,11 +746,36 @@ static bool ggml_backend_pyre_supports_mul_broadcast(
            op->type == GGML_TYPE_F32 &&
            src0->ne[0] == op->ne[0] &&
            src0->ne[1] == op->ne[1] &&
+           src0->ne[2] == op->ne[2] &&
+           src0->ne[3] == op->ne[3] &&
            (src1->ne[0] == src0->ne[0] || src1->ne[0] == 1) &&
            (src1->ne[1] == src0->ne[1] || src1->ne[1] == 1) &&
-           src0->ne[2] == 1 && src0->ne[3] == 1 &&
-           src1->ne[2] == 1 && src1->ne[3] == 1 &&
-           op->ne[2] == 1 && op->ne[3] == 1 &&
+           (src1->ne[2] == src0->ne[2] || src1->ne[2] == 1) &&
+           (src1->ne[3] == src0->ne[3] || src1->ne[3] == 1) &&
+           (src0->ne[0] == 1 || src0->nb[0] == sizeof(float)) &&
+           (src1->ne[0] == 1 || src1->nb[0] == sizeof(float)) &&
+           op->nb[0] == sizeof(float);
+}
+
+static bool ggml_backend_pyre_supports_add_broadcast(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    return device_context->add_broadcast_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           src0 && src1 &&
+           src0->type == GGML_TYPE_F32 &&
+           src1->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           src0->ne[0] == op->ne[0] &&
+           src0->ne[1] == op->ne[1] &&
+           src0->ne[2] == op->ne[2] &&
+           src0->ne[3] == op->ne[3] &&
+           (src1->ne[0] == src0->ne[0] || src1->ne[0] == 1) &&
+           (src1->ne[1] == src0->ne[1] || src1->ne[1] == 1) &&
+           (src1->ne[2] == src0->ne[2] || src1->ne[2] == 1) &&
+           (src1->ne[3] == src0->ne[3] || src1->ne[3] == 1) &&
            (src0->ne[0] == 1 || src0->nb[0] == sizeof(float)) &&
            (src1->ne[0] == 1 || src1->nb[0] == sizeof(float)) &&
            op->nb[0] == sizeof(float);
@@ -714,13 +794,14 @@ static bool ggml_backend_pyre_supports_div_broadcast(
            op->type == GGML_TYPE_F32 &&
            src0->ne[0] == op->ne[0] &&
            src0->ne[1] == op->ne[1] &&
+           src0->ne[2] == op->ne[2] &&
+           src0->ne[3] == op->ne[3] &&
            (src1->ne[0] == src0->ne[0] || src1->ne[0] == 1) &&
            (src1->ne[1] == src0->ne[1] || src1->ne[1] == 1) &&
-           src0->ne[2] == 1 && src0->ne[3] == 1 &&
-           src1->ne[2] == 1 && src1->ne[3] == 1 &&
-           op->ne[2] == 1 && op->ne[3] == 1 &&
-           src0->nb[0] == sizeof(float) &&
-           src1->nb[0] == sizeof(float) &&
+           (src1->ne[2] == src0->ne[2] || src1->ne[2] == 1) &&
+           (src1->ne[3] == src0->ne[3] || src1->ne[3] == 1) &&
+           (src0->ne[0] == 1 || src0->nb[0] == sizeof(float)) &&
+           (src1->ne[0] == 1 || src1->nb[0] == sizeof(float)) &&
            op->nb[0] == sizeof(float);
 }
 
@@ -728,7 +809,8 @@ static bool ggml_backend_pyre_supports_add(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
     return ggml_backend_pyre_supports_binary_elementwise_f32(
-        device_context->add_provider, op);
+        device_context->add_provider, op) ||
+        ggml_backend_pyre_supports_add_broadcast(device_context, op);
 }
 
 static bool ggml_backend_pyre_supports_mul(
@@ -821,6 +903,17 @@ static bool ggml_backend_pyre_supports_cpy(
            (ggml_is_contiguous(src0) || src0->nb[0] == ggml_type_size(src0->type));
 }
 
+static bool ggml_backend_pyre_supports_cont(
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    return src0 &&
+           src0->type == op->type &&
+           ggml_nelements(src0) == ggml_nelements(op) &&
+           ggml_row_size(src0->type, src0->ne[0]) * ggml_nrows(src0) == ggml_nbytes(op) &&
+           ggml_is_contiguous(op) &&
+           (ggml_is_contiguous(src0) || src0->nb[0] == ggml_type_size(src0->type));
+}
+
 static const ggml_backend_pyre_op_provider * ggml_backend_pyre_set_rows_provider(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
@@ -886,8 +979,6 @@ static bool ggml_backend_pyre_supports_l2_norm(
            src0->type == GGML_TYPE_F32 &&
            op->type == GGML_TYPE_F32 &&
            ggml_are_same_shape(src0, op) &&
-           src0->ne[2] == 1 && src0->ne[3] == 1 &&
-           op->ne[2] == 1 && op->ne[3] == 1 &&
            src0->nb[0] == sizeof(float) &&
            op->nb[0] == sizeof(float);
 }
@@ -911,19 +1002,22 @@ static bool ggml_backend_pyre_supports_get_rows_f32(
         const ggml_tensor * op) {
     const ggml_tensor * src0 = op->src[0];
     const ggml_tensor * src1 = op->src[1];
-    return device_context->get_rows_f32_provider.kind ==
-               ggml_backend_pyre_provider_kind::direct_executable &&
+    const bool has_provider =
+        (src0 && src0->type == GGML_TYPE_F32 &&
+         device_context->get_rows_f32_provider.kind == ggml_backend_pyre_provider_kind::direct_executable) ||
+        (src0 && src0->type == GGML_TYPE_Q5_K &&
+         device_context->get_rows_q5_k_provider.kind == ggml_backend_pyre_provider_kind::direct_executable);
+    return has_provider &&
            src0 && src1 &&
-           src0->type == GGML_TYPE_F32 &&
+           (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_Q5_K) &&
            src1->type == GGML_TYPE_I32 &&
            op->type == GGML_TYPE_F32 &&
-           src1->ne[0] > 0 &&
            op->ne[0] == src0->ne[0] &&
            op->ne[2] == src1->ne[1] &&
            op->ne[3] == src1->ne[2] &&
            src0->ne[2] == src1->ne[1] &&
            src0->ne[3] == src1->ne[2] &&
-           src0->nb[0] == sizeof(float) &&
+           (src0->type == GGML_TYPE_Q5_K || src0->nb[0] == sizeof(float)) &&
            src1->nb[0] == sizeof(int32_t) &&
            op->nb[0] == sizeof(float);
 }
@@ -947,9 +1041,90 @@ static bool ggml_backend_pyre_supports_concat_f32(
            src1->ne[2] == 1 && src1->ne[3] == 1 &&
            op->ne[2] == 1 && op->ne[3] == 1 &&
            op->ne[0] == src0->ne[0] + src1->ne[0] &&
-           src0->nb[0] == sizeof(float) &&
-           src1->nb[0] == sizeof(float) &&
            op->nb[0] == sizeof(float);
+}
+
+static bool ggml_backend_pyre_supports_soft_max_f32(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    const ggml_tensor * src2 = op->src[2];
+    float max_bias = 0.0f;
+    std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(op->op_params) + 1, sizeof(float));
+    const ggml_backend_pyre_op_provider & provider =
+        src1 ? device_context->soft_max_f32_mask_provider : device_context->soft_max_f32_provider;
+    return provider.kind == ggml_backend_pyre_provider_kind::direct_executable &&
+           src0 &&
+           !src2 &&
+           max_bias == 0.0f &&
+           src0->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           src0->ne[0] <= 1024 &&
+           ggml_are_same_shape(src0, op) &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(op) &&
+           (!src1 ||
+            (src1->type == GGML_TYPE_F32 &&
+             ggml_is_contiguous(src1) &&
+             src1->ne[0] == src0->ne[0] &&
+             src1->ne[1] >= src0->ne[1] &&
+             src0->ne[2] % src1->ne[2] == 0 &&
+             src0->ne[3] % src1->ne[3] == 0));
+}
+
+static bool ggml_backend_pyre_supports_argsort_f32(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const int64_t ncols = src0 ? src0->ne[0] : 0;
+    return device_context->argsort_f32_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           src0 &&
+           src0->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_I32 &&
+           ncols > 0 &&
+           ncols <= 256 &&
+           (ncols & (ncols - 1)) == 0 &&
+           ggml_are_same_shape(src0, op) &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_pyre_supports_rope_f32(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    const ggml_tensor * src2 = op->src[2];
+    float ext_factor = 0.0f;
+    std::memcpy(&ext_factor, reinterpret_cast<const int32_t *>(op->op_params) + 7, sizeof(float));
+    const int32_t n_dims = ggml_get_op_params_i32(op, 1);
+    const int32_t mode = ggml_get_op_params_i32(op, 2);
+    const int32_t section0 = ggml_get_op_params_i32(op, 11);
+    const int32_t section1 = ggml_get_op_params_i32(op, 12);
+    const int32_t section2 = ggml_get_op_params_i32(op, 13);
+    const int32_t section3 = ggml_get_op_params_i32(op, 14);
+    return device_context->rope_f32_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           src0 &&
+           src1 &&
+           !src2 &&
+           src0->type == GGML_TYPE_F32 &&
+           src1->type == GGML_TYPE_I32 &&
+           op->type == GGML_TYPE_F32 &&
+           mode == GGML_ROPE_TYPE_IMROPE &&
+           ext_factor == 0.0f &&
+           n_dims > 0 &&
+           n_dims <= src0->ne[0] &&
+           (n_dims % 2) == 0 &&
+           (src0->ne[0] % 2) == 0 &&
+           section0 + section1 + section2 + section3 > 0 &&
+           src1->ne[0] == src0->ne[2] * 4 &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op) &&
+           ggml_are_same_shape(src0, op);
 }
 
 static bool ggml_backend_pyre_supports_ssm_conv(
@@ -1037,10 +1212,16 @@ static bool ggml_backend_pyre_supports_gated_delta_net(
 struct ggml_backend_pyre_rms_norm_constants {
     int64_t ncols;
     int64_t nrows;
+    int64_t ne1;
+    int64_t ne2;
+    int64_t src_nb1;
+    int64_t src_nb2;
+    int64_t src_nb3;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+    int64_t dst_nb3;
     float eps;
     int32_t _pad;
-    int64_t src_nb1;
-    int64_t dst_nb1;
 };
 
 static ggml_status ggml_backend_pyre_dispatch_rms_norm(
@@ -1058,12 +1239,18 @@ static ggml_status ggml_backend_pyre_dispatch_rms_norm(
     std::memcpy(&eps, dst->op_params, sizeof(eps));
 
     ggml_backend_pyre_rms_norm_constants constants = {
-        /* .ncols = */ src0->ne[0],
-        /* .nrows = */ ggml_nrows(src0),
-        /* .eps   = */ eps,
-        /* ._pad   = */ 0,
+        /* .ncols   = */ src0->ne[0],
+        /* .nrows   = */ ggml_nrows(src0),
+        /* .ne1     = */ src0->ne[1],
+        /* .ne2     = */ src0->ne[2],
         /* .src_nb1 = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src_nb2 = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src_nb3 = */ static_cast<int64_t>(src0->nb[3]),
         /* .dst_nb1 = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2 = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3 = */ static_cast<int64_t>(dst->nb[3]),
+        /* .eps     = */ eps,
+        /* ._pad    = */ 0,
     };
 
     const auto & provider = context->device_context->rms_norm_provider;
@@ -1110,20 +1297,34 @@ struct ggml_backend_pyre_elementwise_constants {
 
 struct ggml_backend_pyre_mul_broadcast_constants {
     int64_t ne0;
+    int64_t nrows;
     int64_t ne1;
+    int64_t ne2;
     int64_t src1_ne0;
     int64_t src0_nb1;
+    int64_t src0_nb2;
+    int64_t src0_nb3;
     int64_t src1_nb1;
+    int64_t src1_nb2;
+    int64_t src1_nb3;
     int64_t dst_nb1;
+    int64_t dst_nb2;
+    int64_t dst_nb3;
 };
 
 struct ggml_backend_pyre_row_reduce_constants {
     int64_t ncols;
     int64_t nrows;
+    int64_t ne1;
+    int64_t ne2;
+    int64_t src_nb1;
+    int64_t src_nb2;
+    int64_t src_nb3;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+    int64_t dst_nb3;
     float eps;
     int32_t _pad;
-    int64_t src_nb1;
-    int64_t dst_nb1;
 };
 
 struct ggml_backend_pyre_clamp_constants {
@@ -1158,6 +1359,50 @@ struct ggml_backend_pyre_concat_f32_constants {
     int64_t src1_nb1;
     int64_t dst_nb0;
     int64_t dst_nb1;
+};
+
+struct ggml_backend_pyre_soft_max_f32_constants {
+    int64_t ncols;
+    int64_t nrows;
+    int64_t ne01;
+    int64_t ne02;
+    int64_t mask_nb1;
+    int64_t mask_nb2;
+    int64_t mask_nb3;
+    int64_t mask_ne2;
+    int64_t mask_ne3;
+    float scale;
+    int32_t _pad;
+};
+
+struct ggml_backend_pyre_argsort_f32_constants {
+    int64_t ncols;
+    int64_t nrows;
+    int32_t order;
+    int32_t ncols_pad;
+};
+
+struct ggml_backend_pyre_rope_f32_constants {
+    int64_t ne00;
+    int64_t ne01;
+    int64_t ne02;
+    int64_t nrows;
+    int64_t src_s1;
+    int64_t src_s2;
+    int64_t src_s3;
+    int64_t dst_s1;
+    int64_t dst_s2;
+    int64_t dst_s3;
+    int32_t n_dims;
+    int32_t mode;
+    int32_t section0;
+    int32_t section1;
+    int32_t section2;
+    int32_t section3;
+    float freq_base;
+    float freq_scale;
+    float attn_factor;
+    float _pad;
 };
 
 struct ggml_backend_pyre_scale_constants {
@@ -1298,15 +1543,92 @@ static ggml_status ggml_backend_pyre_dispatch_mul_broadcast_f32(
 
     ggml_backend_pyre_mul_broadcast_constants constants = {
         /* .ne0      = */ dst->ne[0],
+        /* .nrows    = */ ggml_nrows(dst),
         /* .ne1      = */ dst->ne[1],
+        /* .ne2      = */ dst->ne[2],
         /* .src1_ne0 = */ src1->ne[0],
         /* .src0_nb1 = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src0_nb2 = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src0_nb3 = */ static_cast<int64_t>(src0->nb[3]),
         /* .src1_nb1 = */ src1->ne[1] == 1 ? 0 : static_cast<int64_t>(src1->nb[1]),
+        /* .src1_nb2 = */ src1->ne[2] == 1 ? 0 : static_cast<int64_t>(src1->nb[2]),
+        /* .src1_nb3 = */ src1->ne[3] == 1 ? 0 : static_cast<int64_t>(src1->nb[3]),
         /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2  = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3  = */ static_cast<int64_t>(dst->nb[3]),
     };
 
     const auto & provider = context->device_context->mul_broadcast_provider;
-    const int64_t n = constants.ne0 * constants.ne1;
+    const int64_t n = constants.ne0 * constants.nrows;
+    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+        provider.export_info.workgroup_size[0] : 256;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>((n + workgroup_size - 1) / workgroup_size),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ {
+            workgroup_size,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            3,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->elementwise_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_add_broadcast_f32(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[2])) {
+        GGML_LOG_ERROR("%s: broadcast ADD tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_mul_broadcast_constants constants = {
+        /* .ne0      = */ dst->ne[0],
+        /* .nrows    = */ ggml_nrows(dst),
+        /* .ne1      = */ dst->ne[1],
+        /* .ne2      = */ dst->ne[2],
+        /* .src1_ne0 = */ src1->ne[0],
+        /* .src0_nb1 = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src0_nb2 = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src0_nb3 = */ static_cast<int64_t>(src0->nb[3]),
+        /* .src1_nb1 = */ src1->ne[1] == 1 ? 0 : static_cast<int64_t>(src1->nb[1]),
+        /* .src1_nb2 = */ src1->ne[2] == 1 ? 0 : static_cast<int64_t>(src1->nb[2]),
+        /* .src1_nb3 = */ src1->ne[3] == 1 ? 0 : static_cast<int64_t>(src1->nb[3]),
+        /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2  = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3  = */ static_cast<int64_t>(dst->nb[3]),
+    };
+
+    const auto & provider = context->device_context->add_broadcast_provider;
+    const int64_t n = constants.ne0 * constants.nrows;
     const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 256;
     pyre_dispatch_config_t config = {
@@ -1359,15 +1681,23 @@ static ggml_status ggml_backend_pyre_dispatch_div_broadcast_f32(
 
     ggml_backend_pyre_mul_broadcast_constants constants = {
         /* .ne0      = */ dst->ne[0],
+        /* .nrows    = */ ggml_nrows(dst),
         /* .ne1      = */ dst->ne[1],
+        /* .ne2      = */ dst->ne[2],
         /* .src1_ne0 = */ src1->ne[0],
         /* .src0_nb1 = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src0_nb2 = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src0_nb3 = */ static_cast<int64_t>(src0->nb[3]),
         /* .src1_nb1 = */ src1->ne[1] == 1 ? 0 : static_cast<int64_t>(src1->nb[1]),
+        /* .src1_nb2 = */ src1->ne[2] == 1 ? 0 : static_cast<int64_t>(src1->nb[2]),
+        /* .src1_nb3 = */ src1->ne[3] == 1 ? 0 : static_cast<int64_t>(src1->nb[3]),
         /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2  = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3  = */ static_cast<int64_t>(dst->nb[3]),
     };
 
     const auto & provider = context->device_context->div_broadcast_provider;
-    const int64_t n = constants.ne0 * constants.ne1;
+    const int64_t n = constants.ne0 * constants.nrows;
     const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 256;
     pyre_dispatch_config_t config = {
@@ -1716,10 +2046,16 @@ static ggml_status ggml_backend_pyre_dispatch_sum_rows(
     ggml_backend_pyre_row_reduce_constants constants = {
         /* .ncols   = */ src0->ne[0],
         /* .nrows   = */ ggml_nrows(src0),
+        /* .ne1     = */ src0->ne[1],
+        /* .ne2     = */ src0->ne[2],
+        /* .src_nb1 = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src_nb2 = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src_nb3 = */ static_cast<int64_t>(src0->nb[3]),
+        /* .dst_nb1 = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2 = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3 = */ static_cast<int64_t>(dst->nb[3]),
         /* .eps     = */ 0.0f,
         /* ._pad    = */ 0,
-        /* .src_nb1 = */ static_cast<int64_t>(src0->nb[1]),
-        /* .dst_nb1 = */ static_cast<int64_t>(dst->nb[1]),
     };
 
     const auto & provider = context->device_context->sum_rows_provider;
@@ -1763,10 +2099,16 @@ static ggml_status ggml_backend_pyre_dispatch_l2_norm(
     ggml_backend_pyre_row_reduce_constants constants = {
         /* .ncols   = */ src0->ne[0],
         /* .nrows   = */ ggml_nrows(src0),
+        /* .ne1     = */ src0->ne[1],
+        /* .ne2     = */ src0->ne[2],
+        /* .src_nb1 = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src_nb2 = */ static_cast<int64_t>(src0->nb[2]),
+        /* .src_nb3 = */ static_cast<int64_t>(src0->nb[3]),
+        /* .dst_nb1 = */ static_cast<int64_t>(dst->nb[1]),
+        /* .dst_nb2 = */ static_cast<int64_t>(dst->nb[2]),
+        /* .dst_nb3 = */ static_cast<int64_t>(dst->nb[3]),
         /* .eps     = */ eps,
         /* ._pad    = */ 0,
-        /* .src_nb1 = */ static_cast<int64_t>(src0->nb[1]),
-        /* .dst_nb1 = */ static_cast<int64_t>(dst->nb[1]),
     };
 
     const auto & provider = context->device_context->l2_norm_provider;
@@ -1843,6 +2185,11 @@ static ggml_status ggml_backend_pyre_dispatch_clamp(
 static ggml_status ggml_backend_pyre_dispatch_get_rows_f32(
         ggml_backend_pyre_context * context,
         const ggml_tensor * dst) {
+    if (ggml_nelements(dst) == 0) {
+        context->get_rows_count++;
+        return GGML_STATUS_SUCCESS;
+    }
+
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
     pyre_buffer_ref_t bindings[3] = {};
@@ -1869,7 +2216,9 @@ static ggml_status ggml_backend_pyre_dispatch_get_rows_f32(
         /* .ne11     = */ src1->ne[1],
     };
 
-    const auto & provider = context->device_context->get_rows_f32_provider;
+    const auto & provider = src0->type == GGML_TYPE_Q5_K ?
+        context->device_context->get_rows_q5_k_provider :
+        context->device_context->get_rows_f32_provider;
     const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 256;
     pyre_dispatch_config_t config = {
@@ -1942,6 +2291,187 @@ static ggml_status ggml_backend_pyre_dispatch_concat_f32(
     }
     context->dispatch_count++;
     context->concat_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static int32_t ggml_backend_pyre_next_power_of_2(int64_t value) {
+    int32_t result = 1;
+    while (result < value) {
+        result <<= 1;
+    }
+    return result;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_soft_max_f32(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, src1 ? &bindings[2] : &bindings[1])) {
+        GGML_LOG_ERROR("%s: SOFT_MAX tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+    if (src1 && !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[1])) {
+        GGML_LOG_ERROR("%s: SOFT_MAX mask tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    float scale = 1.0f;
+    std::memcpy(&scale, reinterpret_cast<const int32_t *>(dst->op_params), sizeof(float));
+    ggml_backend_pyre_soft_max_f32_constants constants = {
+        /* .ncols    = */ src0->ne[0],
+        /* .nrows    = */ ggml_nrows(src0),
+        /* .ne01     = */ src0->ne[1],
+        /* .ne02     = */ src0->ne[2],
+        /* .mask_nb1 = */ src1 ? static_cast<int64_t>(src1->nb[1]) : 0,
+        /* .mask_nb2 = */ src1 ? static_cast<int64_t>(src1->nb[2]) : 0,
+        /* .mask_nb3 = */ src1 ? static_cast<int64_t>(src1->nb[3]) : 0,
+        /* .mask_ne2 = */ src1 ? src1->ne[2] : 1,
+        /* .mask_ne3 = */ src1 ? src1->ne[3] : 1,
+        /* .scale    = */ scale,
+        /* ._pad     = */ 0,
+    };
+
+    const auto & provider = src1 ?
+        context->device_context->soft_max_f32_mask_provider :
+        context->device_context->soft_max_f32_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.nrows),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ { 256, 1, 1 },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream, provider.executable, provider.export_ordinal, &config,
+            &constants, sizeof(constants), bindings, src1 ? 3 : 2, PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->soft_max_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_argsort_f32(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    pyre_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[1])) {
+        GGML_LOG_ERROR("%s: ARGSORT tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_argsort_f32_constants constants = {
+        /* .ncols     = */ src0->ne[0],
+        /* .nrows     = */ ggml_nrows(src0),
+        /* .order     = */ ggml_get_op_params_i32(dst, 0),
+        /* .ncols_pad = */ ggml_backend_pyre_next_power_of_2(src0->ne[0]),
+    };
+    const auto & provider = context->device_context->argsort_f32_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.nrows),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ { 256, 1, 1 },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream, provider.executable, provider.export_ordinal, &config,
+            &constants, sizeof(constants), bindings, 2, PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->argsort_count++;
+
+    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_rope_f32(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[2])) {
+        GGML_LOG_ERROR("%s: ROPE tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    float freq_base = 0.0f;
+    float freq_scale = 0.0f;
+    float attn_factor = 0.0f;
+    std::memcpy(&freq_base, reinterpret_cast<const int32_t *>(dst->op_params) + 5, sizeof(float));
+    std::memcpy(&freq_scale, reinterpret_cast<const int32_t *>(dst->op_params) + 6, sizeof(float));
+    std::memcpy(&attn_factor, reinterpret_cast<const int32_t *>(dst->op_params) + 8, sizeof(float));
+
+    ggml_backend_pyre_rope_f32_constants constants = {
+        /* .ne00        = */ src0->ne[0],
+        /* .ne01        = */ src0->ne[1],
+        /* .ne02        = */ src0->ne[2],
+        /* .nrows       = */ ggml_nrows(src0),
+        /* .src_s1      = */ static_cast<int64_t>(src0->nb[1] / sizeof(float)),
+        /* .src_s2      = */ static_cast<int64_t>(src0->nb[2] / sizeof(float)),
+        /* .src_s3      = */ static_cast<int64_t>(src0->nb[3] / sizeof(float)),
+        /* .dst_s1      = */ static_cast<int64_t>(dst->nb[1] / sizeof(float)),
+        /* .dst_s2      = */ static_cast<int64_t>(dst->nb[2] / sizeof(float)),
+        /* .dst_s3      = */ static_cast<int64_t>(dst->nb[3] / sizeof(float)),
+        /* .n_dims      = */ ggml_get_op_params_i32(dst, 1),
+        /* .mode        = */ ggml_get_op_params_i32(dst, 2),
+        /* .section0    = */ ggml_get_op_params_i32(dst, 11),
+        /* .section1    = */ ggml_get_op_params_i32(dst, 12),
+        /* .section2    = */ ggml_get_op_params_i32(dst, 13),
+        /* .section3    = */ ggml_get_op_params_i32(dst, 14),
+        /* .freq_base   = */ freq_base,
+        /* .freq_scale  = */ freq_scale,
+        /* .attn_factor = */ attn_factor,
+        /* ._pad        = */ 0.0f,
+    };
+
+    const auto & provider = context->device_context->rope_f32_provider;
+    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+        provider.export_info.workgroup_size[0] : 256;
+    const uint64_t total_pairs = static_cast<uint64_t>(constants.nrows) *
+        static_cast<uint64_t>(constants.ne00 / 2);
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>((total_pairs + workgroup_size - 1) / workgroup_size),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ { workgroup_size, 1, 1 },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream, provider.executable, provider.export_ordinal, &config,
+            &constants, sizeof(constants), bindings, 3, PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->rope_count++;
 
     if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
         return GGML_STATUS_FAILED;
@@ -2915,7 +3445,8 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             " elementwise=%" PRIu64 " mul_mat_vec=%" PRIu64
             " mul_mat_id=%" PRIu64 " copy=%" PRIu64
             " set_rows=%" PRIu64 " get_rows=%" PRIu64
-            " concat=%" PRIu64 " unary=%" PRIu64
+            " concat=%" PRIu64 " soft_max=%" PRIu64
+            " argsort=%" PRIu64 " rope=%" PRIu64 " unary=%" PRIu64
             " reduction=%" PRIu64 " ssm_conv=%" PRIu64
             " gated_delta_net=%" PRIu64
             " metadata=%" PRIu64 " synchronize=%" PRIu64 "\n",
@@ -2929,6 +3460,9 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             context->set_rows_count,
             context->get_rows_count,
             context->concat_count,
+            context->soft_max_count,
+            context->argsort_count,
+            context->rope_count,
             context->unary_count,
             context->reduction_count,
             context->ssm_conv_count,
@@ -2975,19 +3509,27 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
-            case GGML_OP_ADD:
+            case GGML_OP_ADD: {
                 if (!ggml_backend_pyre_supports_add(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: ADD shape/type/layout is unsupported\n", __func__);
                     return GGML_STATUS_FAILED;
                 }
                 ggml_backend_pyre_trace_provider(
-                    context->device_context, "claim ADD provider=pure_hip_f32 n=%" PRId64 "\n",
+                    context->device_context, "claim ADD provider=pure_hip_f32%s n=%" PRId64 "\n",
+                    ggml_backend_pyre_supports_add_broadcast(context->device_context, node) ? "_broadcast" : "",
                     ggml_nelements(node));
-                if (ggml_backend_pyre_dispatch_binary_elementwise_f32(
-                        context, node, context->device_context->add_provider, "ADD") != GGML_STATUS_SUCCESS) {
+                ggml_status status = GGML_STATUS_FAILED;
+                if (ggml_backend_pyre_supports_add_broadcast(context->device_context, node)) {
+                    status = ggml_backend_pyre_dispatch_add_broadcast_f32(context, node);
+                } else {
+                    status = ggml_backend_pyre_dispatch_binary_elementwise_f32(
+                        context, node, context->device_context->add_provider, "ADD");
+                }
+                if (status != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            }
             case GGML_OP_MUL: {
                 if (!ggml_backend_pyre_supports_mul(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: MUL shape/type/layout is unsupported\n", __func__);
@@ -3045,6 +3587,18 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            case GGML_OP_CONT:
+                if (!ggml_backend_pyre_supports_cont(node)) {
+                    GGML_LOG_ERROR("%s: CONT shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                ggml_backend_pyre_trace_provider(
+                    context->device_context, "claim CONT provider=buffer_copy type=%s nbytes=%zu\n",
+                    ggml_type_name(node->type), ggml_nbytes(node));
+                if (ggml_backend_pyre_dispatch_cpy(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                break;
             case GGML_OP_SET_ROWS:
                 if (!ggml_backend_pyre_supports_set_rows(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: SET_ROWS shape/type/layout is unsupported\n", __func__);
@@ -3064,7 +3618,8 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 ggml_backend_pyre_trace_provider(
-                    context->device_context, "claim GET_ROWS provider=pure_hip_f32 nc=%" PRId64 " nr=%" PRId64 "\n",
+                    context->device_context, "claim GET_ROWS provider=pure_hip_%s nc=%" PRId64 " nr=%" PRId64 "\n",
+                    node->src[0]->type == GGML_TYPE_Q5_K ? "q5_K" : "f32",
                     node->src[0]->ne[0], ggml_nelements(node->src[1]));
                 if (ggml_backend_pyre_dispatch_get_rows_f32(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
@@ -3079,6 +3634,42 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     context->device_context, "claim CONCAT provider=pure_hip_f32 n=%" PRId64 "\n",
                     ggml_nelements(node));
                 if (ggml_backend_pyre_dispatch_concat_f32(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                break;
+            case GGML_OP_SOFT_MAX:
+                if (!ggml_backend_pyre_supports_soft_max_f32(context->device_context, node)) {
+                    GGML_LOG_ERROR("%s: SOFT_MAX shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                ggml_backend_pyre_trace_provider(
+                    context->device_context, "claim SOFT_MAX provider=pure_hip_f32 ncols=%" PRId64 " nrows=%" PRId64 "\n",
+                    node->src[0]->ne[0], ggml_nrows(node->src[0]));
+                if (ggml_backend_pyre_dispatch_soft_max_f32(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                break;
+            case GGML_OP_ARGSORT:
+                if (!ggml_backend_pyre_supports_argsort_f32(context->device_context, node)) {
+                    GGML_LOG_ERROR("%s: ARGSORT shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                ggml_backend_pyre_trace_provider(
+                    context->device_context, "claim ARGSORT provider=pure_hip_f32 ncols=%" PRId64 " nrows=%" PRId64 "\n",
+                    node->src[0]->ne[0], ggml_nrows(node->src[0]));
+                if (ggml_backend_pyre_dispatch_argsort_f32(context, node) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                break;
+            case GGML_OP_ROPE:
+                if (!ggml_backend_pyre_supports_rope_f32(context->device_context, node)) {
+                    GGML_LOG_ERROR("%s: ROPE shape/type/layout is unsupported\n", __func__);
+                    return GGML_STATUS_FAILED;
+                }
+                ggml_backend_pyre_trace_provider(
+                    context->device_context, "claim ROPE provider=pure_hip_f32 n_dims=%d nrows=%" PRId64 "\n",
+                    ggml_get_op_params_i32(node, 1), ggml_nrows(node->src[0]));
+                if (ggml_backend_pyre_dispatch_rope_f32(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
                 }
                 break;
@@ -3330,6 +3921,9 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_CPY:
             supported = ggml_backend_pyre_supports_cpy(op);
             break;
+        case GGML_OP_CONT:
+            supported = ggml_backend_pyre_supports_cont(op);
+            break;
         case GGML_OP_SET_ROWS:
             supported = ggml_backend_pyre_supports_set_rows(context, op);
             break;
@@ -3338,6 +3932,15 @@ static bool ggml_backend_pyre_device_supports_op(ggml_backend_dev_t dev, const g
             break;
         case GGML_OP_CONCAT:
             supported = ggml_backend_pyre_supports_concat_f32(context, op);
+            break;
+        case GGML_OP_SOFT_MAX:
+            supported = ggml_backend_pyre_supports_soft_max_f32(context, op);
+            break;
+        case GGML_OP_ARGSORT:
+            supported = ggml_backend_pyre_supports_argsort_f32(context, op);
+            break;
+        case GGML_OP_ROPE:
+            supported = ggml_backend_pyre_supports_rope_f32(context, op);
             break;
         case GGML_OP_UNARY:
             supported = ggml_backend_pyre_supports_unary_f32(context, op);
@@ -3515,6 +4118,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
         }
         if (device_context->policy.kernel_provider == ggml_backend_pyre_kernel_provider_mode::pure_hip) {
             (void) ggml_backend_pyre_load_add_provider(device_context.get());
+            (void) ggml_backend_pyre_load_add_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_div_broadcast_provider(device_context.get());
@@ -3529,7 +4133,12 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_l2_norm_provider(device_context.get());
             (void) ggml_backend_pyre_load_clamp_provider(device_context.get());
             (void) ggml_backend_pyre_load_get_rows_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_get_rows_q5_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_concat_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_soft_max_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_soft_max_f32_mask_provider(device_context.get());
+            (void) ggml_backend_pyre_load_argsort_f32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_rope_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_ssm_conv_provider(device_context.get());
             (void) ggml_backend_pyre_load_gated_delta_net_provider(device_context.get());
         }

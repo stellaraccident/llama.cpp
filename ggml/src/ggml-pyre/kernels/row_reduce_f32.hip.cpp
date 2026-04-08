@@ -3,10 +3,16 @@
 struct pyre_row_reduce_f32_constants {
     long long ncols;
     long long nrows;
+    long long ne1;
+    long long ne2;
+    long long src_nb1;
+    long long src_nb2;
+    long long src_nb3;
+    long long dst_nb1;
+    long long dst_nb2;
+    long long dst_nb3;
     float eps;
     int pad;
-    long long src_nb1;
-    long long dst_nb1;
 };
 
 extern "C" __global__ void pyre_sum_rows_f32(
@@ -18,7 +24,10 @@ extern "C" __global__ void pyre_sum_rows_f32(
     }
 
     __shared__ float sumsh[256];
-    const char * src_row = reinterpret_cast<const char *>(src) + row * c.src_nb1;
+    const long long i3 = row / (c.ne1 * c.ne2);
+    const long long i2 = (row - i3 * c.ne1 * c.ne2) / c.ne1;
+    const long long i1 = row - i3 * c.ne1 * c.ne2 - i2 * c.ne1;
+    const char * src_row = reinterpret_cast<const char *>(src) + i1 * c.src_nb1 + i2 * c.src_nb2 + i3 * c.src_nb3;
     float sum = 0.0f;
     for (long long col = tid; col < c.ncols; col += 256) {
         sum += *reinterpret_cast<const float *>(src_row + col * sizeof(float));
@@ -36,7 +45,8 @@ extern "C" __global__ void pyre_sum_rows_f32(
     }
 
     if (tid == 0) {
-        *reinterpret_cast<float *>(reinterpret_cast<char *>(dst) + row * c.dst_nb1) = sumsh[0];
+        *reinterpret_cast<float *>(
+            reinterpret_cast<char *>(dst) + i1 * c.dst_nb1 + i2 * c.dst_nb2 + i3 * c.dst_nb3) = sumsh[0];
     }
 }
 
@@ -49,8 +59,11 @@ extern "C" __global__ void pyre_l2_norm_f32(
     }
 
     __shared__ float sumsh[256];
-    const char * src_row = reinterpret_cast<const char *>(src) + row * c.src_nb1;
-    char * dst_row = reinterpret_cast<char *>(dst) + row * c.dst_nb1;
+    const long long i3 = row / (c.ne1 * c.ne2);
+    const long long i2 = (row - i3 * c.ne1 * c.ne2) / c.ne1;
+    const long long i1 = row - i3 * c.ne1 * c.ne2 - i2 * c.ne1;
+    const char * src_row = reinterpret_cast<const char *>(src) + i1 * c.src_nb1 + i2 * c.src_nb2 + i3 * c.src_nb3;
+    char * dst_row = reinterpret_cast<char *>(dst) + i1 * c.dst_nb1 + i2 * c.dst_nb2 + i3 * c.dst_nb3;
     float sum = 0.0f;
     for (long long col = tid; col < c.ncols; col += 256) {
         const float value = *reinterpret_cast<const float *>(src_row + col * sizeof(float));
