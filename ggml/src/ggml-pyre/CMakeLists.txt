@@ -45,6 +45,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_add_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32_broadcast.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_rms_norm_mul_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/argsort_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/clamp_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/concat_f32.hip.cpp"
