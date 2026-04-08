@@ -56,6 +56,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32_broadcast.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16_set_rows.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16_swiglu.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16_batched.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16.hip.cpp"

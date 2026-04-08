@@ -67,6 +67,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_add_rms_norm_mul_fusion = false;
     bool disable_mul_mat_swiglu_fusion = false;
     bool disable_mul_mat_id_swiglu_fusion = false;
+    bool disable_mul_mat_set_rows_fusion = false;
     bool disable_rope_set_rows_fusion = false;
     bool disable_rms_norm_mul_rope_fusion = false;
     bool disable_topk_subgroup = false;
@@ -129,6 +130,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_set_rows_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_provider;
@@ -398,6 +400,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
         /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
+        /* .disable_mul_mat_set_rows_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SET_ROWS_FUSION"),
         /* .disable_rope_set_rows_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ROPE_SET_ROWS_FUSION"),
         /* .disable_rms_norm_mul_rope_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_RMS_NORM_MUL_ROPE_FUSION"),
         /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
@@ -449,6 +452,17 @@ static void ggml_backend_pyre_trace_tensor(
         static_cast<size_t>(tensor->nb[3]),
         ggml_is_contiguous(tensor) ? 1 : 0,
         tensor->view_src ? 1 : 0);
+}
+
+static bool ggml_backend_pyre_is_reshape_view(const ggml_tensor * op) {
+    return op && (op->op == GGML_OP_RESHAPE || op->op == GGML_OP_VIEW);
+}
+
+static const ggml_tensor * ggml_backend_pyre_unwrap_reshape_view_src0(const ggml_tensor * op) {
+    while (ggml_backend_pyre_is_reshape_view(op)) {
+        op = op->src[0];
+    }
+    return op;
 }
 
 static const ggml_pyre_kernel_entry * ggml_backend_pyre_find_catalog_entry(const char * name) {
@@ -808,6 +822,14 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_swiglu_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_swiglu_f32"),
         &device_context->mul_mat_vec_bf16_swiglu_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_bf16_set_rows_f16_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_set_rows_f16"),
+        &device_context->mul_mat_vec_bf16_set_rows_f16_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_vec_f32_provider(
@@ -3912,6 +3934,38 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_bf16(
            ggml_is_contiguous(op);
 }
 
+static bool ggml_backend_pyre_supports_mul_mat_vec_bf16_set_rows_f16(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * mul_mat,
+        const ggml_tensor * adapter,
+        const ggml_tensor * set_rows) {
+    return device_context->mul_mat_vec_bf16_set_rows_f16_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           !device_context->policy.disable_mul_mat_set_rows_fusion &&
+           mul_mat &&
+           adapter &&
+           set_rows &&
+           mul_mat->op == GGML_OP_MUL_MAT &&
+           set_rows->op == GGML_OP_SET_ROWS &&
+           ggml_backend_pyre_unwrap_reshape_view_src0(adapter) == mul_mat &&
+           set_rows->src[0] == adapter &&
+           set_rows->type == GGML_TYPE_F16 &&
+           set_rows->src[1] &&
+           set_rows->src[1]->type == GGML_TYPE_I64 &&
+           set_rows->src[2] &&
+           set_rows->src[2]->type == GGML_TYPE_F16 &&
+           ggml_backend_pyre_supports_mul_mat_vec_bf16(device_context, mul_mat) &&
+           ggml_backend_pyre_supports_set_rows(device_context, set_rows) &&
+           mul_mat->src[1]->ne[1] == 1 &&
+           adapter->ne[0] == 1 &&
+           adapter->ne[1] == mul_mat->ne[0] &&
+           adapter->ne[2] == 1 &&
+           adapter->ne[3] == 1 &&
+           set_rows->ne[0] == 1 &&
+           set_rows->ne[2] == 1 &&
+           set_rows->ne[3] == 1;
+}
+
 static bool ggml_backend_pyre_supports_mul_mat_vec_bf16_swiglu(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * gate,
@@ -4290,6 +4344,14 @@ struct ggml_backend_pyre_mul_mat_vec_constants {
     int64_t k;
     int64_t rows;
     int64_t cols;
+};
+
+struct ggml_backend_pyre_mul_mat_vec_bf16_set_rows_constants {
+    int64_t k;
+    int64_t rows;
+    int64_t set_rows_ne1;
+    int64_t idx_nb0;
+    int64_t dst_nb1;
 };
 
 struct ggml_backend_pyre_quantize_q8_1_constants {
@@ -4721,6 +4783,64 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
     }
     context->dispatch_count++;
     context->mul_mat_vec_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_bf16_set_rows_f16(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * mul_mat,
+        const ggml_tensor * set_rows) {
+    const ggml_tensor * src0 = mul_mat->src[0];
+    const ggml_tensor * src1 = mul_mat->src[1];
+    const ggml_tensor * idxs = set_rows->src[1];
+    pyre_buffer_ref_t bindings[4] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(idxs, &bindings[2]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(set_rows, &bindings[3])) {
+        GGML_LOG_ERROR("%s: MUL_MAT_SET_ROWS tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_mul_mat_vec_bf16_set_rows_constants constants = {
+        /* .k             = */ src0->ne[0],
+        /* .rows          = */ src0->ne[1],
+        /* .set_rows_ne1  = */ set_rows->ne[1],
+        /* .idx_nb0       = */ static_cast<int64_t>(idxs->nb[0]),
+        /* .dst_nb1       = */ static_cast<int64_t>(set_rows->nb[1]),
+    };
+
+    const auto & provider = context->device_context->mul_mat_vec_bf16_set_rows_f16_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.rows),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            4,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->mul_mat_vec_count++;
+    context->set_rows_count++;
 
     return GGML_STATUS_SUCCESS;
 }
@@ -5505,8 +5625,83 @@ static bool ggml_backend_pyre_try_topk_moe_fusion(
         2);
 }
 
+static int ggml_backend_pyre_find_node_index(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * node,
+        int begin,
+        int end) {
+    for (int i = begin; i < end; ++i) {
+        if (cgraph->nodes[i] == node) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool ggml_backend_pyre_try_defer_mul_mat_set_rows_fusion(
+        const ggml_cgraph * cgraph,
+        int mul_mat_idx,
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor ** set_rows_out) {
+    const ggml_tensor * mul_mat = cgraph->nodes[mul_mat_idx];
+    if (mul_mat->op != GGML_OP_MUL_MAT) {
+        return false;
+    }
+
+    for (int set_rows_idx = mul_mat_idx + 1; set_rows_idx < cgraph->n_nodes; ++set_rows_idx) {
+        const ggml_tensor * set_rows = cgraph->nodes[set_rows_idx];
+        if (set_rows->op != GGML_OP_SET_ROWS ||
+            ggml_backend_pyre_unwrap_reshape_view_src0(set_rows->src[0]) != mul_mat ||
+            !ggml_backend_pyre_supports_mul_mat_vec_bf16_set_rows_f16(
+                device_context, mul_mat, set_rows->src[0], set_rows)) {
+            continue;
+        }
+
+        std::vector<int> idxs;
+        std::vector<ggml_op> ops;
+        std::vector<const ggml_tensor *> metadata_nodes;
+        for (const ggml_tensor * current = set_rows->src[0]; current != mul_mat; current = current->src[0]) {
+            if (!ggml_backend_pyre_is_reshape_view(current)) {
+                return false;
+            }
+            metadata_nodes.push_back(current);
+        }
+
+        idxs.push_back(mul_mat_idx);
+        ops.push_back(GGML_OP_MUL_MAT);
+        for (int m = static_cast<int>(metadata_nodes.size()) - 1; m >= 0; --m) {
+            const int metadata_idx = ggml_backend_pyre_find_node_index(
+                cgraph, metadata_nodes[m], mul_mat_idx + 1, set_rows_idx);
+            if (metadata_idx < 0) {
+                return false;
+            }
+            idxs.push_back(metadata_idx);
+            ops.push_back(metadata_nodes[m]->op);
+        }
+        idxs.push_back(set_rows_idx);
+        ops.push_back(GGML_OP_SET_ROWS);
+
+        const int outputs[1] = { set_rows_idx };
+        if (!ggml_can_fuse_subgraph_ext(
+                cgraph,
+                idxs.data(),
+                static_cast<int>(idxs.size()),
+                ops.data(),
+                outputs,
+                1)) {
+            continue;
+        }
+
+        *set_rows_out = set_rows;
+        return true;
+    }
+
+    return false;
+}
+
 static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * context = static_cast<ggml_backend_pyre_context *>(backend->context);
+    std::vector<const ggml_tensor *> deferred_mul_mat_set_rows;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         ggml_backend_pyre_topk_moe_fusion fusion;
@@ -5613,6 +5808,21 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 i += 2;
+                continue;
+            }
+        }
+        if (node->op == GGML_OP_MUL_MAT &&
+            !context->device_context->policy.disable_fusion &&
+            !context->device_context->policy.disable_mul_mat_set_rows_fusion) {
+            const ggml_tensor * set_rows = nullptr;
+            if (ggml_backend_pyre_try_defer_mul_mat_set_rows_fusion(
+                    cgraph, i, context->device_context, &set_rows)) {
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "defer MUL_MAT_SET_ROWS provider=pure_hip_bf16_f16 k=%" PRId64
+                    " rows=%" PRId64 " nr=%" PRId64 "\n",
+                    node->src[0]->ne[0], node->src[0]->ne[1], set_rows->src[0]->ne[1]);
+                deferred_mul_mat_set_rows.push_back(cgraph->nodes[i]);
                 continue;
             }
         }
@@ -5873,10 +6083,31 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
-            case GGML_OP_SET_ROWS:
+            case GGML_OP_SET_ROWS: {
                 if (!ggml_backend_pyre_supports_set_rows(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: SET_ROWS shape/type/layout is unsupported\n", __func__);
                     return GGML_STATUS_FAILED;
+                }
+                bool fused = false;
+                for (const ggml_tensor * deferred : deferred_mul_mat_set_rows) {
+                    if (ggml_backend_pyre_unwrap_reshape_view_src0(node->src[0]) == deferred &&
+                        ggml_backend_pyre_supports_mul_mat_vec_bf16_set_rows_f16(
+                            context->device_context, deferred, node->src[0], node)) {
+                        ggml_backend_pyre_trace_provider(
+                            context->device_context,
+                            "claim MUL_MAT_SET_ROWS provider=pure_hip_bf16_f16 k=%" PRId64
+                            " rows=%" PRId64 " nr=%" PRId64 "\n",
+                            deferred->src[0]->ne[0], deferred->src[0]->ne[1], node->src[0]->ne[1]);
+                        if (ggml_backend_pyre_dispatch_mul_mat_vec_bf16_set_rows_f16(context, deferred, node) !=
+                                GGML_STATUS_SUCCESS) {
+                            return GGML_STATUS_FAILED;
+                        }
+                        fused = true;
+                        break;
+                    }
+                }
+                if (fused) {
+                    break;
                 }
                 ggml_backend_pyre_trace_provider(
                     context->device_context,
@@ -5886,6 +6117,7 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            }
             case GGML_OP_GET_ROWS:
                 if (!ggml_backend_pyre_supports_get_rows_f32(context->device_context, node)) {
                     GGML_LOG_ERROR("%s: GET_ROWS shape/type/layout is unsupported\n", __func__);
@@ -6440,6 +6672,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             !device_context->policy.disable_mul_mat_vec) {
             (void) ggml_backend_pyre_load_mul_mat_vec_bf16_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_bf16_swiglu_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_bf16_set_rows_f16_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f16_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f16_batched_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_f32_provider(device_context.get());
