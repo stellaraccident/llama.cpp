@@ -20,6 +20,28 @@ struct pyre_mul_mat_vec_f32_batched_constants {
     long long dst_nb3;
 };
 
+static __device__ __forceinline__ float pyre_reduce_256(float sum, float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum += __shfl_down(sum, offset);
+    }
+    if (lane == 0) {
+        shared[wave] = sum;
+    }
+    __syncthreads();
+
+    sum = lane < (256 / warpSize) ? shared[lane] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum += __shfl_down(sum, offset);
+        }
+    }
+    return sum;
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_f32_batched_f32(
         const float * src0, const float * src1, float * dst,
         pyre_mul_mat_vec_f32_batched_constants c) {
@@ -53,20 +75,11 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_f32(
         sum += a * b;
     }
 
-    sumsh[tid] = sum;
-    __builtin_amdgcn_s_barrier();
-
-    for (unsigned int step = 128; step > 0; step >>= 1) {
-        if (tid < step) {
-            sum += sumsh[tid + step];
-            sumsh[tid] = sum;
-        }
-        __builtin_amdgcn_s_barrier();
-    }
+    sum = pyre_reduce_256(sum, sumsh);
 
     if (tid == 0) {
         *reinterpret_cast<float *>(
             reinterpret_cast<char *>(dst) + row * sizeof(float) + i11 * c.dst_nb1 + i12 * c.dst_nb2 + i13 * c.dst_nb3) =
-            sumsh[0];
+            sum;
     }
 }

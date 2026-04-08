@@ -12,6 +12,8 @@ struct pyre_ssm_conv_constants {
     long long weight_nb1;
     long long dst_nb1;
     long long dst_nb2;
+    int apply_silu;
+    int pad;
 };
 
 extern "C" __global__ void pyre_ssm_conv_f32(
@@ -37,6 +39,9 @@ extern "C" __global__ void pyre_ssm_conv_f32(
         const float x = *reinterpret_cast<const float *>(src_base + i * sizeof(float));
         const float w = *reinterpret_cast<const float *>(weight_base + i * sizeof(float));
         sum += x * w;
+    }
+    if (c.apply_silu) {
+        sum = sum / (1.0f + __builtin_expf(-sum));
     }
 
     *reinterpret_cast<float *>(

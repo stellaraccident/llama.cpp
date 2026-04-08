@@ -1,4 +1,5 @@
 #include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
 #include <stdint.h>
 
 static __device__ __forceinline__ float pyre_bf16_to_f32(uint16_t value) {
@@ -7,6 +8,28 @@ static __device__ __forceinline__ float pyre_bf16_to_f32(uint16_t value) {
         float f;
     } bits = { static_cast<uint32_t>(value) << 16 };
     return bits.f;
+}
+
+static __device__ __forceinline__ float pyre_reduce_256(float sum, float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum += __shfl_down(sum, offset);
+    }
+    if (lane == 0) {
+        shared[wave] = sum;
+    }
+    __syncthreads();
+
+    sum = lane < (256 / warpSize) ? shared[lane] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum += __shfl_down(sum, offset);
+        }
+    }
+    return sum;
 }
 
 extern "C" __global__ void pyre_mul_mat_vec_bf16_f32(
@@ -28,18 +51,9 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_f32(
         sum += pyre_bf16_to_f32(src0_row[i]) * src1_col[i];
     }
 
-    sumsh[tid] = sum;
-    __builtin_amdgcn_s_barrier();
-
-    for (unsigned int step = 128; step > 0; step >>= 1) {
-        if (tid < step) {
-            sum += sumsh[tid + step];
-            sumsh[tid] = sum;
-        }
-        __builtin_amdgcn_s_barrier();
-    }
+    sum = pyre_reduce_256(sum, sumsh);
 
     if (tid == 0) {
-        dst[col * rows + row] = sumsh[0];
+        dst[col * rows + row] = sum;
     }
 }

@@ -212,7 +212,7 @@ KERNELS = [
         "source": "ssm_conv_f32.hip.cpp",
         "format": "FPIH",
         "binding_count": 3,
-        "constants_size": 80,
+        "constants_size": 88,
         "workgroup_size": (256, 1, 1),
     },
     {
@@ -269,6 +269,14 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 4,
         "constants_size": 104,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_id_q4_k_mul_f32",
+        "source": "mul_mat_id_q4_k_mul.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 5,
+        "constants_size": 112,
         "workgroup_size": (256, 1, 1),
     },
     {
