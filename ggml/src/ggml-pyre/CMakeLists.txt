@@ -63,6 +63,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_q8_1.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_mul.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_swiglu.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_mul_q8_1.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q4_k.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q4_k_q8_1.hip.cpp"

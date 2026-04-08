@@ -50,6 +50,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_mul_mat_id = false;
     bool disable_add_add_fusion = false;
     bool disable_add_rms_norm_mul_fusion = false;
+    bool disable_mul_mat_id_swiglu_fusion = false;
     bool disable_topk_subgroup = false;
     bool enable_q8_1_mmvq = false;
     bool disable_q8_1_mmvq = false;
@@ -113,6 +114,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_mul_provider;
+    ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_mul_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_provider;
     ggml_backend_pyre_op_provider quantize_q8_1_provider;
@@ -372,6 +374,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
         /* .disable_add_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_ADD_FUSION"),
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
+        /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
         /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
         /* .enable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ"),
         /* .disable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ"),
@@ -788,6 +791,14 @@ static bool ggml_backend_pyre_load_mul_mat_id_q4_k_mul_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_mul_f32"),
         &device_context->mul_mat_id_q4_k_mul_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_swiglu_f32"),
+        &device_context->mul_mat_id_q4_k_swiglu_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_id_q4_k_mul_q8_1_provider(
@@ -3735,6 +3746,34 @@ static bool ggml_backend_pyre_supports_mul_mat_id_q4_k_mul_q8_1(
            ggml_backend_pyre_supports_mul_mat_id_q4_k_mul(device_context, mmid, mul);
 }
 
+static bool ggml_backend_pyre_supports_mul_mat_id_q4_k_swiglu(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * gate,
+        const ggml_tensor * up,
+        const ggml_tensor * swiglu) {
+    return device_context->mul_mat_id_q4_k_swiglu_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           gate && up && swiglu &&
+           gate->op == GGML_OP_MUL_MAT_ID &&
+           up->op == GGML_OP_MUL_MAT_ID &&
+           swiglu->op == GGML_OP_GLU &&
+           ggml_get_glu_op(swiglu) == GGML_GLU_OP_SWIGLU &&
+           ggml_get_op_params_i32(swiglu, 1) == 0 &&
+           swiglu->src[0] == gate &&
+           swiglu->src[1] == up &&
+           ggml_backend_pyre_supports_mul_mat_id_q4_k(device_context, gate) &&
+           ggml_backend_pyre_supports_mul_mat_id_q4_k(device_context, up) &&
+           gate->src[1] == up->src[1] &&
+           gate->src[2] == up->src[2] &&
+           gate->src[0]->type == up->src[0]->type &&
+           ggml_are_same_shape(gate->src[0], up->src[0]) &&
+           ggml_are_same_stride(gate->src[0], up->src[0]) &&
+           ggml_are_same_shape(gate, up) &&
+           ggml_are_same_shape(swiglu, up) &&
+           swiglu->type == GGML_TYPE_F32 &&
+           swiglu->nb[0] == ggml_type_size(swiglu->type);
+}
+
 struct ggml_backend_pyre_mul_mat_vec_constants {
     int64_t k;
     int64_t rows;
@@ -3816,6 +3855,24 @@ struct ggml_backend_pyre_mul_mat_id_q4_k_mul_constants {
     int64_t dst_nb1;
     int64_t dst_nb2;
     int64_t scale_nb1;
+};
+
+struct ggml_backend_pyre_mul_mat_id_q4_k_swiglu_constants {
+    int64_t k;
+    int64_t rows;
+    int64_t n_ids;
+    int64_t n_tokens;
+    int64_t n_experts;
+    int64_t gate_nb1;
+    int64_t gate_nb2;
+    int64_t up_nb1;
+    int64_t up_nb2;
+    int64_t src1_nb1;
+    int64_t src1_nb2;
+    int64_t ids_nb0;
+    int64_t ids_nb1;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
 };
 
 struct ggml_backend_pyre_mul_mat_id_q4_k_mul_q8_1_constants {
@@ -4256,6 +4313,74 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_mul(
     };
 
     const auto & provider = context->device_context->mul_mat_id_q4_k_mul_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.rows),
+            static_cast<uint32_t>(constants.n_ids * constants.n_tokens),
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            5,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->mul_mat_id_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_swiglu(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * gate,
+        const ggml_tensor * up,
+        const ggml_tensor * swiglu) {
+    const ggml_tensor * src1 = up->src[1];
+    const ggml_tensor * ids = up->src[2];
+    pyre_buffer_ref_t bindings[5] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(gate->src[0], &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(up->src[0], &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[2]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(ids, &bindings[3]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(swiglu, &bindings[4])) {
+        GGML_LOG_ERROR("%s: MUL_MAT_ID_SWIGLU tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_mul_mat_id_q4_k_swiglu_constants constants = {
+        /* .k          = */ up->src[0]->ne[0],
+        /* .rows       = */ up->src[0]->ne[1],
+        /* .n_ids      = */ ids->ne[0],
+        /* .n_tokens   = */ ids->ne[1],
+        /* .n_experts  = */ up->src[0]->ne[2],
+        /* .gate_nb1   = */ static_cast<int64_t>(gate->src[0]->nb[1]),
+        /* .gate_nb2   = */ static_cast<int64_t>(gate->src[0]->nb[2]),
+        /* .up_nb1     = */ static_cast<int64_t>(up->src[0]->nb[1]),
+        /* .up_nb2     = */ static_cast<int64_t>(up->src[0]->nb[2]),
+        /* .src1_nb1   = */ src1->ne[1] == 1 ? 0 : static_cast<int64_t>(src1->nb[1]),
+        /* .src1_nb2   = */ static_cast<int64_t>(src1->nb[2]),
+        /* .ids_nb0    = */ static_cast<int64_t>(ids->nb[0]),
+        /* .ids_nb1    = */ static_cast<int64_t>(ids->nb[1]),
+        /* .dst_nb1    = */ static_cast<int64_t>(swiglu->nb[1]),
+        /* .dst_nb2    = */ static_cast<int64_t>(swiglu->nb[2]),
+    };
+
+    const auto & provider = context->device_context->mul_mat_id_q4_k_swiglu_provider;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.rows),
@@ -4847,6 +4972,33 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
             }
             i++;
             continue;
+        }
+        if (node->op == GGML_OP_MUL_MAT_ID &&
+            !context->device_context->policy.disable_fusion &&
+            !context->device_context->policy.disable_mul_mat_id_swiglu_fusion &&
+            i + 2 < cgraph->n_nodes &&
+            cgraph->nodes[i + 1]->op == GGML_OP_MUL_MAT_ID &&
+            cgraph->nodes[i + 2]->op == GGML_OP_GLU) {
+            const ggml_tensor * first = node;
+            const ggml_tensor * second = cgraph->nodes[i + 1];
+            const ggml_tensor * swiglu = cgraph->nodes[i + 2];
+            const ggml_tensor * gate = swiglu->src[0];
+            const ggml_tensor * up = swiglu->src[1];
+            if (((gate == first && up == second) || (gate == second && up == first)) &&
+                ggml_backend_pyre_supports_mul_mat_id_q4_k_swiglu(context->device_context, gate, up, swiglu) &&
+                ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_MUL_MAT_ID, GGML_OP_MUL_MAT_ID, GGML_OP_GLU }, { i + 2 })) {
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim MUL_MAT_ID_SWIGLU provider=pure_hip_q4_K k=%" PRId64
+                    " rows=%" PRId64 " ids=%" PRId64 " tokens=%" PRId64 "\n",
+                    up->src[0]->ne[0], up->src[0]->ne[1], up->src[2]->ne[0], up->src[2]->ne[1]);
+                if (ggml_backend_pyre_dispatch_mul_mat_id_q4_k_swiglu(context, gate, up, swiglu) !=
+                        GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                i += 2;
+                continue;
+            }
         }
         if (node->op == GGML_OP_MUL_MAT_ID &&
             !context->device_context->policy.disable_fusion &&
@@ -5625,6 +5777,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_mul_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_mul_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_quantize_q8_1_provider(device_context.get());

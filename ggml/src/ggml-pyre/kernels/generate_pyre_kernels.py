@@ -312,6 +312,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_id_q4_k_swiglu_f32",
+        "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 5,
+        "constants_size": 120,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_id_q4_k_mul_q8_1_f32",
         "source": "mul_mat_id_q4_k_mul_q8_1.hip.cpp",
         "format": "FPIH",
