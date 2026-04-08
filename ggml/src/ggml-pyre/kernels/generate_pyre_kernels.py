@@ -413,7 +413,7 @@ def compile_kernel(clang, rocm_path, arch, source, output):
         "-x", "hip",
         "--offload-device-only",
         f"--offload-arch={arch}",
-        "-O2",
+        "-O3",
         "-c", str(source),
         "-o", str(output),
     ]

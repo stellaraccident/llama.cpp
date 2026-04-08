@@ -1620,9 +1620,6 @@ static ggml_status ggml_backend_pyre_dispatch_rms_norm(
     context->dispatch_count++;
     context->rms_norm_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -1697,9 +1694,6 @@ static ggml_status ggml_backend_pyre_dispatch_rms_norm_mul(
     context->dispatch_count++;
     context->rms_norm_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -1785,9 +1779,6 @@ static ggml_status ggml_backend_pyre_dispatch_add_rms_norm_mul_broadcast(
     context->dispatch_count++;
     context->rms_norm_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2058,9 +2049,6 @@ static ggml_status ggml_backend_pyre_dispatch_binary_elementwise_f32(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2127,9 +2115,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_broadcast_f32(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2196,9 +2181,6 @@ static ggml_status ggml_backend_pyre_dispatch_add_broadcast_f32(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2272,9 +2254,6 @@ static ggml_status ggml_backend_pyre_dispatch_add_add_broadcast_f32(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2341,9 +2320,6 @@ static ggml_status ggml_backend_pyre_dispatch_div_broadcast_f32(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2392,9 +2368,6 @@ static ggml_status ggml_backend_pyre_dispatch_unary_f32(
     context->dispatch_count++;
     context->unary_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2444,9 +2417,6 @@ static ggml_status ggml_backend_pyre_dispatch_swiglu_f32(
     context->dispatch_count++;
     context->unary_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2497,9 +2467,6 @@ static ggml_status ggml_backend_pyre_dispatch_silu_mul_f32(
     context->dispatch_count++;
     context->unary_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2555,9 +2522,6 @@ static ggml_status ggml_backend_pyre_dispatch_scale_f32(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2585,9 +2549,6 @@ static ggml_status ggml_backend_pyre_dispatch_cpy(
                     size))) {
                 return GGML_STATUS_FAILED;
             }
-            if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-                return GGML_STATUS_FAILED;
-            }
         }
     } else {
         const size_t row_size = ggml_row_size(src0->type, src0->ne[0]);
@@ -2612,9 +2573,6 @@ static ggml_status ggml_backend_pyre_dispatch_cpy(
                     dst_offset += row_size;
                 }
             }
-        }
-        if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-            return GGML_STATUS_FAILED;
         }
     }
     context->copy_count++;
@@ -2691,9 +2649,6 @@ static ggml_status ggml_backend_pyre_dispatch_set_rows(
     context->dispatch_count++;
     context->set_rows_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2742,9 +2697,6 @@ static ggml_status ggml_backend_pyre_dispatch_sum_rows(
     context->dispatch_count++;
     context->reduction_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2795,9 +2747,6 @@ static ggml_status ggml_backend_pyre_dispatch_l2_norm(
     context->dispatch_count++;
     context->reduction_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2841,9 +2790,6 @@ static ggml_status ggml_backend_pyre_dispatch_clamp(
     context->dispatch_count++;
     context->elementwise_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2904,9 +2850,6 @@ static ggml_status ggml_backend_pyre_dispatch_get_rows_f32(
     context->dispatch_count++;
     context->get_rows_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2957,9 +2900,6 @@ static ggml_status ggml_backend_pyre_dispatch_concat_f32(
     context->dispatch_count++;
     context->concat_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3024,9 +2964,6 @@ static ggml_status ggml_backend_pyre_dispatch_soft_max_f32(
     context->dispatch_count++;
     context->soft_max_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3066,9 +3003,6 @@ static ggml_status ggml_backend_pyre_dispatch_argsort_f32(
     context->dispatch_count++;
     context->argsort_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3138,9 +3072,6 @@ static ggml_status ggml_backend_pyre_dispatch_topk_moe_f32(
     context->dispatch_count++;
     context->topk_moe_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3210,9 +3141,6 @@ static ggml_status ggml_backend_pyre_dispatch_rope_f32(
     context->dispatch_count++;
     context->rope_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3280,9 +3208,6 @@ static ggml_status ggml_backend_pyre_dispatch_ssm_conv(
     context->dispatch_count++;
     context->ssm_conv_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3366,9 +3291,6 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
     context->dispatch_count++;
     context->gated_delta_net_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -3921,7 +3843,7 @@ static bool ggml_backend_pyre_dispatch_quantize_q8_1(
         return false;
     }
     context->dispatch_count++;
-    return GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream));
+    return true;
 }
 
 static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_q4_k_q8_1(
@@ -3981,9 +3903,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_q4_k_q8_1(
         return GGML_STATUS_FAILED;
     }
     context->dispatch_count++;
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
 
     pyre_buffer_ref_t bindings[3] = {};
     if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
@@ -4027,9 +3946,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_q4_k_q8_1(
     context->dispatch_count++;
     context->mul_mat_vec_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -4099,9 +4015,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
         context->dispatch_count++;
         context->mul_mat_vec_count++;
 
-        if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-            return GGML_STATUS_FAILED;
-        }
         return GGML_STATUS_SUCCESS;
     }
 
@@ -4181,9 +4094,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
     context->dispatch_count++;
     context->mul_mat_vec_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -4248,9 +4158,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
     context->dispatch_count++;
     context->mul_mat_id_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -4319,9 +4226,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_mul(
     context->dispatch_count++;
     context->mul_mat_id_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -4390,9 +4294,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_q8_1(
     context->dispatch_count++;
     context->mul_mat_id_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -4465,9 +4366,6 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_mul_q8_1(
     context->dispatch_count++;
     context->mul_mat_id_count++;
 
-    if (!GGML_PYRE_CHECK(pyre_stream_execution_barrier(context->stream))) {
-        return GGML_STATUS_FAILED;
-    }
     return GGML_STATUS_SUCCESS;
 }
 
