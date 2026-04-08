@@ -248,6 +248,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_flash_attn_ext_f32_q4_0_decode",
+        "source": "flash_attn_ext_f32_q4_0_decode.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 6,
+        "constants_size": 208,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_argsort_f32_i32",
         "source": "argsort_f32.hip.cpp",
         "format": "FPIH",
