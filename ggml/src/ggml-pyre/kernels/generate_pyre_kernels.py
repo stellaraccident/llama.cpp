@@ -24,6 +24,22 @@ KERNELS = [
         "workgroup_size": (512, 1, 1),
     },
     {
+        "name": "pyre_rms_norm_mul_rope_f32",
+        "source": "rms_norm_mul_rope_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 184,
+        "workgroup_size": (512, 1, 1),
+    },
+    {
+        "name": "pyre_rms_norm_mul_rope_set_rows_f32_f16",
+        "source": "rms_norm_mul_rope_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 5,
+        "constants_size": 256,
+        "workgroup_size": (512, 1, 1),
+    },
+    {
         "name": "pyre_add_rms_norm_mul_f32_broadcast",
         "source": "add_rms_norm_mul_f32_broadcast.hip.cpp",
         "format": "FPIH",
