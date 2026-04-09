@@ -31,33 +31,35 @@ static __device__ __forceinline__ float pyre_reduce_256(float sum, float * share
     return sum;
 }
 
-static __device__ __forceinline__ float pyre_dequant_q6_k(
+static __device__ __forceinline__ int pyre_q6_k_value(
         const pyre_block_q6_K * block, int in_block) {
     const int half = in_block / 128;
     const int idx = in_block - half * 128;
     const int lane = idx & 31;
     const int ql_base = half * 64;
     const int qh_base = half * 32;
-    const int sc_base = half * 8;
 
     int q = 0;
-    int scale = 0;
     if (idx < 32) {
         q = (block->ql[ql_base + lane] & 0x0F) | (((block->qh[qh_base + lane] >> 0) & 3) << 4);
-        scale = block->scales[sc_base + lane / 16 + 0];
     } else if (idx < 64) {
         q = (block->ql[ql_base + lane + 32] & 0x0F) | (((block->qh[qh_base + lane] >> 2) & 3) << 4);
-        scale = block->scales[sc_base + lane / 16 + 2];
     } else if (idx < 96) {
         q = (block->ql[ql_base + lane] >> 4) | (((block->qh[qh_base + lane] >> 4) & 3) << 4);
-        scale = block->scales[sc_base + lane / 16 + 4];
     } else {
         q = (block->ql[ql_base + lane + 32] >> 4) | (((block->qh[qh_base + lane] >> 6) & 3) << 4);
-        scale = block->scales[sc_base + lane / 16 + 6];
     }
 
-    return __half2float(__ushort_as_half(block->d)) * static_cast<float>(scale) *
-        static_cast<float>(q - 32);
+    return q - 32;
+}
+
+static __device__ __forceinline__ int pyre_q6_k_scale(
+        const pyre_block_q6_K * block,
+        int group,
+        int lane) {
+    const int half = group >> 2;
+    const int group_in_half = group & 3;
+    return static_cast<int>(block->scales[half * 8 + group_in_half * 2 + lane / 16]);
 }
 
 extern "C" __global__ void pyre_mul_mat_vec_q6_k_f32(
@@ -79,15 +81,19 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_f32(
 
     const int block_lane = tid & 63;
     const int block_slot = tid >> 6;
-    const int in_block_base = block_lane << 2;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+    const int in_block_base = group * 32 + lane;
 
     for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 4) {
         const pyre_block_q6_K * block = row_blocks + block_idx;
         const long long src_base = block_idx * 256 + in_block_base;
+        const float d = __half2float(__ushort_as_half(block->d)) *
+            static_cast<float>(pyre_q6_k_scale(block, group, lane));
 
         #pragma unroll
         for (int j = 0; j < 4; ++j) {
-            sum += pyre_dequant_q6_k(block, in_block_base + j) * src1_col[src_base + j];
+            sum += d * static_cast<float>(pyre_q6_k_value(block, in_block_base + j)) * src1_col[src_base + j];
         }
     }
 
