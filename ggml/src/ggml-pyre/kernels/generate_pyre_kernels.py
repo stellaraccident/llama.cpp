@@ -344,11 +344,19 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_ssm_conv_update_f32",
+        "source": "ssm_conv_update_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 5,
+        "constants_size": 104,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_gated_delta_net_f32",
         "source": "gated_delta_net_f32.hip.cpp",
         "format": "FPIH",
-        "binding_count": 7,
-        "constants_size": 200,
+        "binding_count": 8,
+        "constants_size": 208,
         "workgroup_size": (256, 1, 1),
     },
     {

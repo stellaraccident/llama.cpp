@@ -26,6 +26,7 @@ struct pyre_gated_delta_net_f32_constants {
     long long beta_nb1;
     long long beta_nb2;
     long long beta_nb3;
+    long long state_dst_offset;
     float scale;
     int pad;
 };
@@ -38,6 +39,7 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
         const float * beta,
         const float * state_in,
         float * dst,
+        float * state_dst,
         pyre_gated_delta_net_f32_constants c) {
     const long long col = __builtin_amdgcn_workgroup_id_x();
     const long long head = __builtin_amdgcn_workgroup_id_y();
@@ -58,7 +60,8 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
 
     const long long attn_score_elems = c.S_v * c.H * c.n_tokens * c.n_seqs;
     float * attn_out = dst + (seq * c.n_tokens * c.H + head) * c.S_v + col;
-    float * state_out = dst + attn_score_elems + (seq * c.H + head) * c.S_v * c.S_v + col * c.S_v;
+    (void) attn_score_elems;
+    float * state_out = state_dst + c.state_dst_offset + (seq * c.H + head) * c.S_v * c.S_v + col * c.S_v;
     const float * state_col = state_in + (seq * c.H + head) * c.S_v * c.S_v + col * c.S_v;
 
     float s = 0.0f;
