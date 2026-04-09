@@ -22,6 +22,20 @@ Common commands:
 ./tools/pyre-epic2/pyre-epic2-bench.sh smoke cpu pyre-fallback pyre-rmsnorm
 ```
 
+Trace comparison:
+
+```bash
+./tools/pyre-epic2/pyre-trace-summary.py run-qwen --backend both --prompt 0 --gen 8
+./tools/pyre-epic2/pyre-trace-summary.py summarize \
+  --pyre-log /path/to/pyre-trace.log \
+  --vulkan-log /path/to/vulkan-trace.log
+```
+
+The Pyre side uses `GGML_PYRE_TRACE_PROVIDERS=1` and summarizes provider
+claims, fallback lines, hot shapes, and the backend provider summary. The Vulkan
+side uses `GGML_VK_PERF_LOGGER=1` and summarizes fusion/timing labels such as
+`MUL_MAT_ADD`, `MUL_MAT_ID_ADD_ID_MUL`, and `TOPK_MOE_*`.
+
 Kernel benchmark ops: `rms_norm`, `mul_mat_vec_f32`, `mul_mat_vec_f16`,
 `mul_mat_vec_bf16`, `mul_mat_vec_q4_k`, `mul_mat_vec_q5_k`,
 `mul_mat_vec_q6_k`, `mul_mat_vec_q8_0`, `mul_mat_id_q4_k`,
