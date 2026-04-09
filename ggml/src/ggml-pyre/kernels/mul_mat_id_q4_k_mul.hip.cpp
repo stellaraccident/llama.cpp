@@ -37,7 +37,8 @@ static __device__ __forceinline__ void pyre_get_scale_min_k4_id_mul(
     }
 }
 
-static __device__ __forceinline__ float pyre_reduce_256(float sum, float * shared) {
+template <int WG_SIZE>
+static __device__ __forceinline__ float pyre_reduce_wg(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
     const unsigned int wave = tid / warpSize;
@@ -45,12 +46,15 @@ static __device__ __forceinline__ float pyre_reduce_256(float sum, float * share
     for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
         sum += __shfl_down(sum, offset);
     }
+    if (WG_SIZE <= warpSize) {
+        return sum;
+    }
     if (lane == 0) {
         shared[wave] = sum;
     }
     __syncthreads();
 
-    sum = lane < (256 / warpSize) ? shared[lane] : 0.0f;
+    sum = lane < ((WG_SIZE + warpSize - 1) / warpSize) ? shared[lane] : 0.0f;
     if (wave == 0) {
         for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
             sum += __shfl_down(sum, offset);
@@ -59,7 +63,8 @@ static __device__ __forceinline__ float pyre_reduce_256(float sum, float * share
     return sum;
 }
 
-extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_f32(
+template <int WG_SIZE>
+static __device__ __forceinline__ void pyre_mul_mat_id_q4_k_mul_f32_impl(
         const pyre_block_q4_K_id_mul * src0,
         const float * src1,
         const int * ids,
@@ -85,18 +90,19 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_f32(
         return;
     }
 
-    __shared__ float sumsh[256];
+    __shared__ float sumsh[WG_SIZE / 32];
     const char * src0_row_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2 + row * c.src0_nb1;
     const char * src1_col = reinterpret_cast<const char *>(src1) + id_pos * c.src1_nb1 + token * c.src1_nb2;
     float sum = 0.0f;
 
     const int block_lane = tid & 63;
     const int block_slot = tid >> 6;
+    const int block_stride = WG_SIZE >> 6;
     const int group = block_lane >> 3;
     const int lane = (block_lane & 7) << 2;
     const long long blocks_per_row = c.k / 256;
 
-    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 4) {
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += block_stride) {
         const pyre_block_q4_K_id_mul * block = reinterpret_cast<const pyre_block_q4_K_id_mul *>(
             src0_row_base + block_idx * sizeof(pyre_block_q4_K_id_mul));
 
@@ -120,7 +126,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_f32(
         }
     }
 
-    sum = pyre_reduce_256(sum, sumsh);
+    sum = pyre_reduce_wg<WG_SIZE>(sum, sumsh);
 
     if (tid == 0) {
         const float scale_value = *reinterpret_cast<const float *>(
@@ -129,4 +135,34 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_f32(
             reinterpret_cast<char *>(dst) + row * sizeof(float) + id_pos * c.dst_nb1 + token * c.dst_nb2) =
             sum * scale_value;
     }
+}
+
+extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_f32(
+        const pyre_block_q4_K_id_mul * src0,
+        const float * src1,
+        const int * ids,
+        const float * scale,
+        float * dst,
+        pyre_mul_mat_id_q4_k_mul_constants c) {
+    pyre_mul_mat_id_q4_k_mul_f32_impl<256>(src0, src1, ids, scale, dst, c);
+}
+
+extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_wg128_f32(
+        const pyre_block_q4_K_id_mul * src0,
+        const float * src1,
+        const int * ids,
+        const float * scale,
+        float * dst,
+        pyre_mul_mat_id_q4_k_mul_constants c) {
+    pyre_mul_mat_id_q4_k_mul_f32_impl<128>(src0, src1, ids, scale, dst, c);
+}
+
+extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_wg64_f32(
+        const pyre_block_q4_K_id_mul * src0,
+        const float * src1,
+        const int * ids,
+        const float * scale,
+        float * dst,
+        pyre_mul_mat_id_q4_k_mul_constants c) {
+    pyre_mul_mat_id_q4_k_mul_f32_impl<64>(src0, src1, ids, scale, dst, c);
 }
