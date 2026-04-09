@@ -68,3 +68,44 @@ extern "C" __global__ void pyre_mul_mat_vec_q8_0_f32(
         dst[col * rows + row] = sum;
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_f32(
+        const pyre_block_q8_0 * src0, const float * src1, const float * bias, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long col = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows || col >= cols) {
+        return;
+    }
+
+    __shared__ float sumsh[256];
+
+    const long long blocks_per_row = k / 32;
+    const pyre_block_q8_0 * row_blocks = src0 + row * blocks_per_row;
+    const float * src1_col = src1 + col * k;
+    float sum = 0.0f;
+
+    const int block_lane = tid & 7;
+    const int block_slot = tid >> 3;
+    const int in_block_base = block_lane << 2;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 32) {
+        const pyre_block_q8_0 * block = row_blocks + block_idx;
+        const float d = __half2float(__ushort_as_half(block->d));
+        const long long src_base = block_idx * 32 + in_block_base;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const float value = d * static_cast<float>(block->qs[in_block_base + j]);
+            sum += value * src1_col[src_base + j];
+        }
+    }
+
+    sum = pyre_reduce_256(sum, sumsh);
+
+    if (tid == 0) {
+        const long long out_idx = col * rows + row;
+        dst[out_idx] = sum + bias[out_idx];
+    }
+}

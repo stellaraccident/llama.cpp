@@ -161,6 +161,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q8_0_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q8_0_add_provider;
     uint32_t fallback_trace_count = 0;
     uint32_t mul_mat_fallback_trace_count = 0;
     uint32_t mul_mat_id_fallback_trace_count = 0;
@@ -1086,6 +1087,14 @@ static bool ggml_backend_pyre_load_mul_mat_vec_q8_0_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q8_0_f32"),
         &device_context->mul_mat_vec_q8_0_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q8_0_add_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q8_0_add_f32"),
+        &device_context->mul_mat_vec_q8_0_add_provider);
 }
 
 static bool ggml_backend_pyre_supports_rms_norm(
@@ -4841,6 +4850,29 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q8_0(
         device_context, op, GGML_TYPE_Q8_0, device_context->mul_mat_vec_q8_0_provider, 32);
 }
 
+static bool ggml_backend_pyre_supports_mul_mat_vec_q8_0_add(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * mm,
+        const ggml_tensor * add) {
+    if (device_context->mul_mat_vec_q8_0_add_provider.kind !=
+            ggml_backend_pyre_provider_kind::direct_executable ||
+        !ggml_backend_pyre_supports_mul_mat_vec_q8_0(device_context, mm) ||
+        !add ||
+        add->op != GGML_OP_ADD ||
+        add->type != GGML_TYPE_F32 ||
+        (add->src[0] != mm && add->src[1] != mm) ||
+        !ggml_are_same_shape(add, mm) ||
+        !ggml_is_contiguous(add)) {
+        return false;
+    }
+
+    const ggml_tensor * bias = add->src[0] == mm ? add->src[1] : add->src[0];
+    return bias &&
+           bias->type == GGML_TYPE_F32 &&
+           ggml_are_same_shape(bias, mm) &&
+           ggml_is_contiguous(bias);
+}
+
 static const char * ggml_backend_pyre_mul_mat_vec_unsupported_reason(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
@@ -5519,6 +5551,62 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
     }
     context->dispatch_count++;
     context->mul_mat_vec_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_q8_0_add(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * mm,
+        const ggml_tensor * add) {
+    const ggml_tensor * bias = add->src[0] == mm ? add->src[1] : add->src[0];
+    const ggml_tensor * src0 = mm->src[0];
+    const ggml_tensor * src1 = mm->src[1];
+    pyre_buffer_ref_t bindings[4] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(src1, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(bias, &bindings[2]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(add, &bindings[3])) {
+        GGML_LOG_ERROR("%s: fused MUL_MAT_ADD tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_mul_mat_vec_constants constants = {
+        /* .k    = */ src0->ne[0],
+        /* .rows = */ src0->ne[1],
+        /* .cols = */ src1->ne[1],
+    };
+
+    const auto & provider = context->device_context->mul_mat_vec_q8_0_add_provider;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(constants.rows),
+            static_cast<uint32_t>(constants.cols),
+            1,
+        },
+        /* .workgroup_size = */ {
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            4,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->mul_mat_vec_count++;
+    context->elementwise_count++;
 
     return GGML_STATUS_SUCCESS;
 }
@@ -6658,6 +6746,24 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                 continue;
             }
         }
+        if (node->op == GGML_OP_MUL_MAT &&
+            !context->device_context->policy.disable_fusion &&
+            i + 1 < cgraph->n_nodes &&
+            cgraph->nodes[i + 1]->op == GGML_OP_ADD &&
+            ggml_backend_pyre_supports_mul_mat_vec_q8_0_add(context->device_context, node, cgraph->nodes[i + 1]) &&
+            ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_MUL_MAT, GGML_OP_ADD }, { i + 1 })) {
+            const ggml_tensor * add = cgraph->nodes[i + 1];
+            ggml_backend_pyre_trace_provider(
+                context->device_context,
+                "claim MUL_MAT_ADD provider=pure_hip_q8_0 k=%" PRId64
+                " rows=%" PRId64 " cols=%" PRId64 "\n",
+                node->src[0]->ne[0], node->src[0]->ne[1], node->src[1]->ne[1]);
+            if (ggml_backend_pyre_dispatch_mul_mat_vec_q8_0_add(context, node, add) != GGML_STATUS_SUCCESS) {
+                return GGML_STATUS_FAILED;
+            }
+            i++;
+            continue;
+        }
         if (node->op == GGML_OP_MUL_MAT_ID &&
             !context->device_context->policy.disable_fusion &&
             !context->device_context->policy.disable_mul_mat_id_swiglu_fusion &&
@@ -7695,6 +7801,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q8_0_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q8_0_add_provider(device_context.get());
         }
 
         context->device_contexts.emplace_back(std::move(device_context));
