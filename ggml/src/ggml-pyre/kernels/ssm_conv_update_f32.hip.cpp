@@ -43,11 +43,15 @@ extern "C" __global__ void pyre_ssm_conv_update_f32(
         token * c.input_nb0 + channel * c.input_nb1;
     const char * weight_base = reinterpret_cast<const char *>(weight) + channel * c.weight_nb1;
 
+    auto load_concat = [&](long long concat_offset) -> float {
+        return concat_offset < c.conv_state_width ?
+            *reinterpret_cast<const float *>(state_base + concat_offset * sizeof(float)) :
+            *reinterpret_cast<const float *>(input_base + (concat_offset - c.conv_state_width) * c.input_nb0);
+    };
+
     float sum = 0.0f;
     for (long long i = 0; i < c.d_conv; ++i) {
-        const float x = i < c.conv_state_width ?
-            *reinterpret_cast<const float *>(state_base + i * sizeof(float)) :
-            *reinterpret_cast<const float *>(input_base);
+        const float x = load_concat(token + i);
         const float w = *reinterpret_cast<const float *>(weight_base + i * sizeof(float));
         sum += x * w;
     }
@@ -56,11 +60,11 @@ extern "C" __global__ void pyre_ssm_conv_update_f32(
         sum = sum / (1.0f + __builtin_expf(-sum));
     }
 
-    for (long long i = 0; i < c.conv_state_width; ++i) {
-        const float x = i + 1 < c.conv_state_width ?
-            *reinterpret_cast<const float *>(state_base + (i + 1) * sizeof(float)) :
-            *reinterpret_cast<const float *>(input_base);
-        state_dst[channel * c.conv_state_width + i] = x;
+    if (token == 0) {
+        for (long long i = 0; i < c.conv_state_width; ++i) {
+            const float x = load_concat(c.n_tokens + i);
+            state_dst[channel * c.conv_state_width + i] = x;
+        }
     }
 
     *reinterpret_cast<float *>(
