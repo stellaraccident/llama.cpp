@@ -21,6 +21,37 @@ static __device__ __forceinline__ void pyre_get_scale_min_k4(
     }
 }
 
+static __device__ __forceinline__ uint32_t pyre_q5_load_u32_strided16(const uint8_t * base, int offset) {
+    return static_cast<uint32_t>(base[offset]) |
+        (static_cast<uint32_t>(base[offset + 1]) << 8) |
+        (static_cast<uint32_t>(base[offset + 16]) << 16) |
+        (static_cast<uint32_t>(base[offset + 17]) << 24);
+}
+
+static __device__ __forceinline__ float pyre_q5_k_dot4(
+        const pyre_block_q5_K * block, const float * src, int group, int lane,
+        uint32_t qs_word, uint32_t qh_word, bool high_nibble) {
+    uint8_t sc = 0;
+    uint8_t m = 0;
+    pyre_get_scale_min_k4(group, block->scales, &sc, &m);
+
+    const float d = __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc);
+    const float min = __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m);
+    const int qh_mask = 1 << group;
+    const int nibble_shift = high_nibble ? 4 : 0;
+
+    float sum = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int rhs_offset = (j & 1) + ((j >> 1) * 16);
+        const uint8_t low = static_cast<uint8_t>((qs_word >> (8 * j + nibble_shift)) & 0x0F);
+        const uint8_t high = (static_cast<uint8_t>((qh_word >> (8 * j)) & 0xFF) & qh_mask) ? 16 : 0;
+        const float q = static_cast<float>(low + high);
+        sum += (d * q - min) * src[group * 32 + lane + rhs_offset];
+    }
+    return sum;
+}
+
 template <int WG_SIZE>
 static __device__ __forceinline__ float pyre_reduce_wg(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
@@ -65,32 +96,28 @@ static __device__ __forceinline__ void pyre_mul_mat_vec_q5_k_f32_impl(
     const float * src1_col = src1 + col * k;
     float sum = 0.0f;
 
-    const int block_lane = tid & 63;
-    const int block_slot = tid >> 6;
-    const int block_stride = WG_SIZE >> 6;
-    const int group = block_lane >> 3;
-    const int lane = (block_lane & 7) << 2;
+    const int block_lane = tid & 15;
+    const int block_slot = tid >> 4;
+    const int block_stride = WG_SIZE >> 4;
+    const int il = block_lane >> 2;
+    const int ir = block_lane & 3;
+    const int v_im = il >> 1;
+    const int v_in = il & 1;
+    const int lane = 4 * ir + 2 * v_in;
+    const int group0 = 2 * v_im;
+    const int group4 = group0 + 4;
 
     for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += block_stride) {
         const pyre_block_q5_K * block = row_blocks + block_idx;
+        const float * src_block = src1_col + block_idx * 256;
+        const uint32_t qs0 = pyre_q5_load_u32_strided16(block->qs, (group0 >> 1) * 32 + lane);
+        const uint32_t qs4 = pyre_q5_load_u32_strided16(block->qs, (group4 >> 1) * 32 + lane);
+        const uint32_t qh = pyre_q5_load_u32_strided16(block->qh, lane);
 
-        uint8_t sc = 0;
-        uint8_t m = 0;
-        pyre_get_scale_min_k4(group, block->scales, &sc, &m);
-
-        const float d = __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc);
-        const float min = __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m);
-        const long long src_base = block_idx * 256 + group * 32 + lane;
-        const int qs_base = (group >> 1) * 32 + lane;
-
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const uint8_t low = block->qs[qs_base + j];
-            const float q = static_cast<float>(
-                ((group & 1) ? (low >> 4) : (low & 0x0F)) +
-                ((block->qh[lane + j] & (1u << group)) ? 16 : 0));
-            sum += (d * q - min) * src1_col[src_base + j];
-        }
+        sum += pyre_q5_k_dot4(block, src_block, group0,     lane, qs0, qh, false);
+        sum += pyre_q5_k_dot4(block, src_block, group0 + 1, lane, qs0, qh, true);
+        sum += pyre_q5_k_dot4(block, src_block, group4,     lane, qs4, qh, false);
+        sum += pyre_q5_k_dot4(block, src_block, group4 + 1, lane, qs4, qh, true);
     }
 
     sum = pyre_reduce_wg<WG_SIZE>(sum, sumsh);
