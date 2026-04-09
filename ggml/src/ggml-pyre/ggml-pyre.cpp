@@ -2089,13 +2089,8 @@ static bool ggml_backend_pyre_supports_ssm_conv_update(
     const ggml_tensor * input = concat->src[1];
     const ggml_tensor * weight = ssm->src[1];
     const int64_t conv_state_width = conv_state->ne[0];
-    if (input->ne[0] != 1 && !ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PROMPT_SSM_CONV_UPDATE")) {
-        return false;
-    }
-
     if (conv_state_width + 1 != weight->ne[0] ||
-        input->ne[0] < 1 ||
-        ssm->ne[1] != input->ne[0] ||
+        input->ne[0] != 1 ||
         input->ne[1] != conv_state->ne[1] ||
         ggml_nbytes(state_update) != static_cast<size_t>(conv_state_width * conv_state->ne[1]) * sizeof(float)) {
         return false;
