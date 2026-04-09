@@ -41,16 +41,25 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
         float * dst,
         float * state_dst,
         pyre_gated_delta_net_f32_constants c) {
-    const long long col = __builtin_amdgcn_workgroup_id_x();
+    constexpr unsigned int lanes_per_column = 32;
+    constexpr unsigned int columns_per_workgroup = 4;
+    constexpr unsigned int max_rows_per_lane = 8; // supports S_v <= 256
+
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (lanes_per_column - 1);
+    const unsigned int col_group = tid / lanes_per_column;
+    const long long col =
+        static_cast<long long>(__builtin_amdgcn_workgroup_id_x() * columns_per_workgroup + col_group);
     const long long head = __builtin_amdgcn_workgroup_id_y();
     const long long seq = __builtin_amdgcn_workgroup_id_z();
-    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
 
-    if (col >= c.S_v || head >= c.H || seq >= c.n_seqs) {
+    if (head >= c.H || seq >= c.n_seqs || col_group >= columns_per_workgroup) {
         return;
     }
 
-    __shared__ float reduce[256];
+    const bool active_col = col < c.S_v;
+    const long long safe_col = active_col ? col : 0;
+    __shared__ float reduce[lanes_per_column * columns_per_workgroup];
 
     const long long iq1 = head % c.neq1;
     const long long ik1 = head % c.nek1;
@@ -59,14 +68,15 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
     const bool kda = c.g_ne0 == c.S_v;
 
     const long long attn_score_elems = c.S_v * c.H * c.n_tokens * c.n_seqs;
-    float * attn_out = dst + (seq * c.n_tokens * c.H + head) * c.S_v + col;
+    float * attn_out = dst + (seq * c.n_tokens * c.H + head) * c.S_v + safe_col;
     (void) attn_score_elems;
-    float * state_out = state_dst + c.state_dst_offset + (seq * c.H + head) * c.S_v * c.S_v + col * c.S_v;
-    const float * state_col = state_in + (seq * c.H + head) * c.S_v * c.S_v + col * c.S_v;
+    float * state_out = state_dst + c.state_dst_offset + (seq * c.H + head) * c.S_v * c.S_v + safe_col * c.S_v;
+    const float * state_col = state_in + (seq * c.H + head) * c.S_v * c.S_v + safe_col * c.S_v;
 
-    float s = 0.0f;
-    if (tid < static_cast<unsigned int>(c.S_v)) {
-        s = state_col[tid];
+    float s_shard[max_rows_per_lane];
+    for (unsigned int r = 0; r < max_rows_per_lane; ++r) {
+        const unsigned int row = r * lanes_per_column + lane;
+        s_shard[r] = (active_col && row < static_cast<unsigned int>(c.S_v)) ? state_col[row] : 0.0f;
     }
 
     for (long long token = 0; token < c.n_tokens; ++token) {
@@ -77,57 +87,67 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
         const char * beta_base =
             reinterpret_cast<const char *>(beta) + seq * c.beta_nb3 + token * c.beta_nb2 + head * c.beta_nb1;
 
-        float q_i = 0.0f;
-        float k_i = 0.0f;
-        if (tid < static_cast<unsigned int>(c.S_v)) {
-            q_i = *reinterpret_cast<const float *>(q_base + tid * sizeof(float));
-            k_i = *reinterpret_cast<const float *>(k_base + tid * sizeof(float));
+        float q_reg[max_rows_per_lane];
+        float k_reg[max_rows_per_lane];
+        float g_reg[max_rows_per_lane];
+        for (unsigned int r = 0; r < max_rows_per_lane; ++r) {
+            const unsigned int row = r * lanes_per_column + lane;
+            const bool active_row = active_col && row < static_cast<unsigned int>(c.S_v);
+            q_reg[r] = active_row ? *reinterpret_cast<const float *>(q_base + row * sizeof(float)) : 0.0f;
+            k_reg[r] = active_row ? *reinterpret_cast<const float *>(k_base + row * sizeof(float)) : 0.0f;
+            g_reg[r] = active_row ?
+                (kda ? __builtin_expf(*reinterpret_cast<const float *>(g_base + row * sizeof(float))) : 1.0f) :
+                0.0f;
         }
 
         float kv_partial = 0.0f;
-        if (tid < static_cast<unsigned int>(c.S_v)) {
-            const float g_i = kda ? __builtin_expf(*reinterpret_cast<const float *>(g_base + tid * sizeof(float))) : 1.0f;
-            kv_partial = g_i * s * k_i;
+        for (unsigned int r = 0; r < max_rows_per_lane; ++r) {
+            kv_partial += g_reg[r] * s_shard[r] * k_reg[r];
         }
         reduce[tid] = kv_partial;
         __builtin_amdgcn_s_barrier();
 
-        for (unsigned int step = 128; step > 0; step >>= 1) {
-            if (tid < step) {
+        for (unsigned int step = lanes_per_column / 2; step > 0; step >>= 1) {
+            if (lane < step) {
                 reduce[tid] += reduce[tid + step];
             }
             __builtin_amdgcn_s_barrier();
         }
 
-        const float kv_col = reduce[0];
+        const float kv_col = reduce[col_group * lanes_per_column];
         const float beta_val = *reinterpret_cast<const float *>(beta_base);
-        const float v_col = *reinterpret_cast<const float *>(v_base + col * sizeof(float));
+        const float v_col = active_col ? *reinterpret_cast<const float *>(v_base + col * sizeof(float)) : 0.0f;
         const float g_scalar = kda ? 1.0f : __builtin_expf(*reinterpret_cast<const float *>(g_base));
         const float delta_col = (v_col - (kda ? kv_col : g_scalar * kv_col)) * beta_val;
 
         float attn_partial = 0.0f;
-        if (tid < static_cast<unsigned int>(c.S_v)) {
-            const float g_i = kda ? __builtin_expf(*reinterpret_cast<const float *>(g_base + tid * sizeof(float))) : g_scalar;
-            s = g_i * s + k_i * delta_col;
-            attn_partial = s * q_i;
+        for (unsigned int r = 0; r < max_rows_per_lane; ++r) {
+            if (!kda) {
+                g_reg[r] = active_col ? g_scalar : 0.0f;
+            }
+            s_shard[r] = g_reg[r] * s_shard[r] + k_reg[r] * delta_col;
+            attn_partial += s_shard[r] * q_reg[r];
         }
         reduce[tid] = attn_partial;
         __builtin_amdgcn_s_barrier();
 
-        for (unsigned int step = 128; step > 0; step >>= 1) {
-            if (tid < step) {
+        for (unsigned int step = lanes_per_column / 2; step > 0; step >>= 1) {
+            if (lane < step) {
                 reduce[tid] += reduce[tid + step];
             }
             __builtin_amdgcn_s_barrier();
         }
 
-        if (tid == 0) {
-            *attn_out = reduce[0] * c.scale;
+        if (active_col && lane == 0) {
+            *attn_out = reduce[col_group * lanes_per_column] * c.scale;
         }
         attn_out += c.S_v * c.H;
     }
 
-    if (tid < static_cast<unsigned int>(c.S_v)) {
-        state_out[tid] = s;
+    for (unsigned int r = 0; r < max_rows_per_lane; ++r) {
+        const unsigned int row = r * lanes_per_column + lane;
+        if (active_col && row < static_cast<unsigned int>(c.S_v)) {
+            state_out[row] = s_shard[r];
+        }
     }
 }

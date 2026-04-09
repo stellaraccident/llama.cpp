@@ -46,6 +46,16 @@ static constexpr std::initializer_list<std::array<int, 3>> GGML_PYRE_RMS_NORM_MU
     { 4, 0, 3 },
 };
 
+static bool ggml_backend_pyre_should_trace_buffer_transfer(size_t size) {
+    const char * value = std::getenv("GGML_PYRE_TRACE_BUFFER_COPIES");
+    if (!value) {
+        return false;
+    }
+    char * end = nullptr;
+    const unsigned long long min_size = std::strtoull(value, &end, 10);
+    return end == value || size >= static_cast<size_t>(min_size);
+}
+
 enum class ggml_backend_pyre_provider_kind {
     none,
     direct_executable,
@@ -4727,12 +4737,12 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
     const auto & provider = context->device_context->gated_delta_net_provider;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
-            static_cast<uint32_t>(constants.S_v),
+            static_cast<uint32_t>((constants.S_v + 3) / 4),
             static_cast<uint32_t>(constants.H),
             static_cast<uint32_t>(constants.n_seqs),
         },
         /* .workgroup_size = */ {
-            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 256,
+            128,
             1,
             1,
         },
@@ -6507,6 +6517,17 @@ static void ggml_backend_pyre_buffer_set_tensor(
     }
 
     const size_t buffer_offset = ggml_backend_pyre_tensor_offset(context, tensor) + offset;
+    if (ggml_backend_pyre_should_trace_buffer_transfer(size)) {
+        std::fprintf(
+            stderr,
+            "ggml-pyre: buffer set size=%zu tensor=%s offset=%zu buffer_off=%zu type=%s ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "]\n",
+            size,
+            tensor->name,
+            offset,
+            buffer_offset,
+            ggml_type_name(tensor->type),
+            tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    }
     GGML_PYRE_CHECK(pyre_synchronous_h2d(
         context->device_context->device, data,
         context->buffer, buffer_offset, size));
@@ -6520,6 +6541,17 @@ static void ggml_backend_pyre_buffer_get_tensor(
     }
 
     const size_t buffer_offset = ggml_backend_pyre_tensor_offset(context, tensor) + offset;
+    if (ggml_backend_pyre_should_trace_buffer_transfer(size)) {
+        std::fprintf(
+            stderr,
+            "ggml-pyre: buffer get size=%zu tensor=%s offset=%zu buffer_off=%zu type=%s ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "]\n",
+            size,
+            tensor->name,
+            offset,
+            buffer_offset,
+            ggml_type_name(tensor->type),
+            tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    }
     GGML_PYRE_CHECK(pyre_synchronous_d2h(
         context->device_context->device, context->buffer,
         buffer_offset, data, size));
@@ -6542,6 +6574,18 @@ static bool ggml_backend_pyre_buffer_cpy_tensor(
     const size_t src_offset = ggml_backend_pyre_tensor_offset(src_context, src);
     const size_t dst_offset = ggml_backend_pyre_tensor_offset(dst_context, dst);
     const size_t size = ggml_nbytes(src);
+    if (ggml_backend_pyre_should_trace_buffer_transfer(size)) {
+        std::fprintf(
+            stderr,
+            "ggml-pyre: buffer copy size=%zu src=%s dst=%s src_off=%zu dst_off=%zu type=%s ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "]\n",
+            size,
+            src->name,
+            dst->name,
+            src_offset,
+            dst_offset,
+            ggml_type_name(src->type),
+            src->ne[0], src->ne[1], src->ne[2], src->ne[3]);
+    }
     if (!GGML_PYRE_CHECK(pyre_queue_copy(
             dst_context->device_context->device, 0, nullptr, nullptr,
             src_context->buffer, src_offset,
