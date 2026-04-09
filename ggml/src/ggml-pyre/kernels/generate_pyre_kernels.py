@@ -536,6 +536,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_vec_q4_k_packed_wg64_f32",
+        "source": "mul_mat_vec_q4_k.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "pyre_quantize_q8_1_f32",
         "source": "quantize_q8_1.hip.cpp",
         "format": "FPIH",

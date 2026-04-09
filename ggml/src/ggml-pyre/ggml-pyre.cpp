@@ -80,6 +80,7 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_q8_1_mmvq = false;
     bool disable_q8_1_mmvq = false;
     ggml_backend_pyre_q8_1_mmvq_policy q8_1_mmvq_policy = ggml_backend_pyre_q8_1_mmvq_policy::auto_select;
+    bool enable_packed_q4_k_dmmv = false;
     int mul_mat_vec_k_workgroup_size = 0;
     int mul_mat_id_q4_k_workgroup_size = 0;
 };
@@ -170,6 +171,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q4_k_packed_wg64_provider;
     ggml_backend_pyre_op_provider quantize_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q5_k_provider;
@@ -489,6 +491,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ"),
         /* .disable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ"),
         /* .q8_1_mmvq_policy = */ ggml_backend_pyre_q8_1_mmvq_policy_from_env(),
+        /* .enable_packed_q4_k_dmmv = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PACKED_Q4_K_DMMV"),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
         /* .mul_mat_id_q4_k_workgroup_size = */ ggml_backend_pyre_mul_mat_id_q4_k_workgroup_size_from_env(),
     };
@@ -1166,6 +1169,14 @@ static bool ggml_backend_pyre_load_mul_mat_vec_q4_k_wg64_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q4_k_wg64_f32"),
         &device_context->mul_mat_vec_q4_k_wg64_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q4_k_packed_wg64_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q4_k_packed_wg64_f32"),
+        &device_context->mul_mat_vec_q4_k_packed_wg64_provider);
 }
 
 static bool ggml_backend_pyre_load_quantize_q8_1_provider(
@@ -5462,6 +5473,12 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_ve
         device_context, type, k, rows);
     switch (type) {
         case GGML_TYPE_Q4_K:
+            if (device_context->policy.enable_packed_q4_k_dmmv &&
+                k == 2048 && rows == 4096 &&
+                device_context->mul_mat_vec_q4_k_packed_wg64_provider.kind ==
+                    ggml_backend_pyre_provider_kind::direct_executable) {
+                return &device_context->mul_mat_vec_q4_k_packed_wg64_provider;
+            }
             provider = workgroup_size == 64 ?
                 &device_context->mul_mat_vec_q4_k_wg64_provider :
                 (workgroup_size == 128 ?
@@ -5503,6 +5520,14 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
         ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1(device_context, op) ||
         ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1(device_context, op)) {
         return "_q8_1";
+    }
+    if (op->src[0]->type == GGML_TYPE_Q4_K &&
+        device_context->policy.enable_packed_q4_k_dmmv &&
+        op->src[0]->ne[0] == 2048 &&
+        op->src[0]->ne[1] == 4096 &&
+        device_context->mul_mat_vec_q4_k_packed_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_packed_wg64";
     }
     if ((op->src[0]->type == GGML_TYPE_Q4_K ||
          op->src[0]->type == GGML_TYPE_Q5_K ||
@@ -8172,6 +8197,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_wg128_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_packed_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_quantize_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_provider(device_context.get());
