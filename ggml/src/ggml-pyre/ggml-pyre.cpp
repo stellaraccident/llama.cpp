@@ -7020,9 +7020,15 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
         ggml_backend_pyre_topk_moe_fusion fusion;
         if (!context->device_context->policy.disable_fusion &&
             ggml_backend_pyre_try_topk_moe_fusion(cgraph, i, context->device_context, &fusion)) {
+            const bool use_subgroup =
+                !context->device_context->policy.disable_topk_subgroup &&
+                context->device_context->topk_moe_f32_subgroup_provider.kind ==
+                    ggml_backend_pyre_provider_kind::direct_executable;
             ggml_backend_pyre_trace_provider(
                 context->device_context,
-                "claim TOPK_MOE provider=pure_hip_f32 experts=%" PRId64 " k=%" PRId64 " nrows=%" PRId64 "\n",
+                "claim TOPK_MOE_%s provider=%s experts=%" PRId64 " k=%" PRId64 " nrows=%" PRId64 "\n",
+                fusion.clamp ? "EARLY_SOFTMAX_NORM" : "EARLY_SOFTMAX",
+                use_subgroup ? "pure_hip_f32_subgroup" : "pure_hip_f32",
                 fusion.soft_max->src[0]->ne[0], ggml_nelements(fusion.weights), ggml_nrows(fusion.soft_max->src[0]));
             if (ggml_backend_pyre_dispatch_topk_moe_f32(
                     context, fusion.soft_max, fusion.weights, fusion.ids, fusion.clamp) != GGML_STATUS_SUCCESS) {
