@@ -167,6 +167,27 @@ static std::vector<float> reference_mul_mat(
     return output;
 }
 
+static std::vector<float> reference_q8_1_rhs(
+        const std::vector<float> & rhs, int64_t k, int64_t cols) {
+    std::vector<block_q8_1> quantized(static_cast<size_t>(cols * (k / QK8_1)));
+    std::vector<float> dequantized(rhs.size(), 0.0f);
+    for (int64_t col = 0; col < cols; ++col) {
+        quantize_row_q8_1_ref(
+            rhs.data() + col * k,
+            quantized.data() + col * (k / QK8_1),
+            k);
+        for (int64_t block = 0; block < k / QK8_1; ++block) {
+            const block_q8_1 & q = quantized[static_cast<size_t>(col * (k / QK8_1) + block)];
+            const float d = ggml_fp16_to_fp32(q.d);
+            for (int64_t i = 0; i < QK8_1; ++i) {
+                dequantized[static_cast<size_t>(col * k + block * QK8_1 + i)] =
+                    d * static_cast<float>(q.qs[i]);
+            }
+        }
+    }
+    return dequantized;
+}
+
 static std::vector<float> reference_mul_mat_id(
         const std::vector<float> & lhs, const std::vector<float> & rhs,
         const std::vector<int32_t> & ids,
@@ -198,10 +219,33 @@ static bool is_mul_mat_id_op(const std::string & op) {
            op == "mul_mat_id_q4_k_swiglu";
 }
 
-static void check_close(const std::vector<float> & actual, const std::vector<float> & expected) {
+static bool env_enabled(const char * name) {
+    const char * value = std::getenv(name);
+    return value && value[0] != '\0' &&
+        std::strcmp(value, "0") != 0 &&
+        std::strcmp(value, "false") != 0 &&
+        std::strcmp(value, "FALSE") != 0 &&
+        std::strcmp(value, "off") != 0 &&
+        std::strcmp(value, "OFF") != 0;
+}
+
+static bool uses_q8_1_rhs(const std::string & op) {
+    if (!env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ") || env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ")) {
+        return false;
+    }
+    return op == "mul_mat_vec_q4_k" ||
+           op == "mul_mat_vec_q5_k" ||
+           op == "mul_mat_vec_q6_k" ||
+           op == "mul_mat_id_q4_k" ||
+           op == "mul_mat_id_q4_k_mul";
+}
+
+static void check_close(const std::vector<float> & actual, const std::vector<float> & expected, bool approximate_rhs) {
     for (size_t i = 0; i < actual.size(); ++i) {
         const float delta = std::fabs(actual[i] - expected[i]);
-        const float tolerance = 5.0e-3f + 1.0e-4f * std::fabs(expected[i]);
+        const float tolerance = approximate_rhs ?
+            2.0e-2f + 5.0e-3f * std::fabs(expected[i]) :
+            5.0e-3f + 1.0e-4f * std::fabs(expected[i]);
         if (delta > tolerance) {
             std::fprintf(stderr, "mismatch[%zu]: got %.9g expected %.9g delta %.9g\n",
                 i, actual[i], expected[i], delta);
@@ -218,6 +262,7 @@ int main(int argc, char ** argv) {
         usage(argv[0]);
         return 2;
     }
+    const bool q8_1_rhs = uses_q8_1_rhs(options.op);
 
     ggml_backend_dev_t dev = ggml_backend_dev_by_name("PYRE0");
     if (!dev) {
@@ -369,7 +414,9 @@ int main(int argc, char ** argv) {
                     options.ncols);
             }
         }
-        expected = reference_mul_mat(dequantized, rhs_f32, options.ncols, options.nrows, options.cols_dst);
+        const std::vector<float> rhs_expected =
+            q8_1_rhs ? reference_q8_1_rhs(rhs_f32, options.ncols, options.cols_dst) : rhs_f32;
+        expected = reference_mul_mat(dequantized, rhs_expected, options.ncols, options.nrows, options.cols_dst);
     } else if (is_mul_mat_id_op(options.op)) {
         if (options.ncols % QK_K != 0) {
             std::fprintf(stderr, "%s requires --ncols to be divisible by %d\n", options.op.c_str(), QK_K);
@@ -439,8 +486,10 @@ int main(int argc, char ** argv) {
                 }
             }
         }
+        const std::vector<float> rhs_expected =
+            q8_1_rhs ? reference_q8_1_rhs(rhs_f32, options.ncols, options.n_ids * options.n_tokens) : rhs_f32;
         expected = reference_mul_mat_id(
-            dequantized, rhs_f32, expert_ids,
+            dequantized, rhs_expected, expert_ids,
             options.ncols, options.nrows, options.n_experts, options.n_ids, options.n_tokens);
         if (options.op == "mul_mat_id_q4_k_mul") {
             for (int64_t token = 0; token < options.n_tokens; ++token) {
@@ -453,7 +502,7 @@ int main(int argc, char ** argv) {
             }
         } else if (options.op == "mul_mat_id_q4_k_swiglu") {
             std::vector<float> gate_expected = reference_mul_mat_id(
-                gate_dequantized, rhs_f32, expert_ids,
+                gate_dequantized, rhs_expected, expert_ids,
                 options.ncols, options.nrows, options.n_experts, options.n_ids, options.n_tokens);
             for (size_t i = 0; i < expected.size(); ++i) {
                 const float gate = gate_expected[i];
@@ -535,7 +584,7 @@ int main(int argc, char ** argv) {
 
     std::vector<float> output(output_count, 0.0f);
     ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
-    check_close(output, expected);
+    check_close(output, expected, q8_1_rhs);
 
     std::sort(samples.begin(), samples.end());
     const double median_us = samples[samples.size() / 2];
@@ -564,9 +613,10 @@ int main(int argc, char ** argv) {
         "{\"op\":\"%s\",\"backend\":\"PYRE\",\"device\":\"PYRE0\","
         "\"ncols\":%" PRId64 ",\"nrows\":%" PRId64 ",\"cols_dst\":%" PRId64
         ",\"n_experts\":%" PRId64 ",\"n_ids\":%" PRId64 ",\"n_tokens\":%" PRId64
-        ",\"median_us\":%.3f,"
+        ",\"q8_1_rhs\":%s,\"median_us\":%.3f,"
         "\"min_us\":%.3f,\"bandwidth_gbps\":%.3f}\n",
         options.op.c_str(), options.ncols, options.nrows, options.cols_dst,
-        options.n_experts, options.n_ids, options.n_tokens, median_us, min_us, gbps);
+        options.n_experts, options.n_ids, options.n_tokens, q8_1_rhs ? "true" : "false",
+        median_us, min_us, gbps);
     return 0;
 }
