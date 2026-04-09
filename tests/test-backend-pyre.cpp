@@ -995,6 +995,62 @@ static void run_router_ops_case(ggml_backend_t backend, ggml_backend_dev_t dev) 
     expect_eq_i32(sorted_output, expected_sorted, "router_argsort_output");
 }
 
+static void run_large_masked_soft_max_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t cols = 2048;
+    constexpr int64_t rows1 = 2;
+    constexpr int64_t rows2 = 2;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * logits = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, cols, rows1, rows2);
+    ggml_tensor * mask = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, cols, rows1);
+    ggml_tensor * probs = ggml_soft_max_ext(ctx.get(), logits, mask, 0.25f, 0.0f);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, probs));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, probs);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> logits_data(static_cast<size_t>(cols * rows1 * rows2), 0.0f);
+    for (size_t i = 0; i < logits_data.size(); ++i) {
+        logits_data[i] = static_cast<float>(static_cast<int>(i % 211) - 105) / 17.0f;
+    }
+    std::vector<float> mask_data(static_cast<size_t>(cols * rows1), 0.0f);
+    for (size_t i = 0; i < mask_data.size(); ++i) {
+        mask_data[i] = static_cast<float>(static_cast<int>(i % 43) - 21) / 23.0f;
+    }
+
+    ggml_backend_tensor_set(logits, logits_data.data(), 0, logits_data.size() * sizeof(float));
+    ggml_backend_tensor_set(mask, mask_data.data(), 0, mask_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> expected(logits_data.size(), 0.0f);
+    for (int64_t row = 0; row < rows1 * rows2; ++row) {
+        float max_value = -INFINITY;
+        for (int64_t col = 0; col < cols; ++col) {
+            const size_t index = static_cast<size_t>(row * cols + col);
+            const size_t mask_index = static_cast<size_t>((row % rows1) * cols + col);
+            const float value = logits_data[index] * 0.25f + mask_data[mask_index];
+            expected[index] = value;
+            max_value = std::max(max_value, value);
+        }
+        float sum = 0.0f;
+        for (int64_t col = 0; col < cols; ++col) {
+            float & value = expected[static_cast<size_t>(row * cols + col)];
+            value = std::exp(value - max_value);
+            sum += value;
+        }
+        for (int64_t col = 0; col < cols; ++col) {
+            expected[static_cast<size_t>(row * cols + col)] /= sum;
+        }
+    }
+
+    std::vector<float> output(expected.size(), -1.0f);
+    ggml_backend_tensor_get(probs, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected, 1.0e-5f, "large_masked_soft_max_output");
+}
+
 static void run_imrope_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t ne0 = 8;
     constexpr int64_t ne1 = 2;
@@ -1380,6 +1436,7 @@ int main() {
     run_sigmoid_mul_strided_fusion_case(backend.get(), dev);
     run_singleton_stride_concat_case(backend.get(), dev);
     run_router_ops_case(backend.get(), dev);
+    run_large_masked_soft_max_case(backend.get(), dev);
     run_imrope_case(backend.get(), dev);
     run_gated_delta_net_case(backend.get(), dev);
 

@@ -11,6 +11,7 @@ struct pyre_soft_max_f32_constants {
     long long mask_nb1;
     long long mask_nb2;
     long long mask_nb3;
+    long long mask_ne1;
     long long mask_ne2;
     long long mask_ne3;
     float scale;
@@ -20,7 +21,6 @@ struct pyre_soft_max_f32_constants {
 static __device__ void pyre_soft_max_f32_row(
         const float * src, const float * mask, float * dst,
         pyre_soft_max_f32_constants c) {
-    __shared__ float vals[1024];
     __shared__ float partial[256];
 
     const int tid = static_cast<int>(__builtin_amdgcn_workitem_id_x());
@@ -37,14 +37,13 @@ static __device__ void pyre_soft_max_f32_row(
     const float * mask_row = mask ?
         reinterpret_cast<const float *>(
             reinterpret_cast<const char *>(mask) +
-            i01 * c.mask_nb1 +
+            (i01 % c.mask_ne1) * c.mask_nb1 +
             (i02 % c.mask_ne2) * c.mask_nb2 +
             (i03 % c.mask_ne3) * c.mask_nb3) : nullptr;
 
     float local_max = -FLT_MAX;
     for (long long col = tid; col < c.ncols; col += 256) {
         const float value = src_row[col] * c.scale + (mask_row ? mask_row[col] : 0.0f);
-        vals[col] = value;
         local_max = fmaxf(local_max, value);
     }
 
@@ -60,8 +59,8 @@ static __device__ void pyre_soft_max_f32_row(
 
     float local_sum = 0.0f;
     for (long long col = tid; col < c.ncols; col += 256) {
-        const float value = expf(vals[col] - max_val);
-        vals[col] = value;
+        const float value =
+            expf(src_row[col] * c.scale + (mask_row ? mask_row[col] : 0.0f) - max_val);
         local_sum += value;
     }
 
@@ -76,7 +75,8 @@ static __device__ void pyre_soft_max_f32_row(
     const float inv_sum = 1.0f / partial[0];
 
     for (long long col = tid; col < c.ncols; col += 256) {
-        dst_row[col] = vals[col] * inv_sum;
+        dst_row[col] =
+            expf(src_row[col] * c.scale + (mask_row ? mask_row[col] : 0.0f) - max_val) * inv_sum;
     }
 }
 

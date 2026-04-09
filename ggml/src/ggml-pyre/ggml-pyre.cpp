@@ -1595,7 +1595,6 @@ static bool ggml_backend_pyre_supports_soft_max_f32(
            max_bias == 0.0f &&
            src0->type == GGML_TYPE_F32 &&
            op->type == GGML_TYPE_F32 &&
-           src0->ne[0] <= 1024 &&
            ggml_are_same_shape(src0, op) &&
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(op) &&
@@ -1603,7 +1602,7 @@ static bool ggml_backend_pyre_supports_soft_max_f32(
             (src1->type == GGML_TYPE_F32 &&
              ggml_is_contiguous(src1) &&
              src1->ne[0] == src0->ne[0] &&
-             src1->ne[1] >= src0->ne[1] &&
+             src0->ne[1] % src1->ne[1] == 0 &&
              src0->ne[2] % src1->ne[2] == 0 &&
              src0->ne[3] % src1->ne[3] == 0));
 }
@@ -2666,6 +2665,7 @@ struct ggml_backend_pyre_soft_max_f32_constants {
     int64_t mask_nb1;
     int64_t mask_nb2;
     int64_t mask_nb3;
+    int64_t mask_ne1;
     int64_t mask_ne2;
     int64_t mask_ne3;
     float scale;
@@ -3936,6 +3936,7 @@ static ggml_status ggml_backend_pyre_dispatch_soft_max_f32(
         /* .mask_nb1 = */ src1 ? static_cast<int64_t>(src1->nb[1]) : 0,
         /* .mask_nb2 = */ src1 ? static_cast<int64_t>(src1->nb[2]) : 0,
         /* .mask_nb3 = */ src1 ? static_cast<int64_t>(src1->nb[3]) : 0,
+        /* .mask_ne1 = */ src1 ? src1->ne[1] : 1,
         /* .mask_ne2 = */ src1 ? src1->ne[2] : 1,
         /* .mask_ne3 = */ src1 ? src1->ne[3] : 1,
         /* .scale    = */ scale,

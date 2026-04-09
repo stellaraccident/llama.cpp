@@ -244,7 +244,7 @@ KERNELS = [
         "source": "soft_max_f32.hip.cpp",
         "format": "FPIH",
         "binding_count": 2,
-        "constants_size": 80,
+        "constants_size": 88,
         "workgroup_size": (256, 1, 1),
     },
     {
@@ -252,7 +252,7 @@ KERNELS = [
         "source": "soft_max_f32.hip.cpp",
         "format": "FPIH",
         "binding_count": 3,
-        "constants_size": 80,
+        "constants_size": 88,
         "workgroup_size": (256, 1, 1),
     },
     {
