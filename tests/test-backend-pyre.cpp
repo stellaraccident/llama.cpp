@@ -822,6 +822,64 @@ static void run_glue_ops_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     expect_near(output, expected_concat, 1.0e-6f, "concat_output");
 }
 
+static void run_sigmoid_mul_strided_fusion_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t cols = 4;
+    constexpr int64_t heads = 2;
+    constexpr int64_t rows = 3;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * attn_base = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, cols, rows, heads);
+    ggml_tensor * attn_view = ggml_permute(ctx.get(), attn_base, 0, 2, 1, 3);
+    ggml_tensor * attn_cont = ggml_cont(ctx.get(), attn_view);
+    ggml_set_name(attn_cont, "attn_pregate-test");
+
+    ggml_tensor * gate_base = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, cols * 2, heads * rows);
+    ggml_tensor * gate_view = ggml_view_3d(
+        ctx.get(), gate_base, cols, heads, rows, gate_base->nb[1], gate_base->nb[1] * heads, cols * sizeof(float));
+    ggml_tensor * gate_cont = ggml_cont(ctx.get(), gate_view);
+    ggml_set_name(gate_cont, "gate_reshaped-test");
+
+    ggml_tensor * sigmoid = ggml_sigmoid(ctx.get(), gate_cont);
+    ggml_tensor * mul = ggml_mul(ctx.get(), attn_cont, sigmoid);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, mul));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, mul);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> attn_data(static_cast<size_t>(cols * rows * heads), 0.0f);
+    for (size_t i = 0; i < attn_data.size(); ++i) {
+        attn_data[i] = static_cast<float>(static_cast<int>(i) - 11) / 7.0f;
+    }
+    std::vector<float> gate_data(static_cast<size_t>(cols * 2 * heads * rows), 0.0f);
+    for (size_t i = 0; i < gate_data.size(); ++i) {
+        gate_data[i] = static_cast<float>(static_cast<int>(i % 19) - 9) / 5.0f;
+    }
+
+    ggml_backend_tensor_set(attn_base, attn_data.data(), 0, attn_data.size() * sizeof(float));
+    ggml_backend_tensor_set(gate_base, gate_data.data(), 0, gate_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    auto sigmoid_ref = [](float x) { return 1.0f / (1.0f + std::exp(-x)); };
+    std::vector<float> expected(static_cast<size_t>(cols * heads * rows), 0.0f);
+    for (int64_t row = 0; row < rows; ++row) {
+        for (int64_t head = 0; head < heads; ++head) {
+            for (int64_t col = 0; col < cols; ++col) {
+                const size_t dst_idx = static_cast<size_t>((row * heads + head) * cols + col);
+                const size_t attn_idx = static_cast<size_t>((head * rows + row) * cols + col);
+                const size_t gate_idx = static_cast<size_t>((row * heads + head) * (cols * 2) + cols + col);
+                expected[dst_idx] = attn_data[attn_idx] * sigmoid_ref(gate_data[gate_idx]);
+            }
+        }
+    }
+
+    std::vector<float> output(expected.size(), -1.0f);
+    ggml_backend_tensor_get(mul, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected, 1.0e-5f, "sigmoid_mul_strided_fusion_output");
+}
+
 static void run_singleton_stride_concat_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t rows = 5;
 
@@ -1319,6 +1377,7 @@ int main() {
     run_strided_rms_norm_case(backend.get(), dev);
     run_broadcast_mul_case(backend.get(), dev);
     run_glue_ops_case(backend.get(), dev);
+    run_sigmoid_mul_strided_fusion_case(backend.get(), dev);
     run_singleton_stride_concat_case(backend.get(), dev);
     run_router_ops_case(backend.get(), dev);
     run_imrope_case(backend.get(), dev);

@@ -112,6 +112,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider set_rows_q4_0_provider;
     ggml_backend_pyre_op_provider silu_provider;
     ggml_backend_pyre_op_provider sigmoid_provider;
+    ggml_backend_pyre_op_provider sigmoid_mul_strided_provider;
     ggml_backend_pyre_op_provider softplus_provider;
     ggml_backend_pyre_op_provider swiglu_provider;
     ggml_backend_pyre_op_provider sum_rows_provider;
@@ -693,6 +694,14 @@ static bool ggml_backend_pyre_load_sigmoid_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_sigmoid_f32"),
         &device_context->sigmoid_provider);
+}
+
+static bool ggml_backend_pyre_load_sigmoid_mul_strided_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_sigmoid_mul_f32_strided"),
+        &device_context->sigmoid_mul_strided_provider);
 }
 
 static bool ggml_backend_pyre_load_softplus_provider(
@@ -1331,6 +1340,44 @@ static bool ggml_backend_pyre_supports_swiglu_f32(
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(src1) &&
            ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_pyre_supports_sigmoid_mul_strided(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * attn_cont,
+        const ggml_tensor * gate_cont,
+        const ggml_tensor * sigmoid,
+        const ggml_tensor * mul) {
+    return device_context->sigmoid_mul_strided_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           attn_cont && gate_cont && sigmoid && mul &&
+           attn_cont->op == GGML_OP_CONT &&
+           gate_cont->op == GGML_OP_CONT &&
+           sigmoid->op == GGML_OP_UNARY &&
+           ggml_get_unary_op(sigmoid) == GGML_UNARY_OP_SIGMOID &&
+           sigmoid->src[0] == gate_cont &&
+           mul->op == GGML_OP_MUL &&
+           ((mul->src[0] == attn_cont && mul->src[1] == sigmoid) ||
+            (mul->src[0] == sigmoid && mul->src[1] == attn_cont)) &&
+           attn_cont->src[0] &&
+           gate_cont->src[0] &&
+           attn_cont->src[0]->type == GGML_TYPE_F32 &&
+           gate_cont->src[0]->type == GGML_TYPE_F32 &&
+           attn_cont->type == GGML_TYPE_F32 &&
+           gate_cont->type == GGML_TYPE_F32 &&
+           sigmoid->type == GGML_TYPE_F32 &&
+           mul->type == GGML_TYPE_F32 &&
+           ggml_nelements(attn_cont->src[0]) == ggml_nelements(attn_cont) &&
+           ggml_nelements(gate_cont->src[0]) == ggml_nelements(gate_cont) &&
+           ggml_are_same_shape(attn_cont, gate_cont) &&
+           ggml_are_same_shape(attn_cont, sigmoid) &&
+           ggml_are_same_shape(attn_cont, mul) &&
+           attn_cont->src[0]->nb[0] == sizeof(float) &&
+           gate_cont->src[0]->nb[0] == sizeof(float) &&
+           attn_cont->src[0]->ne[3] == 1 &&
+           gate_cont->src[0]->ne[3] == 1 &&
+           mul->ne[3] == 1 &&
+           ggml_is_contiguous(mul);
 }
 
 static bool ggml_backend_pyre_supports_silu_mul_f32(
@@ -2513,6 +2560,19 @@ struct ggml_backend_pyre_mul_broadcast_constants {
     int64_t dst_nb3;
 };
 
+struct ggml_backend_pyre_sigmoid_mul_strided_constants {
+    int64_t ne0;
+    int64_t nrows;
+    int64_t attn_ne0;
+    int64_t attn_ne1;
+    int64_t attn_nb1;
+    int64_t attn_nb2;
+    int64_t gate_ne0;
+    int64_t gate_ne1;
+    int64_t gate_nb1;
+    int64_t gate_nb2;
+};
+
 struct ggml_backend_pyre_add_add_broadcast_constants {
     int64_t ne0;
     int64_t nrows;
@@ -3273,6 +3333,67 @@ static ggml_status ggml_backend_pyre_dispatch_silu_mul_f32(
     }
     context->dispatch_count++;
     context->unary_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_sigmoid_mul_strided(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * attn_cont,
+        const ggml_tensor * gate_cont,
+        const ggml_tensor * mul) {
+    const ggml_tensor * attn = attn_cont->src[0];
+    const ggml_tensor * gate = gate_cont->src[0];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(attn, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(gate, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(mul, &bindings[2])) {
+        GGML_LOG_ERROR("%s: SIGMOID_MUL_STRIDED tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_sigmoid_mul_strided_constants constants = {
+        /* .ne0      = */ mul->ne[0],
+        /* .nrows    = */ ggml_nrows(mul),
+        /* .attn_ne0 = */ attn->ne[0],
+        /* .attn_ne1 = */ attn->ne[1],
+        /* .attn_nb1 = */ static_cast<int64_t>(attn->nb[1]),
+        /* .attn_nb2 = */ static_cast<int64_t>(attn->nb[2]),
+        /* .gate_ne0 = */ gate->ne[0],
+        /* .gate_ne1 = */ gate->ne[1],
+        /* .gate_nb1 = */ static_cast<int64_t>(gate->nb[1]),
+        /* .gate_nb2 = */ static_cast<int64_t>(gate->nb[2]),
+    };
+
+    const auto & provider = context->device_context->sigmoid_mul_strided_provider;
+    const int64_t n = constants.ne0 * constants.nrows;
+    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+        provider.export_info.workgroup_size[0] : 256;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>((n + workgroup_size - 1) / workgroup_size),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ { workgroup_size, 1, 1 },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            3,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->unary_count++;
+    context->elementwise_count++;
 
     return GGML_STATUS_SUCCESS;
 }
@@ -6399,7 +6520,7 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
     auto * context = static_cast<ggml_backend_pyre_context *>(backend->context);
     std::vector<const ggml_tensor *> deferred_mul_mat_set_rows;
     std::vector<const ggml_tensor *> fused_gated_delta_net_state_updates;
-    std::vector<const ggml_tensor *> fused_ssm_conv_update_nodes;
+    std::vector<const ggml_tensor *> fused_nodes;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         if (std::find(
@@ -6409,9 +6530,9 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
             continue;
         }
         if (std::find(
-                fused_ssm_conv_update_nodes.begin(),
-                fused_ssm_conv_update_nodes.end(),
-                node) != fused_ssm_conv_update_nodes.end()) {
+                fused_nodes.begin(),
+                fused_nodes.end(),
+                node) != fused_nodes.end()) {
             continue;
         }
         ggml_backend_pyre_topk_moe_fusion fusion;
@@ -6683,6 +6804,58 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
             i += 2;
             continue;
         }
+        if (node->op == GGML_OP_CONT &&
+            !context->device_context->policy.disable_fusion &&
+            std::strstr(ggml_get_name(node), "attn_pregate") != nullptr) {
+            const ggml_tensor * fused_gate_cont = nullptr;
+            const ggml_tensor * fused_sigmoid = nullptr;
+            const ggml_tensor * fused_mul = nullptr;
+            for (int gate_idx = i + 1; gate_idx < cgraph->n_nodes && gate_idx <= i + 8; ++gate_idx) {
+                const ggml_tensor * gate_cont = cgraph->nodes[gate_idx];
+                if (gate_cont->op != GGML_OP_CONT ||
+                    std::strstr(ggml_get_name(gate_cont), "gate_reshaped") == nullptr) {
+                    continue;
+                }
+                for (int sigmoid_idx = gate_idx + 1; sigmoid_idx < cgraph->n_nodes && sigmoid_idx <= gate_idx + 8; ++sigmoid_idx) {
+                    const ggml_tensor * sigmoid = cgraph->nodes[sigmoid_idx];
+                    if (sigmoid->op != GGML_OP_UNARY || sigmoid->src[0] != gate_cont) {
+                        continue;
+                    }
+                    for (int mul_idx = sigmoid_idx + 1; mul_idx < cgraph->n_nodes && mul_idx <= sigmoid_idx + 8; ++mul_idx) {
+                        const ggml_tensor * mul = cgraph->nodes[mul_idx];
+                        if (!ggml_backend_pyre_supports_sigmoid_mul_strided(
+                                context->device_context, node, gate_cont, sigmoid, mul)) {
+                            continue;
+                        }
+                        fused_gate_cont = gate_cont;
+                        fused_sigmoid = sigmoid;
+                        fused_mul = mul;
+                        break;
+                    }
+                    if (fused_mul != nullptr) {
+                        break;
+                    }
+                }
+                if (fused_mul != nullptr) {
+                    break;
+                }
+            }
+            if (fused_mul != nullptr) {
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim SIGMOID_MUL_STRIDED provider=pure_hip_f32 n=%" PRId64
+                    " attn=%s gate=%s\n",
+                    ggml_nelements(fused_mul), ggml_get_name(node), ggml_get_name(fused_gate_cont));
+                if (ggml_backend_pyre_dispatch_sigmoid_mul_strided(context, node, fused_gate_cont, fused_mul) !=
+                        GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                fused_nodes.push_back(fused_gate_cont);
+                fused_nodes.push_back(fused_sigmoid);
+                fused_nodes.push_back(fused_mul);
+                continue;
+            }
+        }
         if (node->op == GGML_OP_CONCAT &&
             !context->device_context->policy.disable_fusion) {
             ggml_backend_pyre_ssm_conv_update_fusion ssm_update = {};
@@ -6701,10 +6874,10 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                         ssm_update.apply_silu) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
                 }
-                fused_ssm_conv_update_nodes.push_back(ssm_update.state_update);
-                fused_ssm_conv_update_nodes.push_back(ssm_update.ssm);
+                fused_nodes.push_back(ssm_update.state_update);
+                fused_nodes.push_back(ssm_update.ssm);
                 if (ssm_update.apply_silu) {
-                    fused_ssm_conv_update_nodes.push_back(ssm_update.out);
+                    fused_nodes.push_back(ssm_update.out);
                 }
                 continue;
             }
@@ -7469,6 +7642,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_set_rows_q4_0_provider(device_context.get());
             (void) ggml_backend_pyre_load_silu_provider(device_context.get());
             (void) ggml_backend_pyre_load_sigmoid_provider(device_context.get());
+            (void) ggml_backend_pyre_load_sigmoid_mul_strided_provider(device_context.get());
             (void) ggml_backend_pyre_load_softplus_provider(device_context.get());
             (void) ggml_backend_pyre_load_swiglu_provider(device_context.get());
             (void) ggml_backend_pyre_load_sum_rows_provider(device_context.get());

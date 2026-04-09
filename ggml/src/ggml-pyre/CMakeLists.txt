@@ -94,6 +94,7 @@ if (Python3_Interpreter_FOUND)
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_q4_0.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_q8_0.hip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/sigmoid_mul_f32_strided.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/soft_max_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/ssm_conv_f32.hip.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/ssm_conv_update_f32.hip.cpp"

@@ -152,6 +152,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_sigmoid_mul_f32_strided",
+        "source": "sigmoid_mul_f32_strided.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 80,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_softplus_f32",
         "source": "unary_f32.hip.cpp",
         "format": "FPIH",
