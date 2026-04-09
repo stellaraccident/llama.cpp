@@ -18,12 +18,14 @@ Common commands:
 ./tools/pyre-epic2/pyre-epic2-bench.sh build pyre
 ./tools/pyre-epic2/pyre-epic2-bench.sh kernel -- --ncols 2048 --nrows 128
 ./tools/pyre-epic2/pyre-epic2-bench.sh kernel -- --op mul_mat_vec_q6_k --ncols 2048 --nrows 4096 --cols-dst 16
+./tools/pyre-epic2/pyre-epic2-bench.sh kernel -- --op mul_mat_id_q4_k_swiglu --ncols 2048 --nrows 512 --n-experts 256 --n-ids 8 --n-tokens 1
 ./tools/pyre-epic2/pyre-epic2-bench.sh smoke cpu pyre-fallback pyre-rmsnorm
 ```
 
 Kernel benchmark ops: `rms_norm`, `mul_mat_vec_f32`, `mul_mat_vec_f16`,
 `mul_mat_vec_bf16`, `mul_mat_vec_q4_k`, `mul_mat_vec_q5_k`,
-`mul_mat_vec_q6_k`, and `mul_mat_vec_q8_0`.
+`mul_mat_vec_q6_k`, `mul_mat_vec_q8_0`, `mul_mat_id_q4_k`,
+`mul_mat_id_q4_k_mul`, and `mul_mat_id_q4_k_swiglu`.
 
 Provider modes:
 
