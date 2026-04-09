@@ -66,6 +66,43 @@ static __device__ __forceinline__ int pyre_q6_k_scale(
     return static_cast<int>(block->scales[half * 8 + group_in_half * 2 + lane / 16]);
 }
 
+static __device__ __forceinline__ float pyre_q6_k_dot4(
+        const pyre_block_q6_K * block,
+        const float * src,
+        float d,
+        int group,
+        int lane) {
+    const int half = group >> 2;
+    const int group_in_half = group & 3;
+    const int ql_base = half * 64 + ((group_in_half & 1) ? 32 : 0) + lane;
+    const int qh_base = half * 32 + lane;
+    const int qh_shift = (group_in_half & 3) * 2;
+    const bool high_nibble = group_in_half >= 2;
+
+    const uint32_t ql_word =
+        static_cast<uint32_t>(block->ql[ql_base]) |
+        (static_cast<uint32_t>(block->ql[ql_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->ql[ql_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->ql[ql_base + 3]) << 24);
+    const uint32_t qh_word =
+        static_cast<uint32_t>(block->qh[qh_base]) |
+        (static_cast<uint32_t>(block->qh[qh_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->qh[qh_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->qh[qh_base + 3]) << 24);
+    float sum = 0.0f;
+
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int ql_shift = 8 * j + (high_nibble ? 4 : 0);
+        const int ql = (ql_word >> ql_shift) & 0x0F;
+        const int qh = (qh_word >> (8 * j + qh_shift)) & 0x03;
+        const int q = (ql | (qh << 4)) - 32;
+        sum += d * static_cast<float>(q) * src[j];
+    }
+
+    return sum;
+}
+
 template <int WG_SIZE>
 static __device__ __forceinline__ void pyre_mul_mat_vec_q6_k_f32_impl(
         const pyre_block_q6_K * src0, const float * src1, float * dst,
@@ -97,10 +134,7 @@ static __device__ __forceinline__ void pyre_mul_mat_vec_q6_k_f32_impl(
         const float d = __half2float(__ushort_as_half(block->d)) *
             static_cast<float>(pyre_q6_k_scale(block, group, lane));
 
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            sum += d * static_cast<float>(pyre_q6_k_value(block, in_block_base + j)) * src1_col[src_base + j];
-        }
+        sum += pyre_q6_k_dot4(block, src1_col + src_base, d, group, lane);
     }
 
     sum = pyre_reduce_wg<WG_SIZE>(sum, sumsh);
