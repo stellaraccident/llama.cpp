@@ -229,15 +229,23 @@ static bool env_enabled(const char * name) {
         std::strcmp(value, "OFF") != 0;
 }
 
-static bool uses_q8_1_rhs(const std::string & op) {
+static bool uses_q8_1_rhs(const bench_options & options) {
     if (!env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ") || env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ")) {
         return false;
     }
-    return op == "mul_mat_vec_q4_k" ||
-           op == "mul_mat_vec_q5_k" ||
-           op == "mul_mat_vec_q6_k" ||
-           op == "mul_mat_id_q4_k" ||
-           op == "mul_mat_id_q4_k_mul";
+    const bool force_all = [] {
+        const char * policy = std::getenv("GGML_PYRE_Q8_1_MMVQ_POLICY");
+        return policy && std::strcmp(policy, "all") == 0;
+    }();
+    if (force_all) {
+        return options.op == "mul_mat_vec_q4_k" ||
+               options.op == "mul_mat_vec_q5_k" ||
+               options.op == "mul_mat_vec_q6_k" ||
+               options.op == "mul_mat_id_q4_k" ||
+               options.op == "mul_mat_id_q4_k_mul";
+    }
+    return (options.op == "mul_mat_vec_q4_k" && options.ncols >= 2048 && options.nrows >= 4096) ||
+           (options.op == "mul_mat_vec_q6_k" && options.ncols >= 2048 && options.nrows >= 2048);
 }
 
 static void check_close(const std::vector<float> & actual, const std::vector<float> & expected, bool approximate_rhs) {
@@ -262,7 +270,7 @@ int main(int argc, char ** argv) {
         usage(argv[0]);
         return 2;
     }
-    const bool q8_1_rhs = uses_q8_1_rhs(options.op);
+    const bool q8_1_rhs = uses_q8_1_rhs(options);
 
     ggml_backend_dev_t dev = ggml_backend_dev_by_name("PYRE0");
     if (!dev) {

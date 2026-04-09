@@ -57,6 +57,11 @@ enum class ggml_backend_pyre_kernel_provider_mode {
     fallback,
 };
 
+enum class ggml_backend_pyre_q8_1_mmvq_policy {
+    auto_select,
+    all,
+};
+
 struct ggml_backend_pyre_provider_policy {
     ggml_backend_pyre_kernel_provider_mode kernel_provider = ggml_backend_pyre_kernel_provider_mode::pure_hip;
     bool trace_providers = false;
@@ -74,6 +79,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_topk_subgroup = false;
     bool enable_q8_1_mmvq = false;
     bool disable_q8_1_mmvq = false;
+    ggml_backend_pyre_q8_1_mmvq_policy q8_1_mmvq_policy = ggml_backend_pyre_q8_1_mmvq_policy::auto_select;
     int mul_mat_vec_k_workgroup_size = 0;
     int mul_mat_id_q4_k_workgroup_size = 0;
 };
@@ -452,6 +458,18 @@ static int ggml_backend_pyre_mul_mat_id_q4_k_workgroup_size_from_env() {
     return 0;
 }
 
+static ggml_backend_pyre_q8_1_mmvq_policy ggml_backend_pyre_q8_1_mmvq_policy_from_env() {
+    const char * value = std::getenv("GGML_PYRE_Q8_1_MMVQ_POLICY");
+    if (!value || value[0] == '\0' || std::strcmp(value, "auto") == 0) {
+        return ggml_backend_pyre_q8_1_mmvq_policy::auto_select;
+    }
+    if (std::strcmp(value, "all") == 0) {
+        return ggml_backend_pyre_q8_1_mmvq_policy::all;
+    }
+    GGML_LOG_WARN("%s: unknown GGML_PYRE_Q8_1_MMVQ_POLICY=%s, using auto\n", __func__, value);
+    return ggml_backend_pyre_q8_1_mmvq_policy::auto_select;
+}
+
 static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_env() {
     return {
         /* .kernel_provider     = */ ggml_backend_pyre_kernel_provider_mode_from_env(),
@@ -470,6 +488,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
         /* .enable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ"),
         /* .disable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ"),
+        /* .q8_1_mmvq_policy = */ ggml_backend_pyre_q8_1_mmvq_policy_from_env(),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
         /* .mul_mat_id_q4_k_workgroup_size = */ ggml_backend_pyre_mul_mat_id_q4_k_workgroup_size_from_env(),
     };
@@ -4934,6 +4953,30 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_k_quant(
            ggml_is_contiguous(op);
 }
 
+static bool ggml_backend_pyre_q8_1_mmvq_force_all(
+        const ggml_backend_pyre_device_context * device_context) {
+    return device_context->policy.q8_1_mmvq_policy == ggml_backend_pyre_q8_1_mmvq_policy::all;
+}
+
+static bool ggml_backend_pyre_q8_1_mmvq_auto_shape(
+        const ggml_tensor * op,
+        ggml_type type) {
+    const ggml_tensor * src0 = op->src[0];
+    if (!src0) {
+        return false;
+    }
+
+    const int64_t k = src0->ne[0];
+    const int64_t rows = src0->ne[1];
+    if (type == GGML_TYPE_Q4_K) {
+        return k >= 2048 && rows >= 4096;
+    }
+    if (type == GGML_TYPE_Q6_K) {
+        return k >= 2048 && rows >= 2048;
+    }
+    return false;
+}
+
 static bool ggml_backend_pyre_supports_mul_mat_vec_q4_k(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
@@ -4946,6 +4989,8 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q4_k_q8_1(
         const ggml_tensor * op) {
     return device_context->policy.enable_q8_1_mmvq &&
            !device_context->policy.disable_q8_1_mmvq &&
+           (ggml_backend_pyre_q8_1_mmvq_force_all(device_context) ||
+            ggml_backend_pyre_q8_1_mmvq_auto_shape(op, GGML_TYPE_Q4_K)) &&
            device_context->quantize_q8_1_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            ggml_backend_pyre_supports_mul_mat_vec_k_quant(
@@ -4965,6 +5010,7 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1(
         const ggml_tensor * op) {
     return device_context->policy.enable_q8_1_mmvq &&
            !device_context->policy.disable_q8_1_mmvq &&
+           ggml_backend_pyre_q8_1_mmvq_force_all(device_context) &&
            device_context->quantize_q8_1_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            ggml_backend_pyre_supports_mul_mat_vec_k_quant(
@@ -4984,6 +5030,8 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1(
         const ggml_tensor * op) {
     return device_context->policy.enable_q8_1_mmvq &&
            !device_context->policy.disable_q8_1_mmvq &&
+           (ggml_backend_pyre_q8_1_mmvq_force_all(device_context) ||
+            ggml_backend_pyre_q8_1_mmvq_auto_shape(op, GGML_TYPE_Q6_K)) &&
            device_context->quantize_q8_1_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            ggml_backend_pyre_supports_mul_mat_vec_k_quant(
@@ -5181,6 +5229,7 @@ static bool ggml_backend_pyre_supports_mul_mat_id_q4_k_q8_1(
         const ggml_tensor * op) {
     return device_context->policy.enable_q8_1_mmvq &&
            !device_context->policy.disable_q8_1_mmvq &&
+           ggml_backend_pyre_q8_1_mmvq_force_all(device_context) &&
            device_context->quantize_q8_1_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            device_context->mul_mat_id_q4_k_q8_1_provider.kind ==
@@ -5221,6 +5270,7 @@ static bool ggml_backend_pyre_supports_mul_mat_id_q4_k_mul_q8_1(
         const ggml_tensor * mul) {
     return device_context->policy.enable_q8_1_mmvq &&
            !device_context->policy.disable_q8_1_mmvq &&
+           ggml_backend_pyre_q8_1_mmvq_force_all(device_context) &&
            device_context->quantize_q8_1_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            device_context->mul_mat_id_q4_k_mul_q8_1_provider.kind ==
