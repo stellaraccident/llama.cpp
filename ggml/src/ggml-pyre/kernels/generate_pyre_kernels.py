@@ -536,6 +536,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_id_q4_k_row4_wg64_f32",
+        "source": "mul_mat_id_q4_k.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 104,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_id_q4_k_q8_1_f32",
         "source": "mul_mat_id_q4_k_q8_1.hip.cpp",
         "format": "FPIH",
@@ -694,6 +702,14 @@ KERNELS = [
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_q5_k_cols4_wg128_f32",
+        "source": "mul_mat_vec_q5_k.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (128, 1, 1),
     },
     {
         "name": "pyre_mul_mat_vec_q5_k_q8_1_f32",

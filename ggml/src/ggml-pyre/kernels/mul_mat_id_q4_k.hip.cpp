@@ -146,3 +146,111 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_wg64_f32(
         pyre_mul_mat_id_q4_k_constants c) {
     pyre_mul_mat_id_q4_k_f32_impl<64>(src0, src1, ids, dst, c);
 }
+
+extern "C" __global__ void pyre_mul_mat_id_q4_k_row4_wg64_f32(
+        const pyre_block_q4_K_id * src0, const float * src1, const int * ids, float * dst,
+        pyre_mul_mat_id_q4_k_constants c) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 4;
+    const long long outer = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 + 3 >= c.rows) {
+        return;
+    }
+
+    const long long id_pos = outer % c.n_ids;
+    const long long token = outer / c.n_ids;
+    if (token >= c.n_tokens) {
+        return;
+    }
+
+    const int expert = *reinterpret_cast<const int *>(
+        reinterpret_cast<const char *>(ids) + id_pos * c.ids_nb0 + token * c.ids_nb1);
+    if (expert < 0 || expert >= c.n_experts) {
+        return;
+    }
+
+    __shared__ float sumsh[64 / 32];
+    const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
+    const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
+    const char * src0_row1_base = src0_row0_base + c.src0_nb1;
+    const char * src0_row2_base = src0_row1_base + c.src0_nb1;
+    const char * src0_row3_base = src0_row2_base + c.src0_nb1;
+    const char * src1_col = reinterpret_cast<const char *>(src1) + id_pos * c.src1_nb1 + token * c.src1_nb2;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+
+    const int block_lane = tid & 63;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+    const long long blocks_per_row = c.k / 256;
+
+    for (long long block_idx = 0; block_idx < blocks_per_row; ++block_idx) {
+        const pyre_block_q4_K_id * block0 = reinterpret_cast<const pyre_block_q4_K_id *>(
+            src0_row0_base + block_idx * sizeof(pyre_block_q4_K_id));
+        const pyre_block_q4_K_id * block1 = reinterpret_cast<const pyre_block_q4_K_id *>(
+            src0_row1_base + block_idx * sizeof(pyre_block_q4_K_id));
+        const pyre_block_q4_K_id * block2 = reinterpret_cast<const pyre_block_q4_K_id *>(
+            src0_row2_base + block_idx * sizeof(pyre_block_q4_K_id));
+        const pyre_block_q4_K_id * block3 = reinterpret_cast<const pyre_block_q4_K_id *>(
+            src0_row3_base + block_idx * sizeof(pyre_block_q4_K_id));
+
+        uint8_t sc0 = 0;
+        uint8_t sc1 = 0;
+        uint8_t sc2 = 0;
+        uint8_t sc3 = 0;
+        uint8_t m0 = 0;
+        uint8_t m1 = 0;
+        uint8_t m2 = 0;
+        uint8_t m3 = 0;
+        pyre_get_scale_min_k4_id(group, block0->scales, &sc0, &m0);
+        pyre_get_scale_min_k4_id(group, block1->scales, &sc1, &m1);
+        pyre_get_scale_min_k4_id(group, block2->scales, &sc2, &m2);
+        pyre_get_scale_min_k4_id(group, block3->scales, &sc3, &m3);
+
+        const float d0 = __half2float(__ushort_as_half(block0->d)) * static_cast<float>(sc0);
+        const float d1 = __half2float(__ushort_as_half(block1->d)) * static_cast<float>(sc1);
+        const float d2 = __half2float(__ushort_as_half(block2->d)) * static_cast<float>(sc2);
+        const float d3 = __half2float(__ushort_as_half(block3->d)) * static_cast<float>(sc3);
+        const float min0 = __half2float(__ushort_as_half(block0->dmin)) * static_cast<float>(m0);
+        const float min1 = __half2float(__ushort_as_half(block1->dmin)) * static_cast<float>(m1);
+        const float min2 = __half2float(__ushort_as_half(block2->dmin)) * static_cast<float>(m2);
+        const float min3 = __half2float(__ushort_as_half(block3->dmin)) * static_cast<float>(m3);
+        const long long src_base = block_idx * 256 + group * 32 + lane;
+        const int qs_base = (group >> 1) * 32 + lane;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const float b = *reinterpret_cast<const float *>(src1_col + (src_base + j) * sizeof(float));
+            const uint8_t packed0 = block0->qs[qs_base + j];
+            const uint8_t packed1 = block1->qs[qs_base + j];
+            const uint8_t packed2 = block2->qs[qs_base + j];
+            const uint8_t packed3 = block3->qs[qs_base + j];
+            const float q0 = (group & 1) ? static_cast<float>(packed0 >> 4) : static_cast<float>(packed0 & 0x0F);
+            const float q1 = (group & 1) ? static_cast<float>(packed1 >> 4) : static_cast<float>(packed1 & 0x0F);
+            const float q2 = (group & 1) ? static_cast<float>(packed2 >> 4) : static_cast<float>(packed2 & 0x0F);
+            const float q3 = (group & 1) ? static_cast<float>(packed3 >> 4) : static_cast<float>(packed3 & 0x0F);
+            sum0 += (d0 * q0 - min0) * b;
+            sum1 += (d1 * q1 - min1) * b;
+            sum2 += (d2 * q2 - min2) * b;
+            sum3 += (d3 * q3 - min3) * b;
+        }
+    }
+
+    sum0 = pyre_reduce_wg<64>(sum0, sumsh);
+    __syncthreads();
+    sum1 = pyre_reduce_wg<64>(sum1, sumsh);
+    __syncthreads();
+    sum2 = pyre_reduce_wg<64>(sum2, sumsh);
+    __syncthreads();
+    sum3 = pyre_reduce_wg<64>(sum3, sumsh);
+
+    if (tid == 0) {
+        char * dst_base = reinterpret_cast<char *>(dst) + id_pos * c.dst_nb1 + token * c.dst_nb2;
+        *reinterpret_cast<float *>(dst_base + row0 * sizeof(float)) = sum0;
+        *reinterpret_cast<float *>(dst_base + (row0 + 1) * sizeof(float)) = sum1;
+        *reinterpret_cast<float *>(dst_base + (row0 + 2) * sizeof(float)) = sum2;
+        *reinterpret_cast<float *>(dst_base + (row0 + 3) * sizeof(float)) = sum3;
+    }
+}
