@@ -183,6 +183,127 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_wg64_f32(
     pyre_mul_mat_id_q4_k_swiglu_f32_impl<64>(gate, up, src1, ids, dst, c);
 }
 
+extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_row2_wg64_f32(
+        const pyre_block_q4_K_id_swiglu * gate,
+        const pyre_block_q4_K_id_swiglu * up,
+        const float * src1,
+        const int * ids,
+        float * dst,
+        pyre_mul_mat_id_q4_k_swiglu_constants c) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long outer = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 + 1 >= c.rows) {
+        return;
+    }
+
+    const long long id_pos = outer % c.n_ids;
+    const long long token = outer / c.n_ids;
+    if (token >= c.n_tokens) {
+        return;
+    }
+
+    const int expert = *reinterpret_cast<const int *>(
+        reinterpret_cast<const char *>(ids) + id_pos * c.ids_nb0 + token * c.ids_nb1);
+    if (expert < 0 || expert >= c.n_experts) {
+        return;
+    }
+
+    __shared__ float sumsh[64 / 32];
+    const char * gate_expert_base = reinterpret_cast<const char *>(gate) + expert * c.gate_nb2;
+    const char * up_expert_base = reinterpret_cast<const char *>(up) + expert * c.up_nb2;
+    const char * gate_row0_base = gate_expert_base + row0 * c.gate_nb1;
+    const char * gate_row1_base = gate_row0_base + c.gate_nb1;
+    const char * up_row0_base = up_expert_base + row0 * c.up_nb1;
+    const char * up_row1_base = up_row0_base + c.up_nb1;
+    const char * src1_col = reinterpret_cast<const char *>(src1) + id_pos * c.src1_nb1 + token * c.src1_nb2;
+    float gate_sum0 = 0.0f;
+    float up_sum0 = 0.0f;
+    float gate_sum1 = 0.0f;
+    float up_sum1 = 0.0f;
+
+    const int block_lane = tid & 63;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+    const long long blocks_per_row = c.k / 256;
+
+    for (long long block_idx = 0; block_idx < blocks_per_row; ++block_idx) {
+        const pyre_block_q4_K_id_swiglu * gate_block0 = reinterpret_cast<const pyre_block_q4_K_id_swiglu *>(
+            gate_row0_base + block_idx * sizeof(pyre_block_q4_K_id_swiglu));
+        const pyre_block_q4_K_id_swiglu * gate_block1 = reinterpret_cast<const pyre_block_q4_K_id_swiglu *>(
+            gate_row1_base + block_idx * sizeof(pyre_block_q4_K_id_swiglu));
+        const pyre_block_q4_K_id_swiglu * up_block0 = reinterpret_cast<const pyre_block_q4_K_id_swiglu *>(
+            up_row0_base + block_idx * sizeof(pyre_block_q4_K_id_swiglu));
+        const pyre_block_q4_K_id_swiglu * up_block1 = reinterpret_cast<const pyre_block_q4_K_id_swiglu *>(
+            up_row1_base + block_idx * sizeof(pyre_block_q4_K_id_swiglu));
+
+        uint8_t gate_sc0 = 0;
+        uint8_t gate_m0 = 0;
+        uint8_t gate_sc1 = 0;
+        uint8_t gate_m1 = 0;
+        uint8_t up_sc0 = 0;
+        uint8_t up_m0 = 0;
+        uint8_t up_sc1 = 0;
+        uint8_t up_m1 = 0;
+        pyre_get_scale_min_k4_id_swiglu(group, gate_block0->scales, &gate_sc0, &gate_m0);
+        pyre_get_scale_min_k4_id_swiglu(group, gate_block1->scales, &gate_sc1, &gate_m1);
+        pyre_get_scale_min_k4_id_swiglu(group, up_block0->scales, &up_sc0, &up_m0);
+        pyre_get_scale_min_k4_id_swiglu(group, up_block1->scales, &up_sc1, &up_m1);
+
+        const float gate_d0 = __half2float(__ushort_as_half(gate_block0->d)) * static_cast<float>(gate_sc0);
+        const float gate_d1 = __half2float(__ushort_as_half(gate_block1->d)) * static_cast<float>(gate_sc1);
+        const float up_d0 = __half2float(__ushort_as_half(up_block0->d)) * static_cast<float>(up_sc0);
+        const float up_d1 = __half2float(__ushort_as_half(up_block1->d)) * static_cast<float>(up_sc1);
+        const float gate_min0 = __half2float(__ushort_as_half(gate_block0->dmin)) * static_cast<float>(gate_m0);
+        const float gate_min1 = __half2float(__ushort_as_half(gate_block1->dmin)) * static_cast<float>(gate_m1);
+        const float up_min0 = __half2float(__ushort_as_half(up_block0->dmin)) * static_cast<float>(up_m0);
+        const float up_min1 = __half2float(__ushort_as_half(up_block1->dmin)) * static_cast<float>(up_m1);
+        const long long src_base = block_idx * 256 + group * 32 + lane;
+        const int qs_base = (group >> 1) * 32 + lane;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const float b = *reinterpret_cast<const float *>(src1_col + (src_base + j) * sizeof(float));
+            const uint8_t gate_packed0 = gate_block0->qs[qs_base + j];
+            const uint8_t gate_packed1 = gate_block1->qs[qs_base + j];
+            const uint8_t up_packed0 = up_block0->qs[qs_base + j];
+            const uint8_t up_packed1 = up_block1->qs[qs_base + j];
+            const float gate_q0 = (group & 1) ?
+                static_cast<float>(gate_packed0 >> 4) :
+                static_cast<float>(gate_packed0 & 0x0F);
+            const float gate_q1 = (group & 1) ?
+                static_cast<float>(gate_packed1 >> 4) :
+                static_cast<float>(gate_packed1 & 0x0F);
+            const float up_q0 = (group & 1) ?
+                static_cast<float>(up_packed0 >> 4) :
+                static_cast<float>(up_packed0 & 0x0F);
+            const float up_q1 = (group & 1) ?
+                static_cast<float>(up_packed1 >> 4) :
+                static_cast<float>(up_packed1 & 0x0F);
+            gate_sum0 += (gate_d0 * gate_q0 - gate_min0) * b;
+            gate_sum1 += (gate_d1 * gate_q1 - gate_min1) * b;
+            up_sum0 += (up_d0 * up_q0 - up_min0) * b;
+            up_sum1 += (up_d1 * up_q1 - up_min1) * b;
+        }
+    }
+
+    gate_sum0 = pyre_reduce_wg_swiglu<64>(gate_sum0, sumsh);
+    __syncthreads();
+    up_sum0 = pyre_reduce_wg_swiglu<64>(up_sum0, sumsh);
+    __syncthreads();
+    gate_sum1 = pyre_reduce_wg_swiglu<64>(gate_sum1, sumsh);
+    __syncthreads();
+    up_sum1 = pyre_reduce_wg_swiglu<64>(up_sum1, sumsh);
+
+    if (tid == 0) {
+        char * dst_base = reinterpret_cast<char *>(dst) + id_pos * c.dst_nb1 + token * c.dst_nb2;
+        const float silu_gate0 = gate_sum0 / (1.0f + __expf(-gate_sum0));
+        const float silu_gate1 = gate_sum1 / (1.0f + __expf(-gate_sum1));
+        *reinterpret_cast<float *>(dst_base + row0 * sizeof(float)) = up_sum0 * silu_gate0;
+        *reinterpret_cast<float *>(dst_base + (row0 + 1) * sizeof(float)) = up_sum1 * silu_gate1;
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
         const pyre_block_q4_K_id_swiglu * gate,
         const pyre_block_q4_K_id_swiglu * up,

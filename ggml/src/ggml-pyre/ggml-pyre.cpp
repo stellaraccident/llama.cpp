@@ -96,6 +96,7 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_packed_q4_k_mul = false;
     bool enable_packed_q4_k_mul_2row = false;
     bool enable_q4_k_id_row4_prompt = false;
+    bool enable_q4_k_swiglu_row2_prompt = false;
     bool enable_q5_k_cols4_prompt = false;
     bool enable_q6_k_cols4_prompt = false;
     int mul_mat_vec_bf16_workgroup_size = 0;
@@ -200,6 +201,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_row2_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_mul_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_provider;
@@ -569,6 +571,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_packed_q4_k_mul = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_PACKED_Q4_K_MUL"),
         /* .enable_packed_q4_k_mul_2row = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PACKED_Q4_K_MUL_2ROW"),
         /* .enable_q4_k_id_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_ROW4_PROMPT"),
+        /* .enable_q4_k_swiglu_row2_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_SWIGLU_ROW2_PROMPT"),
         /* .enable_q5_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS4_PROMPT"),
         /* .enable_q6_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS4_PROMPT"),
         /* .mul_mat_vec_bf16_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env(),
@@ -1296,6 +1299,14 @@ static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_wg64_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_swiglu_wg64_f32"),
         &device_context->mul_mat_id_q4_k_swiglu_wg64_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_row2_wg64_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_swiglu_row2_wg64_f32"),
+        &device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_packed_wg64_provider(
@@ -6128,6 +6139,15 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_id
             ggml_backend_pyre_provider_kind::direct_executable) {
         return &device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     }
+    if (device_context->policy.enable_q4_k_swiglu_row2_prompt &&
+        k == 2048 &&
+        (rows % 2) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider;
+    }
     const int workgroup_size = ggml_backend_pyre_select_mul_mat_id_q4_k_workgroup_size(device_context, k, rows);
     const ggml_backend_pyre_op_provider * provider = workgroup_size == 64 ?
         &device_context->mul_mat_id_q4_k_swiglu_wg64_provider :
@@ -6154,6 +6174,15 @@ static const char * ggml_backend_pyre_mul_mat_id_q4_k_swiglu_trace_suffix(
         device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_packed_wg64";
+    }
+    if (device_context->policy.enable_q4_k_swiglu_row2_prompt &&
+        k == 2048 &&
+        (rows % 2) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_row2_wg64";
     }
     const int workgroup_size = ggml_backend_pyre_select_mul_mat_id_q4_k_workgroup_size(device_context, k, rows);
     if (workgroup_size == 64) {
@@ -6874,7 +6903,9 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_swiglu(
         context->device_context, constants.k, constants.rows, constants.n_ids, constants.n_tokens);
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
-            static_cast<uint32_t>(constants.rows),
+            static_cast<uint32_t>(
+                provider == &context->device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider ?
+                    (constants.rows + 1) / 2 : constants.rows),
             static_cast<uint32_t>(constants.n_ids * constants.n_tokens),
             1,
         },
@@ -8862,6 +8893,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_wg128_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_row2_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_packed_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_mul_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_provider(device_context.get());

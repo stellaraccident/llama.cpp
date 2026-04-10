@@ -36,6 +36,21 @@ static void expect_near(const std::vector<float> & actual, const std::vector<flo
     }
 }
 
+static void expect_near_rel(
+        const std::vector<float> & actual, const std::vector<float> & expected,
+        float abs_tolerance, float rel_tolerance, const char * label) {
+    GGML_ASSERT(actual.size() == expected.size());
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const float delta = std::fabs(actual[i] - expected[i]);
+        const float threshold = abs_tolerance + rel_tolerance * std::fabs(expected[i]);
+        if (!(delta <= threshold)) {
+            std::fprintf(stderr, "%s[%zu]: got %.9g expected %.9g delta %.9g threshold %.9g\n",
+                label, i, actual[i], expected[i], delta, threshold);
+            std::abort();
+        }
+    }
+}
+
 static std::vector<float> reference_rms_norm(const std::vector<float> & input, int64_t ncols, float eps) {
     GGML_ASSERT(ncols > 0);
     GGML_ASSERT((input.size() % static_cast<size_t>(ncols)) == 0);
@@ -660,6 +675,87 @@ static void run_mul_mat_id_q4_case(ggml_backend_t backend, ggml_backend_dev_t de
 
     ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
     expect_near(output, expected, 1.0e-4f, "mul_mat_id_q4_output");
+}
+
+static void run_mul_mat_id_q4_swiglu_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t k = QK_K * 8;
+    constexpr int64_t rows = 2;
+    constexpr int64_t experts = 3;
+    constexpr int64_t ids = 8;
+    constexpr int64_t tokens = 512;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * gate_lhs = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_Q4_K, k, rows, experts);
+    ggml_tensor * up_lhs = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_Q4_K, k, rows, experts);
+    ggml_tensor * rhs = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, k, ids, tokens);
+    ggml_tensor * id_tensor = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, ids, tokens);
+    ggml_tensor * gate = ggml_mul_mat_id(ctx.get(), gate_lhs, rhs, id_tensor);
+    ggml_tensor * up = ggml_mul_mat_id(ctx.get(), up_lhs, rhs, id_tensor);
+    ggml_tensor * dst = ggml_swiglu_split(ctx.get(), gate, up);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> gate_f32(experts * rows * k);
+    std::vector<float> up_f32(gate_f32.size());
+    std::vector<float> gate_reference(gate_f32.size());
+    std::vector<float> up_reference(up_f32.size());
+    std::vector<float> rhs_f32(tokens * ids * k);
+    std::vector<int32_t> expert_ids(static_cast<size_t>(ids * tokens));
+    for (size_t i = 0; i < gate_f32.size(); ++i) {
+        gate_f32[i] = static_cast<float>(static_cast<int>(i % 67) - 33) / 34.0f;
+        up_f32[i] = static_cast<float>(static_cast<int>(i % 59) - 29) / 30.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 71) - 35) / 36.0f;
+    }
+    for (size_t i = 0; i < expert_ids.size(); ++i) {
+        expert_ids[i] = static_cast<int32_t>((i * 5 + 1) % experts);
+    }
+
+    std::vector<block_q4_K> gate_q4(static_cast<size_t>(experts * rows * k / QK_K));
+    std::vector<block_q4_K> up_q4(gate_q4.size());
+    for (int64_t expert = 0; expert < experts; ++expert) {
+        for (int64_t row = 0; row < rows; ++row) {
+            const size_t row_index = static_cast<size_t>(expert * rows + row);
+            quantize_row_q4_K_ref(gate_f32.data() + row_index * k, gate_q4.data() + row_index * (k / QK_K), k);
+            dequantize_row_q4_K(gate_q4.data() + row_index * (k / QK_K), gate_reference.data() + row_index * k, k);
+            quantize_row_q4_K_ref(up_f32.data() + row_index * k, up_q4.data() + row_index * (k / QK_K), k);
+            dequantize_row_q4_K(up_q4.data() + row_index * (k / QK_K), up_reference.data() + row_index * k, k);
+        }
+    }
+
+    ggml_backend_tensor_set(gate_lhs, gate_q4.data(), 0, gate_q4.size() * sizeof(block_q4_K));
+    ggml_backend_tensor_set(up_lhs, up_q4.data(), 0, up_q4.size() * sizeof(block_q4_K));
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    ggml_backend_tensor_set(id_tensor, expert_ids.data(), 0, expert_ids.size() * sizeof(int32_t));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(rows * ids * tokens, -1.0f);
+    std::vector<float> expected(output.size(), 0.0f);
+    for (int64_t token = 0; token < tokens; ++token) {
+        for (int64_t id = 0; id < ids; ++id) {
+            const int32_t expert = expert_ids[static_cast<size_t>(token * ids + id)];
+            for (int64_t row = 0; row < rows; ++row) {
+                float gate_sum = 0.0f;
+                float up_sum = 0.0f;
+                for (int64_t i = 0; i < k; ++i) {
+                    const float rhs_value = rhs_f32[static_cast<size_t>((token * ids + id) * k + i)];
+                    gate_sum += gate_reference[static_cast<size_t>((expert * rows + row) * k + i)] * rhs_value;
+                    up_sum += up_reference[static_cast<size_t>((expert * rows + row) * k + i)] * rhs_value;
+                }
+                const float silu_gate = gate_sum / (1.0f + std::exp(-gate_sum));
+                expected[static_cast<size_t>(token * ids * rows + id * rows + row)] = up_sum * silu_gate;
+            }
+        }
+    }
+
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near_rel(output, expected, 1.0e-3f, 1.0e-5f, "mul_mat_id_q4_swiglu_output");
 }
 
 static void run_mul_mat_id_q4_broadcast_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
@@ -1576,6 +1672,7 @@ int main() {
     run_batched_f16_matvec_case(backend.get(), dev);
     run_batched_f32_matvec_case(backend.get(), dev);
     run_mul_mat_id_q4_case(backend.get(), dev);
+    run_mul_mat_id_q4_swiglu_case(backend.get(), dev);
     run_mul_mat_id_q4_broadcast_case(backend.get(), dev);
     run_strided_rms_norm_case(backend.get(), dev);
     run_broadcast_mul_case(backend.get(), dev);
