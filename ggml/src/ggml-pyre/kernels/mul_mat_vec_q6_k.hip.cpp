@@ -147,6 +147,62 @@ static __device__ __forceinline__ void pyre_q6_k_dot4_cols4(
     }
 }
 
+static __device__ __forceinline__ void pyre_q6_k_dot4_cols8(
+        const pyre_block_q6_K * block,
+        const float * src0,
+        const float * src1,
+        const float * src2,
+        const float * src3,
+        const float * src4,
+        const float * src5,
+        const float * src6,
+        const float * src7,
+        float d,
+        int group,
+        int lane,
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float & sum4,
+        float & sum5,
+        float & sum6,
+        float & sum7) {
+    const int half = group >> 2;
+    const int group_in_half = group & 3;
+    const int ql_base = half * 64 + ((group_in_half & 1) ? 32 : 0) + lane;
+    const int qh_base = half * 32 + lane;
+    const int qh_shift = (group_in_half & 3) * 2;
+    const bool high_nibble = group_in_half >= 2;
+
+    const uint32_t ql_word =
+        static_cast<uint32_t>(block->ql[ql_base]) |
+        (static_cast<uint32_t>(block->ql[ql_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->ql[ql_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->ql[ql_base + 3]) << 24);
+    const uint32_t qh_word =
+        static_cast<uint32_t>(block->qh[qh_base]) |
+        (static_cast<uint32_t>(block->qh[qh_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->qh[qh_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->qh[qh_base + 3]) << 24);
+
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int ql_shift = 8 * j + (high_nibble ? 4 : 0);
+        const int ql = (ql_word >> ql_shift) & 0x0F;
+        const int qh = (qh_word >> (8 * j + qh_shift)) & 0x03;
+        const float q = d * static_cast<float>((ql | (qh << 4)) - 32);
+        sum0 += q * src0[j];
+        sum1 += q * src1[j];
+        sum2 += q * src2[j];
+        sum3 += q * src3[j];
+        sum4 += q * src4[j];
+        sum5 += q * src5[j];
+        sum6 += q * src6[j];
+        sum7 += q * src7[j];
+    }
+}
+
 template <int WG_SIZE>
 static __device__ __forceinline__ void pyre_mul_mat_vec_q6_k_f32_impl(
         const pyre_block_q6_K * src0, const float * src1, float * dst,
@@ -269,5 +325,99 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_cols4_wg128_f32(
         dst[(col0 + 1) * rows + row] = sum1;
         dst[(col0 + 2) * rows + row] = sum2;
         dst[(col0 + 3) * rows + row] = sum3;
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_q6_k_cols8_wg128_f32(
+        const pyre_block_q6_K * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 8;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows || col0 + 7 >= cols) {
+        return;
+    }
+
+    __shared__ float sumsh[128 / 32];
+
+    const long long blocks_per_row = k / 256;
+    const pyre_block_q6_K * row_blocks = src0 + row * blocks_per_row;
+    const float * src1_col0 = src1 + col0 * k;
+    const float * src1_col1 = src1_col0 + k;
+    const float * src1_col2 = src1_col1 + k;
+    const float * src1_col3 = src1_col2 + k;
+    const float * src1_col4 = src1_col3 + k;
+    const float * src1_col5 = src1_col4 + k;
+    const float * src1_col6 = src1_col5 + k;
+    const float * src1_col7 = src1_col6 + k;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+    float sum4 = 0.0f;
+    float sum5 = 0.0f;
+    float sum6 = 0.0f;
+    float sum7 = 0.0f;
+
+    const int block_lane = tid & 63;
+    const int block_slot = tid >> 6;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+    const int in_block_base = group * 32 + lane;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 2) {
+        const pyre_block_q6_K * block = row_blocks + block_idx;
+        const long long src_base = block_idx * 256 + in_block_base;
+        const float d = __half2float(__ushort_as_half(block->d)) *
+            static_cast<float>(pyre_q6_k_scale(block, group, lane));
+
+        pyre_q6_k_dot4_cols8(
+            block,
+            src1_col0 + src_base,
+            src1_col1 + src_base,
+            src1_col2 + src_base,
+            src1_col3 + src_base,
+            src1_col4 + src_base,
+            src1_col5 + src_base,
+            src1_col6 + src_base,
+            src1_col7 + src_base,
+            d,
+            group,
+            lane,
+            sum0,
+            sum1,
+            sum2,
+            sum3,
+            sum4,
+            sum5,
+            sum6,
+            sum7);
+    }
+
+    sum0 = pyre_reduce_wg<128>(sum0, sumsh);
+    __syncthreads();
+    sum1 = pyre_reduce_wg<128>(sum1, sumsh);
+    __syncthreads();
+    sum2 = pyre_reduce_wg<128>(sum2, sumsh);
+    __syncthreads();
+    sum3 = pyre_reduce_wg<128>(sum3, sumsh);
+    __syncthreads();
+    sum4 = pyre_reduce_wg<128>(sum4, sumsh);
+    __syncthreads();
+    sum5 = pyre_reduce_wg<128>(sum5, sumsh);
+    __syncthreads();
+    sum6 = pyre_reduce_wg<128>(sum6, sumsh);
+    __syncthreads();
+    sum7 = pyre_reduce_wg<128>(sum7, sumsh);
+
+    if (tid == 0) {
+        dst[col0 * rows + row] = sum0;
+        dst[(col0 + 1) * rows + row] = sum1;
+        dst[(col0 + 2) * rows + row] = sum2;
+        dst[(col0 + 3) * rows + row] = sum3;
+        dst[(col0 + 4) * rows + row] = sum4;
+        dst[(col0 + 5) * rows + row] = sum5;
+        dst[(col0 + 6) * rows + row] = sum6;
+        dst[(col0 + 7) * rows + row] = sum7;
     }
 }
