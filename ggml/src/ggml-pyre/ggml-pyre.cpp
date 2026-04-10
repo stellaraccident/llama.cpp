@@ -6644,9 +6644,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_q8_0_add(
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.rows),
-            static_cast<uint32_t>(
-                &provider == &context->device_context->mul_mat_vec_bf16_swiglu_cols4_provider ?
-                    (constants.cols + 3) / 4 : constants.cols),
+            static_cast<uint32_t>(constants.cols),
             1,
         },
         /* .workgroup_size = */ {
