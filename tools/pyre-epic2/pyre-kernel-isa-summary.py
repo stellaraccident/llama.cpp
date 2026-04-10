@@ -78,7 +78,7 @@ def workspace_root() -> Path:
 
 
 def default_rocm_path(root: Path) -> Path:
-    return Path(os.environ.get("ROCM_PATH", root / "build/therock/dist/rocm"))
+    return Path(os.environ.get("GGML_PYRE_ROCM_PATH") or os.environ.get("ROCM_PATH") or root / "rocm")
 
 
 def default_clang(rocm_path: Path) -> str:

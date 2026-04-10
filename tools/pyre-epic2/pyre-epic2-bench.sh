@@ -6,15 +6,22 @@ LLAMA_SRC="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="${PYRE_WORKSPACE_ROOT:-$(cd -- "${LLAMA_SRC}/../.." && pwd)}"
 
 BUILD_ROOT="${PYRE_LLAMA_BUILD_ROOT:-${WORKSPACE_ROOT}/build}"
-ROCM_PATH="${GGML_PYRE_ROCM_PATH:-${WORKSPACE_ROOT}/build/therock/dist/rocm}"
+if [[ -n "${GGML_PYRE_ROCM_PATH:-}" ]]; then
+    ROCM_PATH="${GGML_PYRE_ROCM_PATH}"
+elif [[ -d "${WORKSPACE_ROOT}/rocm" ]]; then
+    ROCM_PATH="${WORKSPACE_ROOT}/rocm"
+else
+    echo "Missing ROCm distribution. Set GGML_PYRE_ROCM_PATH or create ${WORKSPACE_ROOT}/rocm." >&2
+    exit 2
+fi
 PYRE_RUNTIME_SRC="${PYRE_RUNTIME_SRC:-${WORKSPACE_ROOT}/sources/pyre-runtime}"
-PYRE_RUNTIME_BUILD="${PYRE_RUNTIME_BUILD:-${BUILD_ROOT}/pyre-runtime}"
-PYRE_RUNTIME_INSTALL="${PYRE_RUNTIME_INSTALL:-${BUILD_ROOT}/pyre-runtime-install}"
+PYRE_RUNTIME_BUILD="${PYRE_RUNTIME_BUILD:-${BUILD_ROOT}/pyre-runtime-rocm713}"
+PYRE_RUNTIME_INSTALL="${PYRE_RUNTIME_INSTALL:-${BUILD_ROOT}/pyre-runtime-rocm713-install}"
 
 CPU_BUILD="${BUILD_ROOT}/llama-cpu"
 VULKAN_BUILD="${BUILD_ROOT}/llama-vulkan"
-HIP_BUILD="${BUILD_ROOT}/llama-hip"
-PYRE_BUILD="${BUILD_ROOT}/llama-pyre"
+HIP_BUILD="${BUILD_ROOT}/llama-hip-rocm713"
+PYRE_BUILD="${BUILD_ROOT}/llama-pyre-rocm713"
 
 QWEN_MODEL="${WORKSPACE_ROOT}/models/Qwen3.5-35B-A3B-UD-Q4_K_L.gguf"
 MODEL="${LLAMA_BENCH_MODEL:-}"

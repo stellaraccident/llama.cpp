@@ -43,10 +43,10 @@ PYRE_EQUIVALENTS = {
     "RMS_NORM_MUL_ROPE": {"RMS_NORM_MUL_ROPE"},
     "RMS_NORM_MUL": {"RMS_NORM_MUL"},
     "ROPE_VIEW_SET_ROWS": {"ROPE_SET_ROWS"},
-    "TOPK_MOE_EARLY_SOFTMAX_NORM": {"TOPK_MOE"},
-    "TOPK_MOE_SIGMOID_NORM_BIAS": {"TOPK_MOE"},
-    "TOPK_MOE_EARLY_SOFTMAX": {"TOPK_MOE"},
-    "TOPK_MOE_LATE_SOFTMAX": {"TOPK_MOE"},
+    "TOPK_MOE_EARLY_SOFTMAX_NORM": {"TOPK_MOE", "TOPK_MOE_EARLY_SOFTMAX_NORM"},
+    "TOPK_MOE_SIGMOID_NORM_BIAS": {"TOPK_MOE", "TOPK_MOE_SIGMOID_NORM_BIAS"},
+    "TOPK_MOE_EARLY_SOFTMAX": {"TOPK_MOE", "TOPK_MOE_EARLY_SOFTMAX_NORM"},
+    "TOPK_MOE_LATE_SOFTMAX": {"TOPK_MOE", "TOPK_MOE_EARLY_SOFTMAX_NORM"},
     "MULTI_ADD": {"ADD_ADD"},
 }
 
@@ -192,8 +192,8 @@ def compare_pyre_vulkan(pyre_ops: Counter[str], vulkan_fusions: Counter[str]) ->
 def command_env(base: dict[str, str], binary_dir: Path, extra: dict[str, str]) -> dict[str, str]:
     env = dict(base)
     root = workspace_root()
-    rocm = root / "build/therock/dist/rocm"
-    pyre_install = root / "build/pyre-runtime-install"
+    rocm = Path(env.get("GGML_PYRE_ROCM_PATH") or env.get("ROCM_PATH") or root / "rocm")
+    pyre_install = Path(env.get("PYRE_RUNTIME_INSTALL") or root / "build/pyre-runtime-rocm713-install")
     ld_parts = [
         str(binary_dir),
         str(rocm / "lib"),
@@ -218,7 +218,7 @@ def run_trace(args: argparse.Namespace) -> int:
     rc = 0
     for backend in backends:
         if backend == "pyre":
-            binary = root / "build/llama-pyre/bin/llama-bench"
+            binary = root / "build/llama-pyre-rocm713/bin/llama-bench"
             dev_args = ["-ngl", str(args.gpu_layers), "-dev", "PYRE0"]
             env = command_env(os.environ, binary.parent, {
                 "GGML_PYRE_KERNEL_PROVIDER": "pure_hip",
@@ -302,7 +302,14 @@ def main() -> int:
     run.add_argument("--top", type=int, default=40)
     run.add_argument("--summarize", action=argparse.BooleanOptionalAction, default=True)
 
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if argv and argv[0] not in {"summarize", "run-qwen", "-h", "--help"} and not argv[0].startswith("-"):
+        # Backward-compatible shorthand used in older spike notes:
+        #   pyre-trace-summary.py trace.log
+        # Treat positional paths as Pyre provider logs.
+        argv = ["summarize", "--pyre-log", argv[0], *argv[1:]]
+
+    args = parser.parse_args(argv)
     if args.command == "run-qwen":
         return run_trace(args)
 
