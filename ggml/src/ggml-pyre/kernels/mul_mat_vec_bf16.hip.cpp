@@ -105,3 +105,46 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_cols1_f32(
         dst[row] = sum;
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_cols4_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long col0 = __builtin_amdgcn_workgroup_id_y() * 4;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows || col0 >= cols) {
+        return;
+    }
+
+    __shared__ float sumsh[8];
+
+    const uint16_t * src0_row = src0 + row * k;
+    const float * src1_col0 = src1 + col0 * k;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+    for (long long i = tid; i < k; i += 256) {
+        const float a = pyre_bf16_to_f32(src0_row[i]);
+        sum0 += a * src1_col0[i];
+        sum1 += a * src1_col0[k + i];
+        sum2 += a * src1_col0[2 * k + i];
+        sum3 += a * src1_col0[3 * k + i];
+    }
+
+    sum0 = pyre_reduce_bf16<256>(sum0, sumsh);
+    __syncthreads();
+    sum1 = pyre_reduce_bf16<256>(sum1, sumsh);
+    __syncthreads();
+    sum2 = pyre_reduce_bf16<256>(sum2, sumsh);
+    __syncthreads();
+    sum3 = pyre_reduce_bf16<256>(sum3, sumsh);
+
+    if (tid == 0) {
+        float * dst_col0 = dst + col0 * rows + row;
+        dst_col0[0] = sum0;
+        dst_col0[rows] = sum1;
+        dst_col0[2 * rows] = sum2;
+        dst_col0[3 * rows] = sum3;
+    }
+}

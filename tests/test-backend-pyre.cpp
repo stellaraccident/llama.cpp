@@ -417,6 +417,115 @@ static void run_q5_k_prompt_matvec_case(ggml_backend_t backend, ggml_backend_dev
         1.0e-4f, "q5_prompt_cols512_output");
 }
 
+static void run_bf16_prompt_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t k = 64;
+    constexpr int64_t rows = 5;
+    constexpr int64_t cols = 512;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * lhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_BF16, k, rows);
+    ggml_tensor * rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, k, cols);
+    ggml_tensor * dst = ggml_mul_mat(ctx.get(), lhs, rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> lhs_f32(rows * k);
+    std::vector<float> rhs_f32(cols * k);
+    std::vector<float> lhs_reference(lhs_f32.size());
+    for (size_t i = 0; i < lhs_f32.size(); ++i) {
+        lhs_f32[i] = static_cast<float>(static_cast<int>(i % 73) - 36) / 37.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 79) - 39) / 40.0f;
+    }
+
+    std::vector<ggml_bf16_t> lhs_bf16(lhs_f32.size());
+    ggml_fp32_to_bf16_row(lhs_f32.data(), lhs_bf16.data(), static_cast<int64_t>(lhs_bf16.size()));
+    for (size_t i = 0; i < lhs_reference.size(); ++i) {
+        lhs_reference[i] = ggml_bf16_to_fp32(lhs_bf16[i]);
+    }
+
+    ggml_backend_tensor_set(lhs, lhs_bf16.data(), 0, lhs_bf16.size() * sizeof(ggml_bf16_t));
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(rows * cols, -1.0f);
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, reference_mul_mat(lhs_reference, rhs_f32, k, rows, cols), 1.0e-4f, "bf16_prompt_cols512_output");
+}
+
+static void run_bf16_prompt_swiglu_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t k = 64;
+    constexpr int64_t rows = 4;
+    constexpr int64_t cols = 512;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * gate_lhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_BF16, k, rows);
+    ggml_tensor * up_lhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_BF16, k, rows);
+    ggml_tensor * rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, k, cols);
+    ggml_tensor * gate = ggml_mul_mat(ctx.get(), gate_lhs, rhs);
+    ggml_tensor * up = ggml_mul_mat(ctx.get(), up_lhs, rhs);
+    ggml_tensor * dst = ggml_swiglu_split(ctx.get(), gate, up);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> gate_f32(rows * k);
+    std::vector<float> up_f32(rows * k);
+    std::vector<float> rhs_f32(cols * k);
+    std::vector<float> gate_reference(gate_f32.size());
+    std::vector<float> up_reference(up_f32.size());
+    for (size_t i = 0; i < gate_f32.size(); ++i) {
+        gate_f32[i] = static_cast<float>(static_cast<int>(i % 61) - 30) / 31.0f;
+        up_f32[i] = static_cast<float>(static_cast<int>(i % 67) - 33) / 34.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 71) - 35) / 36.0f;
+    }
+
+    std::vector<ggml_bf16_t> gate_bf16(gate_f32.size());
+    std::vector<ggml_bf16_t> up_bf16(up_f32.size());
+    ggml_fp32_to_bf16_row(gate_f32.data(), gate_bf16.data(), static_cast<int64_t>(gate_bf16.size()));
+    ggml_fp32_to_bf16_row(up_f32.data(), up_bf16.data(), static_cast<int64_t>(up_bf16.size()));
+    for (size_t i = 0; i < gate_reference.size(); ++i) {
+        gate_reference[i] = ggml_bf16_to_fp32(gate_bf16[i]);
+        up_reference[i] = ggml_bf16_to_fp32(up_bf16[i]);
+    }
+
+    ggml_backend_tensor_set(gate_lhs, gate_bf16.data(), 0, gate_bf16.size() * sizeof(ggml_bf16_t));
+    ggml_backend_tensor_set(up_lhs, up_bf16.data(), 0, up_bf16.size() * sizeof(ggml_bf16_t));
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(rows * cols, -1.0f);
+    std::vector<float> expected(output.size(), 0.0f);
+    for (int64_t col = 0; col < cols; ++col) {
+        for (int64_t row = 0; row < rows; ++row) {
+            float gate_sum = 0.0f;
+            float up_sum = 0.0f;
+            for (int64_t i = 0; i < k; ++i) {
+                const float rhs_value = rhs_f32[static_cast<size_t>(col * k + i)];
+                gate_sum += gate_reference[static_cast<size_t>(row * k + i)] * rhs_value;
+                up_sum += up_reference[static_cast<size_t>(row * k + i)] * rhs_value;
+            }
+            const float silu_gate = gate_sum / (1.0f + std::exp(-gate_sum));
+            expected[static_cast<size_t>(col * rows + row)] = up_sum * silu_gate;
+        }
+    }
+
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near_rel(output, expected, 1.0e-4f, 1.0e-5f, "bf16_prompt_swiglu_cols512_output");
+}
+
 static void run_wide_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t k = 32;
     constexpr int64_t rows = 3;
@@ -1718,6 +1827,8 @@ int main() {
 
     run_matvec_case(backend.get(), dev, GGML_TYPE_F32, "f32_output");
     run_matvec_case(backend.get(), dev, GGML_TYPE_BF16, "bf16_output");
+    run_bf16_prompt_matvec_case(backend.get(), dev);
+    run_bf16_prompt_swiglu_case(backend.get(), dev);
     run_matvec_case(backend.get(), dev, GGML_TYPE_Q5_K, "q5_output");
     run_q5_k_prompt_matvec_case(backend.get(), dev);
     run_matvec_case(backend.get(), dev, GGML_TYPE_Q6_K, "q6_output");

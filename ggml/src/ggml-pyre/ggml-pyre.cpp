@@ -100,6 +100,8 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_q5_k_cols4_prompt = false;
     bool enable_q6_k_cols4_prompt = false;
     bool enable_f16_batched_cols4_prompt = false;
+    bool enable_bf16_cols4_prompt = false;
+    bool enable_bf16_swiglu_cols4_prompt = false;
     int mul_mat_vec_bf16_workgroup_size = 0;
     int mul_mat_vec_k_workgroup_size = 0;
     int mul_mat_vec_q6_k_workgroup_size = 0;
@@ -178,10 +180,12 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_cols1_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_cols4_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_cols1_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_cols4_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_set_rows_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_provider;
@@ -577,6 +581,8 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q5_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS4_PROMPT"),
         /* .enable_q6_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS4_PROMPT"),
         /* .enable_f16_batched_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS4_PROMPT"),
+        /* .enable_bf16_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_COLS4_PROMPT"),
+        /* .enable_bf16_swiglu_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_SWIGLU_COLS4_PROMPT"),
         /* .mul_mat_vec_bf16_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env(),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
         /* .mul_mat_vec_q6_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_q6_k_workgroup_size_from_env(),
@@ -1151,6 +1157,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_cols1_f32"),
         &device_context->mul_mat_vec_bf16_cols1_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_cols4_f32"),
+        &device_context->mul_mat_vec_bf16_cols4_provider) || ok;
     return ok;
 }
 
@@ -1172,6 +1182,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_swiglu_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_swiglu_cols1_f32"),
         &device_context->mul_mat_vec_bf16_swiglu_cols1_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_swiglu_cols4_f32"),
+        &device_context->mul_mat_vec_bf16_swiglu_cols4_provider) || ok;
     return ok;
 }
 
@@ -5839,6 +5853,13 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_ve
             ggml_backend_pyre_provider_kind::direct_executable) {
         return &device_context->mul_mat_vec_bf16_cols1_provider;
     }
+    if (device_context->policy.enable_bf16_cols4_prompt &&
+        cols == 512 &&
+        (cols % 4) == 0 &&
+        device_context->mul_mat_vec_bf16_cols4_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_vec_bf16_cols4_provider;
+    }
     const int workgroup_size = ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
         device_context, k, rows);
     const ggml_backend_pyre_op_provider * provider = workgroup_size == 64 ?
@@ -5861,6 +5882,13 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_ve
         device_context->mul_mat_vec_bf16_swiglu_cols1_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable) {
         return &device_context->mul_mat_vec_bf16_swiglu_cols1_provider;
+    }
+    if (device_context->policy.enable_bf16_swiglu_cols4_prompt &&
+        cols == 512 &&
+        (cols % 4) == 0 &&
+        device_context->mul_mat_vec_bf16_swiglu_cols4_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_vec_bf16_swiglu_cols4_provider;
     }
     const int workgroup_size = ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
         device_context, k, rows);
@@ -5987,6 +6015,13 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
         device_context->mul_mat_vec_bf16_cols1_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_cols1";
+    }
+    if (op->src[0]->type == GGML_TYPE_BF16 &&
+        op->src[1]->ne[1] == 512 &&
+        device_context->policy.enable_bf16_cols4_prompt &&
+        device_context->mul_mat_vec_bf16_cols4_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_cols4";
     }
     if (op->src[0]->type == GGML_TYPE_BF16 &&
         ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
@@ -6552,7 +6587,8 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
             static_cast<uint32_t>(constants.rows),
             static_cast<uint32_t>(
                 (provider == &context->device_context->mul_mat_vec_q5_k_cols4_wg128_provider ||
-                 provider == &context->device_context->mul_mat_vec_q6_k_cols4_wg128_provider) ?
+                 provider == &context->device_context->mul_mat_vec_q6_k_cols4_wg128_provider ||
+                 provider == &context->device_context->mul_mat_vec_bf16_cols4_provider) ?
                     (constants.cols + 3) / 4 : constants.cols),
             1,
         },
@@ -6608,7 +6644,9 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_q8_0_add(
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.rows),
-            static_cast<uint32_t>(constants.cols),
+            static_cast<uint32_t>(
+                &provider == &context->device_context->mul_mat_vec_bf16_swiglu_cols4_provider ?
+                    (constants.cols + 3) / 4 : constants.cols),
             1,
         },
         /* .workgroup_size = */ {
@@ -6722,7 +6760,9 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_bf16_swiglu(
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.rows),
-            static_cast<uint32_t>(constants.cols),
+            static_cast<uint32_t>(
+                &provider == &context->device_context->mul_mat_vec_bf16_swiglu_cols4_provider ?
+                    (constants.cols + 3) / 4 : constants.cols),
             1,
         },
         /* .workgroup_size = */ {
@@ -7802,10 +7842,14 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     up->src[1]->ne[1] == 1 &&
                         context->device_context->mul_mat_vec_bf16_swiglu_cols1_provider.kind ==
                             ggml_backend_pyre_provider_kind::direct_executable ? "_cols1" :
+                        (up->src[1]->ne[1] == 512 &&
+                         context->device_context->policy.enable_bf16_swiglu_cols4_prompt &&
+                         context->device_context->mul_mat_vec_bf16_swiglu_cols4_provider.kind ==
+                            ggml_backend_pyre_provider_kind::direct_executable ? "_cols4" :
                         (ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
                             context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 64 ? "_wg64" :
                             (ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
-                                context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 128 ? "_wg128" : "")),
+                                context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 128 ? "_wg128" : ""))),
                     up->src[0]->ne[0], up->src[0]->ne[1], up->src[1]->ne[1]);
                 if (ggml_backend_pyre_dispatch_mul_mat_vec_bf16_swiglu(context, gate, up, swiglu) !=
                         GGML_STATUS_SUCCESS) {
