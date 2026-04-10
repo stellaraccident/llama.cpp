@@ -174,6 +174,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_set_rows_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_cols1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols1_ne2_1_provider;
@@ -1065,10 +1066,15 @@ static bool ggml_backend_pyre_load_mul_mat_vec_f16_provider(
 
 static bool ggml_backend_pyre_load_mul_mat_vec_f16_batched_provider(
         ggml_backend_pyre_device_context * device_context) {
-    return ggml_backend_pyre_load_catalog_provider(
+    bool ok = ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f16_batched_f32"),
         &device_context->mul_mat_vec_f16_batched_provider);
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f16_batched_cols1_f32"),
+        &device_context->mul_mat_vec_f16_batched_cols1_provider) || ok;
+    return ok;
 }
 
 static bool ggml_backend_pyre_load_mul_mat_vec_bf16_provider(
@@ -5832,6 +5838,12 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_batched_cols1_ne2_1";
     }
+    if (op->src[0]->type == GGML_TYPE_F16 &&
+        op->src[1]->ne[1] == 1 &&
+        device_context->mul_mat_vec_f16_batched_cols1_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_batched_cols1";
+    }
     if (ggml_backend_pyre_supports_mul_mat_vec_f16_batched(device_context, op) ||
         ggml_backend_pyre_supports_mul_mat_vec_f32_batched(device_context, op)) {
         return "_batched";
@@ -6199,8 +6211,15 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
             constants.dst_ne2 == 1 &&
             context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider.kind ==
                 ggml_backend_pyre_provider_kind::direct_executable;
+        const bool use_f16_cols1 =
+            src0->type == GGML_TYPE_F16 &&
+            constants.cols == 1 &&
+            context->device_context->mul_mat_vec_f16_batched_cols1_provider.kind ==
+                ggml_backend_pyre_provider_kind::direct_executable;
         const auto & provider = src0->type == GGML_TYPE_F16 ?
-            context->device_context->mul_mat_vec_f16_batched_provider :
+            (use_f16_cols1 ?
+                context->device_context->mul_mat_vec_f16_batched_cols1_provider :
+                context->device_context->mul_mat_vec_f16_batched_provider) :
             (use_f32_cols1_ne2_1 ?
                 context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider :
                 context->device_context->mul_mat_vec_f32_batched_provider);

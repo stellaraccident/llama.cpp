@@ -84,3 +84,33 @@ extern "C" __global__ void pyre_mul_mat_vec_f16_batched_f32(
             sum;
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_f16_batched_cols1_f32(
+        const __half * src0, const float * src1, float * dst,
+        pyre_mul_mat_vec_f16_batched_constants c) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long i12 = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= c.rows || i12 >= c.dst_ne2) {
+        return;
+    }
+
+    const long long src0_i02 = c.src0_ne2 == c.dst_ne2 ? i12 : i12 / (c.dst_ne2 / c.src0_ne2);
+    const char * src0_row = reinterpret_cast<const char *>(src0) +
+        row * c.src0_nb1 + src0_i02 * c.src0_nb2;
+    const char * src1_col = reinterpret_cast<const char *>(src1) + i12 * c.src1_nb2;
+
+    __shared__ float sumsh[256];
+    float sum = 0.0f;
+    for (long long i = tid; i < c.k; i += 256) {
+        const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+        const float b = *reinterpret_cast<const float *>(src1_col + i * sizeof(float));
+        sum += a * b;
+    }
+
+    sum = pyre_reduce_256(sum, sumsh);
+
+    if (tid == 0) {
+        *reinterpret_cast<float *>(reinterpret_cast<char *>(dst) + row * sizeof(float) + i12 * c.dst_nb2) = sum;
+    }
+}
