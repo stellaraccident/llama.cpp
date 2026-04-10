@@ -10,7 +10,8 @@ static __device__ __forceinline__ float pyre_bf16_to_f32(uint16_t value) {
     return bits.f;
 }
 
-static __device__ __forceinline__ float pyre_reduce_256(float sum, float * shared) {
+template <int WG_SIZE>
+static __device__ __forceinline__ float pyre_reduce_bf16(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
     const unsigned int wave = tid / warpSize;
@@ -18,12 +19,15 @@ static __device__ __forceinline__ float pyre_reduce_256(float sum, float * share
     for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
         sum += __shfl_down(sum, offset);
     }
+    if (WG_SIZE <= warpSize) {
+        return sum;
+    }
     if (lane == 0) {
         shared[wave] = sum;
     }
     __syncthreads();
 
-    sum = lane < (256 / warpSize) ? shared[lane] : 0.0f;
+    sum = lane < ((WG_SIZE + warpSize - 1) / warpSize) ? shared[lane] : 0.0f;
     if (wave == 0) {
         for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
             sum += __shfl_down(sum, offset);
@@ -32,7 +36,8 @@ static __device__ __forceinline__ float pyre_reduce_256(float sum, float * share
     return sum;
 }
 
-extern "C" __global__ void pyre_mul_mat_vec_bf16_f32(
+template <int WG_SIZE>
+static __device__ __forceinline__ void pyre_mul_mat_vec_bf16_f32_impl(
         const uint16_t * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
     const long long row = __builtin_amdgcn_workgroup_id_x();
@@ -42,18 +47,36 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_f32(
         return;
     }
 
-    __shared__ float sumsh[256];
+    __shared__ float sumsh[(WG_SIZE + 31) / 32];
 
     const uint16_t * src0_row = src0 + row * k;
     const float * src1_col = src1 + col * k;
     float sum = 0.0f;
-    for (long long i = tid; i < k; i += 256) {
+    for (long long i = tid; i < k; i += WG_SIZE) {
         sum += pyre_bf16_to_f32(src0_row[i]) * src1_col[i];
     }
 
-    sum = pyre_reduce_256(sum, sumsh);
+    sum = pyre_reduce_bf16<WG_SIZE>(sum, sumsh);
 
     if (tid == 0) {
         dst[col * rows + row] = sum;
     }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    pyre_mul_mat_vec_bf16_f32_impl<256>(src0, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_wg128_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    pyre_mul_mat_vec_bf16_f32_impl<128>(src0, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_wg64_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    pyre_mul_mat_vec_bf16_f32_impl<64>(src0, src1, dst, k, rows, cols);
 }
