@@ -314,6 +314,50 @@ static void run_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev, ggml
     expect_near(output, reference_mul_mat(lhs_reference, rhs_f32, k, rows, cols), 1.0e-4f, label);
 }
 
+static void run_q6_k_prompt_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t k = QK_K;
+    constexpr int64_t rows = 4;
+    constexpr int64_t cols = 512;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * lhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_Q6_K, k, rows);
+    ggml_tensor * rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, k, cols);
+    ggml_tensor * dst = ggml_mul_mat(ctx.get(), lhs, rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> lhs_f32(rows * k);
+    std::vector<float> rhs_f32(cols * k);
+    std::vector<float> lhs_reference(lhs_f32.size());
+    for (size_t i = 0; i < lhs_f32.size(); ++i) {
+        lhs_f32[i] = static_cast<float>(static_cast<int>(i % 67) - 33) / 34.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 71) - 35) / 36.0f;
+    }
+
+    std::vector<block_q6_K> lhs_q6(rows);
+    for (int row = 0; row < rows; ++row) {
+        quantize_row_q6_K_ref(lhs_f32.data() + row * k, lhs_q6.data() + row, k);
+        dequantize_row_q6_K(lhs_q6.data() + row, lhs_reference.data() + row * k, k);
+    }
+
+    ggml_backend_tensor_set(lhs, lhs_q6.data(), 0, lhs_q6.size() * sizeof(block_q6_K));
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(rows * cols, -1.0f);
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near(
+        output, reference_mul_mat(lhs_reference, rhs_f32, k, rows, cols),
+        1.0e-4f, "q6_prompt_cols512_output");
+}
+
 static void run_wide_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t k = 32;
     constexpr int64_t rows = 3;
@@ -1477,6 +1521,7 @@ int main() {
     run_matvec_case(backend.get(), dev, GGML_TYPE_BF16, "bf16_output");
     run_matvec_case(backend.get(), dev, GGML_TYPE_Q5_K, "q5_output");
     run_matvec_case(backend.get(), dev, GGML_TYPE_Q6_K, "q6_output");
+    run_q6_k_prompt_matvec_case(backend.get(), dev);
     run_matvec_case(backend.get(), dev, GGML_TYPE_Q8_0, "q8_output");
     run_wide_matvec_case(backend.get(), dev);
     run_q8_0_mul_mat_add_case(backend.get(), dev);
