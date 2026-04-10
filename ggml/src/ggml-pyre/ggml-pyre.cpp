@@ -81,6 +81,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_mul_mat_id = false;
     bool disable_add_add_fusion = false;
     bool disable_add_rms_norm_mul_fusion = false;
+    bool enable_multi_add_fusion = false;
     bool disable_mul_mat_swiglu_fusion = false;
     bool disable_mul_mat_id_swiglu_fusion = false;
     bool disable_mul_mat_set_rows_fusion = false;
@@ -123,6 +124,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider add_provider;
     ggml_backend_pyre_op_provider add_broadcast_provider;
     ggml_backend_pyre_op_provider add_add_broadcast_provider;
+    ggml_backend_pyre_op_provider add8_provider;
     ggml_backend_pyre_op_provider mul_provider;
     ggml_backend_pyre_op_provider mul_broadcast_provider;
     ggml_backend_pyre_op_provider div_broadcast_provider;
@@ -496,6 +498,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
         /* .disable_add_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_ADD_FUSION"),
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
+        /* .enable_multi_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_MULTI_ADD_FUSION"),
         /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
         /* .disable_mul_mat_set_rows_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SET_ROWS_FUSION"),
@@ -705,6 +708,14 @@ static bool ggml_backend_pyre_load_add_add_broadcast_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_add_add_f32_broadcast"),
         &device_context->add_add_broadcast_provider);
+}
+
+static bool ggml_backend_pyre_load_add8_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_add8_f32"),
+        &device_context->add8_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_provider(
@@ -1435,6 +1446,82 @@ static bool ggml_backend_pyre_supports_add_add_broadcast(
            (src2->ne[2] == first->ne[2] || src2->ne[2] == 1) &&
            (src2->ne[3] == first->ne[3] || src2->ne[3] == 1) &&
            (src2->ne[0] == 1 || src2->nb[0] == sizeof(float));
+}
+
+static bool ggml_backend_pyre_supports_add8_tensor(
+        const ggml_tensor * tensor,
+        const ggml_tensor * shape) {
+    return tensor &&
+           tensor->type == GGML_TYPE_F32 &&
+           ggml_are_same_shape(tensor, shape) &&
+           ggml_is_contiguous(tensor);
+}
+
+static bool ggml_backend_pyre_try_collect_add8_chain(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_cgraph * cgraph,
+        int start,
+        std::array<const ggml_tensor *, 8> * sources,
+        const ggml_tensor ** dst) {
+    static constexpr int ADD_COUNT = 7;
+    if (!device_context->policy.enable_multi_add_fusion ||
+        device_context->add8_provider.kind != ggml_backend_pyre_provider_kind::direct_executable ||
+        start + ADD_COUNT > cgraph->n_nodes) {
+        return false;
+    }
+
+    const ggml_tensor * current = cgraph->nodes[start];
+    if (!current ||
+        current->op != GGML_OP_ADD ||
+        !ggml_backend_pyre_supports_add8_tensor(current, current)) {
+        return false;
+    }
+
+    std::array<int, ADD_COUNT> idxs = {};
+    std::array<ggml_op, ADD_COUNT> ops = {};
+    idxs[0] = start;
+    ops[0] = GGML_OP_ADD;
+    (*sources)[0] = current->src[0];
+    (*sources)[1] = current->src[1];
+
+    for (int add_idx = 1; add_idx < ADD_COUNT; ++add_idx) {
+        const ggml_tensor * next = cgraph->nodes[start + add_idx];
+        if (!next ||
+            next->op != GGML_OP_ADD ||
+            next->type != GGML_TYPE_F32 ||
+            !ggml_are_same_shape(next, current) ||
+            !ggml_is_contiguous(next)) {
+            return false;
+        }
+
+        const ggml_tensor * term = nullptr;
+        if (next->src[0] == current) {
+            term = next->src[1];
+        } else if (next->src[1] == current) {
+            term = next->src[0];
+        } else {
+            return false;
+        }
+
+        (*sources)[add_idx + 1] = term;
+        current = next;
+        idxs[add_idx] = start + add_idx;
+        ops[add_idx] = GGML_OP_ADD;
+    }
+
+    for (const ggml_tensor * src : *sources) {
+        if (!ggml_backend_pyre_supports_add8_tensor(src, current)) {
+            return false;
+        }
+    }
+
+    const int outputs[1] = { start + ADD_COUNT - 1 };
+    if (!ggml_can_fuse_subgraph_ext(cgraph, idxs.data(), ADD_COUNT, ops.data(), outputs, 1)) {
+        return false;
+    }
+
+    *dst = current;
+    return true;
 }
 
 static bool ggml_backend_pyre_supports_add_rms_norm_mul_broadcast(
@@ -2761,6 +2848,10 @@ struct ggml_backend_pyre_elementwise_constants {
     int64_t n;
 };
 
+struct ggml_backend_pyre_add8_constants {
+    int64_t n;
+};
+
 struct ggml_backend_pyre_mul_broadcast_constants {
     int64_t ne0;
     int64_t nrows;
@@ -3334,6 +3425,61 @@ static ggml_status ggml_backend_pyre_dispatch_add_add_broadcast_f32(
             sizeof(constants),
             bindings,
             4,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->elementwise_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_add8_f32(
+        ggml_backend_pyre_context * context,
+        const std::array<const ggml_tensor *, 8> & sources,
+        const ggml_tensor * dst) {
+    pyre_buffer_ref_t bindings[9] = {};
+    for (int i = 0; i < 8; ++i) {
+        if (!ggml_backend_pyre_tensor_buffer_ref(sources[i], &bindings[i])) {
+            GGML_LOG_ERROR("%s: ADD8 source tensor is not backed by a PYRE buffer\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+    }
+    if (!ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[8])) {
+        GGML_LOG_ERROR("%s: ADD8 destination tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_add8_constants constants = {
+        /* .n = */ ggml_nelements(dst),
+    };
+
+    const auto & provider = context->device_context->add8_provider;
+    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+        provider.export_info.workgroup_size[0] : 256;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>((constants.n + workgroup_size - 1) / workgroup_size),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ {
+            workgroup_size,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            9,
             PYRE_DISPATCH_FLAG_NONE))) {
         return GGML_STATUS_FAILED;
     }
@@ -7416,6 +7562,24 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
         }
         if (node->op == GGML_OP_ADD &&
             !context->device_context->policy.disable_fusion &&
+            context->device_context->policy.enable_multi_add_fusion) {
+            std::array<const ggml_tensor *, 8> sources = {};
+            const ggml_tensor * add8 = nullptr;
+            if (ggml_backend_pyre_try_collect_add8_chain(
+                    context->device_context, cgraph, i, &sources, &add8)) {
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim ADD8 provider=pure_hip_f32 arity=8 n=%" PRId64 "\n",
+                    ggml_nelements(add8));
+                if (ggml_backend_pyre_dispatch_add8_f32(context, sources, add8) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                i += 6;
+                continue;
+            }
+        }
+        if (node->op == GGML_OP_ADD &&
+            !context->device_context->policy.disable_fusion &&
             !context->device_context->policy.disable_add_add_fusion &&
             i + 1 < cgraph->n_nodes &&
             cgraph->nodes[i + 1]->op == GGML_OP_ADD &&
@@ -8280,6 +8444,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_add_provider(device_context.get());
             (void) ggml_backend_pyre_load_add_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_add_add_broadcast_provider(device_context.get());
+            (void) ggml_backend_pyre_load_add8_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_div_broadcast_provider(device_context.get());
