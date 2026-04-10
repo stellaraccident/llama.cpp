@@ -42,3 +42,22 @@ extern "C" __global__ void pyre_get_rows_f32(
     *reinterpret_cast<float *>(dst_row + col * sizeof(float)) =
         *reinterpret_cast<const float *>(src_row + col * sizeof(float));
 }
+
+extern "C" __global__ void pyre_get_rows_f32_nr1(
+        const float * src0, const int * idx, float * dst,
+        pyre_get_rows_f32_constants c) {
+    const long long col = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 256 +
+        __builtin_amdgcn_workitem_id_x();
+    if (col >= c.nc) {
+        return;
+    }
+    (void) c.nr;
+
+    const int row_index = *reinterpret_cast<const int *>(reinterpret_cast<const char *>(idx));
+    if (row_index < 0) {
+        return;
+    }
+
+    const char * src_row = reinterpret_cast<const char *>(src0) + static_cast<long long>(row_index) * c.src0_nb1;
+    dst[col] = *reinterpret_cast<const float *>(src_row + col * sizeof(float));
+}

@@ -1,3 +1,5 @@
+#include <hip/hip_runtime.h>
+
 struct pyre_rms_norm_mul_constants {
     long long ncols;
     long long nrows;
@@ -20,6 +22,32 @@ struct pyre_rms_norm_mul_constants {
     int _pad;
 };
 
+static __device__ __forceinline__ float pyre_rms_norm_mul_reduce_512(float sum, float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & 31;
+    const unsigned int wave = tid >> 5;
+
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down(sum, offset);
+    }
+    if (lane == 0) {
+        shared[wave] = sum;
+    }
+    __builtin_amdgcn_s_barrier();
+
+    sum = tid < 16 ? shared[lane] : 0.0f;
+    if (wave == 0) {
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            sum += __shfl_down(sum, offset);
+        }
+        if (lane == 0) {
+            shared[0] = sum;
+        }
+    }
+    __builtin_amdgcn_s_barrier();
+    return shared[0];
+}
+
 extern "C" __global__ void pyre_rms_norm_mul_f32(
         const float * src, const float * weight, float * dst,
         pyre_rms_norm_mul_constants c) {
@@ -29,7 +57,7 @@ extern "C" __global__ void pyre_rms_norm_mul_f32(
         return;
     }
 
-    __shared__ float sumsh[512];
+    __shared__ float sumsh[16];
 
     const long long i3 = row / (c.ne1 * c.ne2);
     const long long i2 = (row - i3 * c.ne1 * c.ne2) / c.ne1;
@@ -51,18 +79,7 @@ extern "C" __global__ void pyre_rms_norm_mul_f32(
         sum += value * value;
     }
 
-    sumsh[tid] = sum;
-    __builtin_amdgcn_s_barrier();
-
-    for (unsigned int step = 256; step > 0; step >>= 1) {
-        if (tid < step) {
-            sum += sumsh[tid + step];
-            sumsh[tid] = sum;
-        }
-        __builtin_amdgcn_s_barrier();
-    }
-
-    const float scale = 1.0f / __builtin_sqrtf(sumsh[0] / (float) c.ncols + c.eps);
+    const float scale = 1.0f / __builtin_sqrtf(pyre_rms_norm_mul_reduce_512(sum, sumsh) / (float) c.ncols + c.eps);
     for (long long col = tid; col < c.ncols; col += 512) {
         const long long wcol = c.weight_ne0 == 1 ? 0 : col;
         const float src_value = *reinterpret_cast<const float *>(src_row + col * sizeof(float));

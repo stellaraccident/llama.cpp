@@ -80,3 +80,28 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_wg64_f32(
         long long k, long long rows, long long cols) {
     pyre_mul_mat_vec_bf16_f32_impl<64>(src0, src1, dst, k, rows, cols);
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_cols1_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows) {
+        return;
+    }
+    (void) cols;
+
+    __shared__ float sumsh[8];
+
+    const uint16_t * src0_row = src0 + row * k;
+    float sum = 0.0f;
+    for (long long i = tid; i < k; i += 256) {
+        sum += pyre_bf16_to_f32(src0_row[i]) * src1[i];
+    }
+
+    sum = pyre_reduce_bf16<256>(sum, sumsh);
+
+    if (tid == 0) {
+        dst[row] = sum;
+    }
+}

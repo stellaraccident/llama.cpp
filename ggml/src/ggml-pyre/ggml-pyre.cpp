@@ -144,6 +144,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider l2_norm_provider;
     ggml_backend_pyre_op_provider clamp_provider;
     ggml_backend_pyre_op_provider get_rows_f32_provider;
+    ggml_backend_pyre_op_provider get_rows_f32_nr1_provider;
     ggml_backend_pyre_op_provider get_rows_q5_k_provider;
     ggml_backend_pyre_op_provider concat_f32_provider;
     ggml_backend_pyre_op_provider copy_strided_f32_provider;
@@ -170,9 +171,11 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_cols1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_cols1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_set_rows_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f16_batched_provider;
@@ -895,10 +898,15 @@ static bool ggml_backend_pyre_load_clamp_provider(
 
 static bool ggml_backend_pyre_load_get_rows_f32_provider(
         ggml_backend_pyre_device_context * device_context) {
-    return ggml_backend_pyre_load_catalog_provider(
+    bool ok = ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_get_rows_f32"),
         &device_context->get_rows_f32_provider);
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_get_rows_f32_nr1"),
+        &device_context->get_rows_f32_nr1_provider) || ok;
+    return ok;
 }
 
 static bool ggml_backend_pyre_load_get_rows_q5_k_provider(
@@ -1117,6 +1125,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_wg64_f32"),
         &device_context->mul_mat_vec_bf16_wg64_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_cols1_f32"),
+        &device_context->mul_mat_vec_bf16_cols1_provider) || ok;
     return ok;
 }
 
@@ -1134,6 +1146,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_swiglu_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_swiglu_wg64_f32"),
         &device_context->mul_mat_vec_bf16_swiglu_wg64_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_swiglu_cols1_f32"),
+        &device_context->mul_mat_vec_bf16_swiglu_cols1_provider) || ok;
     return ok;
 }
 
@@ -4271,15 +4287,22 @@ static ggml_status ggml_backend_pyre_dispatch_get_rows_f32(
         /* .ne11     = */ src1->ne[1],
     };
 
+    const bool use_f32_nr1 =
+        src0->type == GGML_TYPE_F32 &&
+        constants.nr == 1 &&
+        context->device_context->get_rows_f32_nr1_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
     const auto & provider = src0->type == GGML_TYPE_Q5_K ?
         context->device_context->get_rows_q5_k_provider :
-        context->device_context->get_rows_f32_provider;
+        (use_f32_nr1 ?
+            context->device_context->get_rows_f32_nr1_provider :
+            context->device_context->get_rows_f32_provider);
     const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 256;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>((constants.nc + workgroup_size - 1) / workgroup_size),
-            static_cast<uint32_t>(constants.nr),
+            static_cast<uint32_t>(use_f32_nr1 ? 1 : constants.nr),
             1,
         },
         /* .workgroup_size = */ { workgroup_size, 1, 1 },
@@ -5747,7 +5770,13 @@ static int ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
 static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_vec_bf16_provider(
         const ggml_backend_pyre_device_context * device_context,
         int64_t k,
-        int64_t rows) {
+        int64_t rows,
+        int64_t cols) {
+    if (cols == 1 &&
+        device_context->mul_mat_vec_bf16_cols1_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_vec_bf16_cols1_provider;
+    }
     const int workgroup_size = ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
         device_context, k, rows);
     const ggml_backend_pyre_op_provider * provider = workgroup_size == 64 ?
@@ -5764,7 +5793,13 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_ve
 static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_vec_bf16_swiglu_provider(
         const ggml_backend_pyre_device_context * device_context,
         int64_t k,
-        int64_t rows) {
+        int64_t rows,
+        int64_t cols) {
+    if (cols == 1 &&
+        device_context->mul_mat_vec_bf16_swiglu_cols1_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_vec_bf16_swiglu_cols1_provider;
+    }
     const int workgroup_size = ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
         device_context, k, rows);
     const ggml_backend_pyre_op_provider * provider = workgroup_size == 64 ?
@@ -5857,6 +5892,12 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
         ggml_backend_pyre_select_mul_mat_vec_k_workgroup_size(
             device_context, op->src[0]->type, op->src[0]->ne[0], op->src[0]->ne[1]) == 128) {
         return "_wg128";
+    }
+    if (op->src[0]->type == GGML_TYPE_BF16 &&
+        op->src[1]->ne[1] == 1 &&
+        device_context->mul_mat_vec_bf16_cols1_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_cols1";
     }
     if (op->src[0]->type == GGML_TYPE_BF16 &&
         ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
@@ -6321,7 +6362,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
             break;
         case GGML_TYPE_BF16:
             provider = ggml_backend_pyre_select_mul_mat_vec_bf16_provider(
-                context->device_context, constants.k, constants.rows);
+                context->device_context, constants.k, constants.rows, constants.cols);
             break;
         case GGML_TYPE_F32:
             provider = &context->device_context->mul_mat_vec_f32_provider;
@@ -6507,7 +6548,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_bf16_swiglu(
     };
 
     const auto & provider = *ggml_backend_pyre_select_mul_mat_vec_bf16_swiglu_provider(
-        context->device_context, constants.k, constants.rows);
+        context->device_context, constants.k, constants.rows, constants.cols);
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(constants.rows),
@@ -7582,10 +7623,13 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     context->device_context,
                     "claim MUL_MAT_SWIGLU provider=pure_hip_bf16%s k=%" PRId64
                     " rows=%" PRId64 " cols=%" PRId64 "\n",
-                    ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
-                        context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 64 ? "_wg64" :
+                    up->src[1]->ne[1] == 1 &&
+                        context->device_context->mul_mat_vec_bf16_swiglu_cols1_provider.kind ==
+                            ggml_backend_pyre_provider_kind::direct_executable ? "_cols1" :
                         (ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
-                            context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 128 ? "_wg128" : ""),
+                            context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 64 ? "_wg64" :
+                            (ggml_backend_pyre_select_mul_mat_vec_bf16_workgroup_size(
+                                context->device_context, up->src[0]->ne[0], up->src[0]->ne[1]) == 128 ? "_wg128" : "")),
                     up->src[0]->ne[0], up->src[0]->ne[1], up->src[1]->ne[1]);
                 if (ggml_backend_pyre_dispatch_mul_mat_vec_bf16_swiglu(context, gate, up, swiglu) !=
                         GGML_STATUS_SUCCESS) {
@@ -8063,7 +8107,10 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     context->device_context,
                     "claim GET_ROWS provider=pure_hip_%s node=%s src=%s idx=%s src_op=%s idx_op=%s "
                     "nc=%" PRId64 " nr=%" PRId64 "\n",
-                    node->src[0]->type == GGML_TYPE_Q5_K ? "q5_K" : "f32",
+                    node->src[0]->type == GGML_TYPE_Q5_K ? "q5_K" :
+                        (ggml_nelements(node->src[1]) == 1 &&
+                         context->device_context->get_rows_f32_nr1_provider.kind ==
+                             ggml_backend_pyre_provider_kind::direct_executable ? "f32_nr1" : "f32"),
                     ggml_get_name(node),
                     node->src[0] ? ggml_get_name(node->src[0]) : "null",
                     node->src[1] ? ggml_get_name(node->src[1]) : "null",
