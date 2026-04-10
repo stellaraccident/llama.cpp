@@ -96,6 +96,7 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_packed_q4_k_mul = false;
     int mul_mat_vec_bf16_workgroup_size = 0;
     int mul_mat_vec_k_workgroup_size = 0;
+    int mul_mat_vec_q6_k_workgroup_size = 0;
     int mul_mat_id_q4_k_workgroup_size = 0;
 };
 
@@ -165,6 +166,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider ssm_conv_update_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
+    ggml_backend_pyre_op_provider gated_delta_net_s128_cluster16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
@@ -465,6 +467,24 @@ static int ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env() {
     return 0;
 }
 
+static int ggml_backend_pyre_mul_mat_vec_q6_k_workgroup_size_from_env() {
+    const char * value = std::getenv("GGML_PYRE_MUL_MAT_VEC_Q6_K_WG");
+    if (!value || value[0] == '\0' || std::strcmp(value, "auto") == 0) {
+        return 0;
+    }
+    if (std::strcmp(value, "64") == 0) {
+        return 64;
+    }
+    if (std::strcmp(value, "128") == 0) {
+        return 128;
+    }
+    if (std::strcmp(value, "256") == 0) {
+        return 256;
+    }
+    GGML_LOG_WARN("%s: unknown GGML_PYRE_MUL_MAT_VEC_Q6_K_WG=%s, using auto\n", __func__, value);
+    return 0;
+}
+
 static int ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env() {
     const char * value = std::getenv("GGML_PYRE_MUL_MAT_VEC_BF16_WG");
     if (!value || value[0] == '\0' || std::strcmp(value, "auto") == 0) {
@@ -538,6 +558,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_packed_q4_k_mul = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_PACKED_Q4_K_MUL"),
         /* .mul_mat_vec_bf16_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env(),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
+        /* .mul_mat_vec_q6_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_q6_k_workgroup_size_from_env(),
         /* .mul_mat_id_q4_k_workgroup_size = */ ggml_backend_pyre_mul_mat_id_q4_k_workgroup_size_from_env(),
     };
 }
@@ -1050,10 +1071,15 @@ static bool ggml_backend_pyre_load_ssm_conv_update_provider(
 
 static bool ggml_backend_pyre_load_gated_delta_net_provider(
         ggml_backend_pyre_device_context * device_context) {
-    return ggml_backend_pyre_load_catalog_provider(
+    bool ok = ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_f32"),
         &device_context->gated_delta_net_provider);
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster16_f32"),
+        &device_context->gated_delta_net_s128_cluster16_provider) || ok;
+    return ok;
 }
 
 static bool ggml_backend_pyre_load_mul_mat_vec_f16_provider(
@@ -4956,7 +4982,13 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
         /* ._pad     = */ 0,
     };
 
-    const auto & provider = context->device_context->gated_delta_net_provider;
+    const bool use_s128_cluster16 =
+        constants.S_v == 128 &&
+        context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
+    const auto & provider = use_s128_cluster16 ?
+        context->device_context->gated_delta_net_s128_cluster16_provider :
+        context->device_context->gated_delta_net_provider;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>((constants.S_v + 3) / 4),
@@ -4964,7 +4996,7 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
             static_cast<uint32_t>(constants.n_seqs),
         },
         /* .workgroup_size = */ {
-            128,
+            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 128,
             1,
             1,
         },
@@ -5682,6 +5714,10 @@ static int ggml_backend_pyre_select_mul_mat_vec_k_workgroup_size(
     if (device_context->policy.mul_mat_vec_k_workgroup_size != 0) {
         return device_context->policy.mul_mat_vec_k_workgroup_size;
     }
+    if (type == GGML_TYPE_Q6_K &&
+        device_context->policy.mul_mat_vec_q6_k_workgroup_size != 0) {
+        return device_context->policy.mul_mat_vec_q6_k_workgroup_size;
+    }
 
     switch (type) {
         case GGML_TYPE_Q4_K:
@@ -5689,7 +5725,8 @@ static int ggml_backend_pyre_select_mul_mat_vec_k_workgroup_size(
         case GGML_TYPE_Q5_K:
             return rows > 65536 ? 64 : 128;
         case GGML_TYPE_Q6_K:
-            return k >= 4096 && rows <= 2048 ? 128 : 256;
+            (void) k;
+            return 128;
         default:
             return 256;
     }
@@ -8195,8 +8232,11 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                         ggml_backend_pyre_find_gated_delta_net_state_update(cgraph, i, context->device_context)) {
                     ggml_backend_pyre_trace_provider(
                         context->device_context,
-                        "claim GATED_DELTA_NET_STATE_UPDATE provider=pure_hip_f32 S_v=%" PRId64
+                        "claim GATED_DELTA_NET_STATE_UPDATE provider=pure_hip_f32%s S_v=%" PRId64
                         " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 " dst=%s\n",
+                        node->src[2]->ne[0] == 128 &&
+                            context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
+                                ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster16" : "",
                         node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3],
                         ggml_get_name(state_update));
                     if (ggml_backend_pyre_dispatch_gated_delta_net(context, node, state_update) != GGML_STATUS_SUCCESS) {
@@ -8207,8 +8247,11 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                 }
                 ggml_backend_pyre_trace_provider(
                     context->device_context,
-                    "claim GATED_DELTA_NET provider=pure_hip_f32 S_v=%" PRId64
+                    "claim GATED_DELTA_NET provider=pure_hip_f32%s S_v=%" PRId64
                     " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 "\n",
+                    node->src[2]->ne[0] == 128 &&
+                        context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
+                            ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster16" : "",
                     node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3]);
                 if (ggml_backend_pyre_dispatch_gated_delta_net(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;

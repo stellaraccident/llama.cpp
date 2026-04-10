@@ -151,3 +151,102 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
         }
     }
 }
+
+static __device__ __forceinline__ float pyre_reduce_cluster16(float value) {
+    value += __shfl_down(value, 8);
+    value += __shfl_down(value, 4);
+    value += __shfl_down(value, 2);
+    value += __shfl_down(value, 1);
+    return value;
+}
+
+extern "C" __global__ void pyre_gated_delta_net_s128_cluster16_f32(
+        const float * q,
+        const float * k,
+        const float * v,
+        const float * g,
+        const float * beta,
+        const float * state_in,
+        float * dst,
+        float * state_dst,
+        pyre_gated_delta_net_f32_constants c) {
+    constexpr unsigned int S_v = 128;
+    constexpr unsigned int lanes_per_column = 16;
+    constexpr unsigned int columns_per_workgroup = 4;
+    constexpr unsigned int rows_per_lane = S_v / lanes_per_column;
+
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (lanes_per_column - 1);
+    const unsigned int col_group = tid / lanes_per_column;
+    const long long col =
+        static_cast<long long>(__builtin_amdgcn_workgroup_id_x() * columns_per_workgroup + col_group);
+    const long long head = __builtin_amdgcn_workgroup_id_y();
+    const long long seq = __builtin_amdgcn_workgroup_id_z();
+
+    if (head >= c.H || seq >= c.n_seqs || col_group >= columns_per_workgroup) {
+        return;
+    }
+
+    const long long iq1 = head % c.neq1;
+    const long long ik1 = head % c.nek1;
+    const long long iq3 = seq / c.rq3;
+    const long long ik3 = seq / c.rk3;
+    const bool kda = c.g_ne0 == S_v;
+
+    float * attn_out = dst + (seq * c.n_tokens * c.H + head) * S_v + col;
+    float * state_out = state_dst + c.state_dst_offset + (seq * c.H + head) * S_v * S_v + col * S_v;
+    const float * state_col = state_in + (seq * c.H + head) * S_v * S_v + col * S_v;
+
+    float s_shard[rows_per_lane];
+    for (unsigned int r = 0; r < rows_per_lane; ++r) {
+        s_shard[r] = state_col[r * lanes_per_column + lane];
+    }
+
+    for (long long token = 0; token < c.n_tokens; ++token) {
+        const char * q_base = reinterpret_cast<const char *>(q) + iq3 * c.q_nb3 + token * c.q_nb2 + iq1 * c.q_nb1;
+        const char * k_base = reinterpret_cast<const char *>(k) + ik3 * c.k_nb3 + token * c.k_nb2 + ik1 * c.k_nb1;
+        const char * v_base = reinterpret_cast<const char *>(v) + seq * c.v_nb3 + token * c.v_nb2 + head * c.v_nb1;
+        const char * g_base = reinterpret_cast<const char *>(g) + seq * c.g_nb3 + token * c.g_nb2 + head * c.g_nb1;
+        const char * beta_base =
+            reinterpret_cast<const char *>(beta) + seq * c.beta_nb3 + token * c.beta_nb2 + head * c.beta_nb1;
+
+        float q_reg[rows_per_lane];
+        float k_reg[rows_per_lane];
+        float g_reg[rows_per_lane];
+        for (unsigned int r = 0; r < rows_per_lane; ++r) {
+            const unsigned int row = r * lanes_per_column + lane;
+            q_reg[r] = *reinterpret_cast<const float *>(q_base + row * sizeof(float));
+            k_reg[r] = *reinterpret_cast<const float *>(k_base + row * sizeof(float));
+            g_reg[r] = kda ? __builtin_expf(*reinterpret_cast<const float *>(g_base + row * sizeof(float))) : 1.0f;
+        }
+
+        float kv_partial = 0.0f;
+        for (unsigned int r = 0; r < rows_per_lane; ++r) {
+            kv_partial += g_reg[r] * s_shard[r] * k_reg[r];
+        }
+        const float kv_col = pyre_reduce_cluster16(kv_partial);
+        const float beta_val = *reinterpret_cast<const float *>(beta_base);
+        const float v_col = *reinterpret_cast<const float *>(v_base + col * sizeof(float));
+        const float g_scalar = kda ? 1.0f : __builtin_expf(*reinterpret_cast<const float *>(g_base));
+        const float delta_col = (v_col - (kda ? kv_col : g_scalar * kv_col)) * beta_val;
+
+        float attn_partial = 0.0f;
+        for (unsigned int r = 0; r < rows_per_lane; ++r) {
+            if (!kda) {
+                g_reg[r] = g_scalar;
+            }
+            s_shard[r] = g_reg[r] * s_shard[r] + k_reg[r] * delta_col;
+            attn_partial += s_shard[r] * q_reg[r];
+        }
+        const float attn_col = pyre_reduce_cluster16(attn_partial);
+
+        if (lane == 0) {
+            *attn_out = attn_col * c.scale;
+        }
+        attn_out += S_v * c.H;
+    }
+
+    for (unsigned int r = 0; r < rows_per_lane; ++r) {
+        state_out[r * lanes_per_column + lane] = s_shard[r];
+    }
+}
