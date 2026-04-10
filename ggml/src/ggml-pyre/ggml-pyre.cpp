@@ -498,7 +498,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
         /* .disable_add_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_ADD_FUSION"),
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
-        /* .enable_multi_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_MULTI_ADD_FUSION"),
+        /* .enable_multi_add_fusion = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MULTI_ADD_FUSION"),
         /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
         /* .disable_mul_mat_set_rows_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SET_ROWS_FUSION"),
