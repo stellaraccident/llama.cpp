@@ -559,6 +559,62 @@ static void run_batched_f16_matvec_case(ggml_backend_t backend, ggml_backend_dev
     expect_near(output, expected, 1.0e-4f, "batched_f16_output");
 }
 
+static void run_batched_f16_prompt_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    constexpr int64_t k = 64;
+    constexpr int64_t rows = 5;
+    constexpr int64_t cols = 512;
+    constexpr int64_t src0_batches = 2;
+    constexpr int64_t dst_batches = 4;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * lhs = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F16, k, rows, src0_batches);
+    ggml_tensor * rhs = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, k, cols, dst_batches);
+    ggml_tensor * dst = ggml_mul_mat(ctx.get(), lhs, rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> lhs_f32(src0_batches * rows * k);
+    std::vector<float> rhs_f32(dst_batches * cols * k);
+    for (size_t i = 0; i < lhs_f32.size(); ++i) {
+        lhs_f32[i] = static_cast<float>(static_cast<int>(i % 29) - 14) / 15.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 31) - 15) / 16.0f;
+    }
+    std::vector<ggml_fp16_t> lhs_f16(lhs_f32.size());
+    std::vector<float> lhs_reference(lhs_f32.size());
+    ggml_fp32_to_fp16_row(lhs_f32.data(), lhs_f16.data(), static_cast<int64_t>(lhs_f16.size()));
+    ggml_fp16_to_fp32_row(lhs_f16.data(), lhs_reference.data(), static_cast<int64_t>(lhs_reference.size()));
+
+    ggml_backend_tensor_set(lhs, lhs_f16.data(), 0, lhs_f16.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(rows * cols * dst_batches, -1.0f);
+    std::vector<float> expected(output.size(), 0.0f);
+    for (int64_t batch = 0; batch < dst_batches; ++batch) {
+        const int64_t src0_batch = batch / (dst_batches / src0_batches);
+        for (int64_t col = 0; col < cols; ++col) {
+            for (int64_t row = 0; row < rows; ++row) {
+                float sum = 0.0f;
+                for (int64_t i = 0; i < k; ++i) {
+                    sum += lhs_reference[static_cast<size_t>(src0_batch * rows * k + row * k + i)] *
+                        rhs_f32[static_cast<size_t>(batch * cols * k + col * k + i)];
+                }
+                expected[static_cast<size_t>(batch * rows * cols + col * rows + row)] = sum;
+            }
+        }
+    }
+
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near(output, expected, 1.0e-4f, "batched_f16_prompt_output");
+}
+
 static void run_batched_f32_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t k = 4;
     constexpr int64_t rows = 3;
@@ -1670,6 +1726,7 @@ int main() {
     run_wide_matvec_case(backend.get(), dev);
     run_q8_0_mul_mat_add_case(backend.get(), dev);
     run_batched_f16_matvec_case(backend.get(), dev);
+    run_batched_f16_prompt_matvec_case(backend.get(), dev);
     run_batched_f32_matvec_case(backend.get(), dev);
     run_mul_mat_id_q4_case(backend.get(), dev);
     run_mul_mat_id_q4_swiglu_case(backend.get(), dev);
