@@ -401,6 +401,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_mul_packed_2row_wg64_f32(
     }
 
     sum0 = pyre_reduce_wg<64>(sum0, sumsh);
+    __syncthreads();
     sum1 = pyre_reduce_wg<64>(sum1, sumsh);
 
     if (tid == 0) {
