@@ -509,8 +509,8 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ"),
         /* .q8_1_mmvq_policy = */ ggml_backend_pyre_q8_1_mmvq_policy_from_env(),
         /* .enable_packed_q4_k_dmmv = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PACKED_Q4_K_DMMV"),
-        /* .enable_packed_q4_k_swiglu = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PACKED_Q4_K_SWIGLU"),
-        /* .enable_packed_q4_k_mul = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PACKED_Q4_K_MUL"),
+        /* .enable_packed_q4_k_swiglu = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_PACKED_Q4_K_SWIGLU"),
+        /* .enable_packed_q4_k_mul = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_PACKED_Q4_K_MUL"),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
         /* .mul_mat_id_q4_k_workgroup_size = */ ggml_backend_pyre_mul_mat_id_q4_k_workgroup_size_from_env(),
     };
