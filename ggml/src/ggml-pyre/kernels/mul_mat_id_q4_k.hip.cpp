@@ -25,6 +25,34 @@ struct pyre_mul_mat_id_q4_k_constants {
     long long dst_nb2;
 };
 
+struct pyre_clear_u32_constants {
+    long long n;
+};
+
+struct pyre_compact_moe_routes_constants {
+    long long n_ids;
+    long long n_tokens;
+    long long n_experts;
+    long long route_capacity;
+    long long ids_nb0;
+    long long ids_nb1;
+};
+
+struct pyre_mul_mat_id_q4_k_grouped_constants {
+    long long k;
+    long long rows;
+    long long n_ids;
+    long long n_tokens;
+    long long n_experts;
+    long long route_capacity;
+    long long src0_nb1;
+    long long src0_nb2;
+    long long src1_nb1;
+    long long src1_nb2;
+    long long dst_nb1;
+    long long dst_nb2;
+};
+
 static __device__ __forceinline__ void pyre_get_scale_min_k4_id(
         int j, const uint8_t * q, uint8_t * d, uint8_t * m) {
     if (j < 4) {
@@ -411,5 +439,197 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_row8_wg64_f32(
         *reinterpret_cast<float *>(dst_base + (row0 + 5) * sizeof(float)) = sum5;
         *reinterpret_cast<float *>(dst_base + (row0 + 6) * sizeof(float)) = sum6;
         *reinterpret_cast<float *>(dst_base + (row0 + 7) * sizeof(float)) = sum7;
+    }
+}
+
+extern "C" __global__ void pyre_clear_u32(uint32_t * dst, pyre_clear_u32_constants c) {
+    const long long idx =
+        static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * __builtin_amdgcn_workgroup_size_x() +
+        static_cast<long long>(__builtin_amdgcn_workitem_id_x());
+    if (idx < c.n) {
+        dst[idx] = 0;
+    }
+}
+
+extern "C" __global__ void pyre_compact_moe_routes_i32(
+        const int * ids,
+        uint32_t * counts,
+        uint32_t * routes,
+        pyre_compact_moe_routes_constants c) {
+    const long long idx =
+        static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * __builtin_amdgcn_workgroup_size_x() +
+        static_cast<long long>(__builtin_amdgcn_workitem_id_x());
+    const long long n_routes = c.n_ids * c.n_tokens;
+    if (idx >= n_routes) {
+        return;
+    }
+    const long long id_pos = idx % c.n_ids;
+    const long long token = idx / c.n_ids;
+    const int expert = *reinterpret_cast<const int *>(
+        reinterpret_cast<const char *>(ids) + id_pos * c.ids_nb0 + token * c.ids_nb1);
+    if (expert < 0 || expert >= c.n_experts) {
+        return;
+    }
+
+    const uint32_t slot = atomicAdd(&counts[expert], 1u);
+    if (slot < static_cast<uint32_t>(c.route_capacity)) {
+        routes[static_cast<long long>(expert) * c.route_capacity + slot] = static_cast<uint32_t>(idx);
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row4_wg64_f32(
+        const pyre_block_q4_K_id * src0,
+        const float * src1,
+        const uint32_t * counts,
+        const uint32_t * routes,
+        float * dst,
+        pyre_mul_mat_id_q4_k_grouped_constants c) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 4;
+    const long long expert = static_cast<long long>(__builtin_amdgcn_workgroup_id_y());
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 + 3 >= c.rows || expert >= c.n_experts) {
+        return;
+    }
+
+    const uint32_t count = counts[expert];
+    if (count == 0) {
+        return;
+    }
+
+    __shared__ float sumsh0[64 / 32];
+    __shared__ float sumsh1[64 / 32];
+    __shared__ float sumsh2[64 / 32];
+    __shared__ float sumsh3[64 / 32];
+    const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
+    const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
+    const char * src0_row1_base = src0_row0_base + c.src0_nb1;
+    const char * src0_row2_base = src0_row1_base + c.src0_nb1;
+    const char * src0_row3_base = src0_row2_base + c.src0_nb1;
+    const uint32_t * expert_routes = routes + expert * c.route_capacity;
+
+    const int block_lane = tid & 63;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+    const long long blocks_per_row = c.k / 256;
+
+    for (uint32_t route_base = 0; route_base < count; route_base += 4) {
+        const uint32_t route0 = expert_routes[route_base + 0];
+        const uint32_t route1 = route_base + 1 < count ? expert_routes[route_base + 1] : route0;
+        const uint32_t route2 = route_base + 2 < count ? expert_routes[route_base + 2] : route0;
+        const uint32_t route3 = route_base + 3 < count ? expert_routes[route_base + 3] : route0;
+        const long long id0 = route0 % c.n_ids;
+        const long long id1 = route1 % c.n_ids;
+        const long long id2 = route2 % c.n_ids;
+        const long long id3 = route3 % c.n_ids;
+        const long long token0 = route0 / c.n_ids;
+        const long long token1 = route1 / c.n_ids;
+        const long long token2 = route2 / c.n_ids;
+        const long long token3 = route3 / c.n_ids;
+        const char * src1_col0 = reinterpret_cast<const char *>(src1) + id0 * c.src1_nb1 + token0 * c.src1_nb2;
+        const char * src1_col1 = reinterpret_cast<const char *>(src1) + id1 * c.src1_nb1 + token1 * c.src1_nb2;
+        const char * src1_col2 = reinterpret_cast<const char *>(src1) + id2 * c.src1_nb1 + token2 * c.src1_nb2;
+        const char * src1_col3 = reinterpret_cast<const char *>(src1) + id3 * c.src1_nb1 + token3 * c.src1_nb2;
+
+        float s00 = 0.0f;
+        float s01 = 0.0f;
+        float s02 = 0.0f;
+        float s03 = 0.0f;
+        float s10 = 0.0f;
+        float s11 = 0.0f;
+        float s12 = 0.0f;
+        float s13 = 0.0f;
+        float s20 = 0.0f;
+        float s21 = 0.0f;
+        float s22 = 0.0f;
+        float s23 = 0.0f;
+        float s30 = 0.0f;
+        float s31 = 0.0f;
+        float s32 = 0.0f;
+        float s33 = 0.0f;
+
+        for (long long block_idx = 0; block_idx < blocks_per_row; ++block_idx) {
+            const pyre_block_q4_K_id * block0 = reinterpret_cast<const pyre_block_q4_K_id *>(
+                src0_row0_base + block_idx * sizeof(pyre_block_q4_K_id));
+            const pyre_block_q4_K_id * block1 = reinterpret_cast<const pyre_block_q4_K_id *>(
+                src0_row1_base + block_idx * sizeof(pyre_block_q4_K_id));
+            const pyre_block_q4_K_id * block2 = reinterpret_cast<const pyre_block_q4_K_id *>(
+                src0_row2_base + block_idx * sizeof(pyre_block_q4_K_id));
+            const pyre_block_q4_K_id * block3 = reinterpret_cast<const pyre_block_q4_K_id *>(
+                src0_row3_base + block_idx * sizeof(pyre_block_q4_K_id));
+            uint8_t sc0 = 0, sc1 = 0, sc2 = 0, sc3 = 0;
+            uint8_t m0 = 0, m1 = 0, m2 = 0, m3 = 0;
+            pyre_get_scale_min_k4_id(group, block0->scales, &sc0, &m0);
+            pyre_get_scale_min_k4_id(group, block1->scales, &sc1, &m1);
+            pyre_get_scale_min_k4_id(group, block2->scales, &sc2, &m2);
+            pyre_get_scale_min_k4_id(group, block3->scales, &sc3, &m3);
+            const float d0 = __half2float(__ushort_as_half(block0->d)) * static_cast<float>(sc0);
+            const float d1 = __half2float(__ushort_as_half(block1->d)) * static_cast<float>(sc1);
+            const float d2 = __half2float(__ushort_as_half(block2->d)) * static_cast<float>(sc2);
+            const float d3 = __half2float(__ushort_as_half(block3->d)) * static_cast<float>(sc3);
+            const float min0 = __half2float(__ushort_as_half(block0->dmin)) * static_cast<float>(m0);
+            const float min1 = __half2float(__ushort_as_half(block1->dmin)) * static_cast<float>(m1);
+            const float min2 = __half2float(__ushort_as_half(block2->dmin)) * static_cast<float>(m2);
+            const float min3 = __half2float(__ushort_as_half(block3->dmin)) * static_cast<float>(m3);
+            const long long src_base = block_idx * 256 + group * 32 + lane;
+            const int qs_base = (group >> 1) * 32 + lane;
+
+            #pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const float b0 = *reinterpret_cast<const float *>(src1_col0 + (src_base + j) * sizeof(float));
+                const float b1 = *reinterpret_cast<const float *>(src1_col1 + (src_base + j) * sizeof(float));
+                const float b2 = *reinterpret_cast<const float *>(src1_col2 + (src_base + j) * sizeof(float));
+                const float b3 = *reinterpret_cast<const float *>(src1_col3 + (src_base + j) * sizeof(float));
+#define PYRE_Q4K_GROUPED_ACC(N) \
+                do { \
+                    const uint8_t packed = block##N->qs[qs_base + j]; \
+                    const float q = (group & 1) ? static_cast<float>(packed >> 4) : static_cast<float>(packed & 0x0F); \
+                    const float v = d##N * q - min##N; \
+                    s##N##0 += v * b0; \
+                    s##N##1 += v * b1; \
+                    s##N##2 += v * b2; \
+                    s##N##3 += v * b3; \
+                } while (0)
+                PYRE_Q4K_GROUPED_ACC(0);
+                PYRE_Q4K_GROUPED_ACC(1);
+                PYRE_Q4K_GROUPED_ACC(2);
+                PYRE_Q4K_GROUPED_ACC(3);
+#undef PYRE_Q4K_GROUPED_ACC
+            }
+        }
+
+#define PYRE_Q4K_GROUPED_STORE(ROUTE, SUM, SHARED, ROW) \
+        do { \
+            float reduced = pyre_reduce_wg<64>((SUM), (SHARED)); \
+            if (tid == 0) { \
+                char * dst_base = reinterpret_cast<char *>(dst) + \
+                    static_cast<long long>((ROUTE) % c.n_ids) * c.dst_nb1 + \
+                    static_cast<long long>((ROUTE) / c.n_ids) * c.dst_nb2; \
+                *reinterpret_cast<float *>(dst_base + (row0 + (ROW)) * sizeof(float)) = reduced; \
+            } \
+            __syncthreads(); \
+        } while (0)
+        PYRE_Q4K_GROUPED_STORE(route0, s00, sumsh0, 0);
+        PYRE_Q4K_GROUPED_STORE(route0, s10, sumsh1, 1);
+        PYRE_Q4K_GROUPED_STORE(route0, s20, sumsh2, 2);
+        PYRE_Q4K_GROUPED_STORE(route0, s30, sumsh3, 3);
+        if (route_base + 1 < count) {
+            PYRE_Q4K_GROUPED_STORE(route1, s01, sumsh0, 0);
+            PYRE_Q4K_GROUPED_STORE(route1, s11, sumsh1, 1);
+            PYRE_Q4K_GROUPED_STORE(route1, s21, sumsh2, 2);
+            PYRE_Q4K_GROUPED_STORE(route1, s31, sumsh3, 3);
+        }
+        if (route_base + 2 < count) {
+            PYRE_Q4K_GROUPED_STORE(route2, s02, sumsh0, 0);
+            PYRE_Q4K_GROUPED_STORE(route2, s12, sumsh1, 1);
+            PYRE_Q4K_GROUPED_STORE(route2, s22, sumsh2, 2);
+            PYRE_Q4K_GROUPED_STORE(route2, s32, sumsh3, 3);
+        }
+        if (route_base + 3 < count) {
+            PYRE_Q4K_GROUPED_STORE(route3, s03, sumsh0, 0);
+            PYRE_Q4K_GROUPED_STORE(route3, s13, sumsh1, 1);
+            PYRE_Q4K_GROUPED_STORE(route3, s23, sumsh2, 2);
+            PYRE_Q4K_GROUPED_STORE(route3, s33, sumsh3, 3);
+        }
+#undef PYRE_Q4K_GROUPED_STORE
     }
 }

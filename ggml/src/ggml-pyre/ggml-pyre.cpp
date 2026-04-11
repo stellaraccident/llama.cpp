@@ -97,8 +97,10 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_packed_q4_k_mul_2row = false;
     bool enable_q4_k_id_row4_prompt = false;
     bool enable_q4_k_id_row8_prompt = false;
+    bool enable_q4_k_id_grouped_prompt = false;
     bool enable_q4_k_swiglu_row2_prompt = false;
     bool enable_q4_k_swiglu_row4_prompt = false;
+    bool enable_q4_k_swiglu_grouped_prompt = false;
     bool enable_q5_k_cols4_prompt = false;
     bool enable_q5_k_cols8_prompt = false;
     bool enable_q6_k_cols4_prompt = false;
@@ -203,6 +205,9 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_row4_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_row8_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_id_q4_k_grouped_row4_wg64_provider;
+    ggml_backend_pyre_op_provider clear_u32_provider;
+    ggml_backend_pyre_op_provider compact_moe_routes_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_mul_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_mul_wg128_provider;
@@ -214,6 +219,8 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_row2_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_row4_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_mul_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_provider;
@@ -281,6 +288,9 @@ struct ggml_backend_pyre_context {
     pyre_buffer_t scratch_q8_1 = nullptr;
     size_t scratch_q8_1_size = 0;
     std::vector<pyre_buffer_t> retired_scratch_q8_1;
+    pyre_buffer_t scratch_routes = nullptr;
+    size_t scratch_routes_size = 0;
+    std::vector<pyre_buffer_t> retired_scratch_routes;
     uint64_t dispatch_count = 0;
     uint64_t rms_norm_count = 0;
     uint64_t elementwise_count = 0;
@@ -397,6 +407,42 @@ static bool ggml_backend_pyre_ensure_q8_1_scratch(
     }
     *out_ref = {
         /* .buffer = */ context->scratch_q8_1,
+        /* .offset = */ 0,
+        /* .length = */ size,
+    };
+    return true;
+}
+
+static bool ggml_backend_pyre_ensure_route_scratch(
+        ggml_backend_pyre_context * context,
+        size_t size,
+        pyre_buffer_ref_t * out_ref) {
+    if (size == 0) {
+        return false;
+    }
+    if (context->scratch_routes_size < size) {
+        if (context->scratch_routes) {
+            context->retired_scratch_routes.push_back(context->scratch_routes);
+            context->scratch_routes = nullptr;
+            context->scratch_routes_size = 0;
+        }
+        pyre_buffer_params_t params = {
+            /* .type = */ PYRE_MEMORY_TYPE_DEVICE_LOCAL,
+            /* .access = */ PYRE_MEMORY_ACCESS_ALL,
+            /* .usage = */ PYRE_BUFFER_USAGE_DEFAULT,
+            /* .queue_affinity = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_allocator_allocate_buffer(
+                pyre_device_allocator(context->device_context->device),
+                params,
+                size,
+                &context->scratch_routes))) {
+            return false;
+        }
+        context->scratch_routes_size = size;
+    }
+    *out_ref = {
+        /* .buffer = */ context->scratch_routes,
         /* .offset = */ 0,
         /* .length = */ size,
     };
@@ -586,8 +632,10 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_packed_q4_k_mul_2row = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PACKED_Q4_K_MUL_2ROW"),
         /* .enable_q4_k_id_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_ROW4_PROMPT"),
         /* .enable_q4_k_id_row8_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_ID_ROW8_PROMPT"),
+        /* .enable_q4_k_id_grouped_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_GROUPED_PROMPT"),
         /* .enable_q4_k_swiglu_row2_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_SWIGLU_ROW2_PROMPT"),
         /* .enable_q4_k_swiglu_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_ROW4_PROMPT"),
+        /* .enable_q4_k_swiglu_grouped_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT"),
         /* .enable_q5_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS4_PROMPT"),
         /* .enable_q5_k_cols8_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q5_K_COLS8_PROMPT"),
         /* .enable_q6_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS4_PROMPT"),
@@ -1270,6 +1318,30 @@ static bool ggml_backend_pyre_load_mul_mat_id_q4_k_row8_wg64_provider(
         &device_context->mul_mat_id_q4_k_row8_wg64_provider);
 }
 
+static bool ggml_backend_pyre_load_mul_mat_id_q4_k_grouped_row4_wg64_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_grouped_row4_wg64_f32"),
+        &device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider);
+}
+
+static bool ggml_backend_pyre_load_clear_u32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_clear_u32"),
+        &device_context->clear_u32_provider);
+}
+
+static bool ggml_backend_pyre_load_compact_moe_routes_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_compact_moe_routes_i32"),
+        &device_context->compact_moe_routes_provider);
+}
+
 static bool ggml_backend_pyre_load_mul_mat_id_q4_k_q8_1_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -1356,6 +1428,22 @@ static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_row4_wg64_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_swiglu_row4_wg64_f32"),
         &device_context->mul_mat_id_q4_k_swiglu_row4_wg64_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_swiglu_grouped_row4_wg64_f32"),
+        &device_context->mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_f32"),
+        &device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_packed_wg64_provider(
@@ -5783,6 +5871,34 @@ struct ggml_backend_pyre_mul_mat_id_q4_k_constants {
     int64_t dst_nb2;
 };
 
+struct ggml_backend_pyre_clear_u32_constants {
+    int64_t n;
+};
+
+struct ggml_backend_pyre_compact_moe_routes_constants {
+    int64_t n_ids;
+    int64_t n_tokens;
+    int64_t n_experts;
+    int64_t route_capacity;
+    int64_t ids_nb0;
+    int64_t ids_nb1;
+};
+
+struct ggml_backend_pyre_mul_mat_id_q4_k_grouped_constants {
+    int64_t k;
+    int64_t rows;
+    int64_t n_ids;
+    int64_t n_tokens;
+    int64_t n_experts;
+    int64_t route_capacity;
+    int64_t src0_nb1;
+    int64_t src0_nb2;
+    int64_t src1_nb1;
+    int64_t src1_nb2;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+};
+
 struct ggml_backend_pyre_mul_mat_id_q4_k_q8_1_constants {
     int64_t k;
     int64_t rows;
@@ -5829,6 +5945,23 @@ struct ggml_backend_pyre_mul_mat_id_q4_k_swiglu_constants {
     int64_t src1_nb2;
     int64_t ids_nb0;
     int64_t ids_nb1;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+};
+
+struct ggml_backend_pyre_mul_mat_id_q4_k_swiglu_grouped_constants {
+    int64_t k;
+    int64_t rows;
+    int64_t n_ids;
+    int64_t n_tokens;
+    int64_t n_experts;
+    int64_t route_capacity;
+    int64_t gate_nb1;
+    int64_t gate_nb2;
+    int64_t up_nb1;
+    int64_t up_nb2;
+    int64_t src1_nb1;
+    int64_t src1_nb2;
     int64_t dst_nb1;
     int64_t dst_nb2;
 };
@@ -6150,6 +6283,19 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_id
         int64_t rows,
         int64_t n_ids,
         int64_t n_tokens) {
+    if (device_context->policy.enable_q4_k_id_grouped_prompt &&
+        k == 512 &&
+        (rows % 4) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider;
+    }
     if (device_context->policy.enable_q4_k_id_row8_prompt &&
         k == 512 &&
         (rows % 8) == 0 &&
@@ -6267,6 +6413,32 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_id
             ggml_backend_pyre_provider_kind::direct_executable) {
         return &device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     }
+    if (device_context->policy.enable_q4_k_swiglu_grouped_prompt &&
+        k == 2048 &&
+        (rows % 2) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider;
+    }
+    if (device_context->policy.enable_q4_k_swiglu_grouped_prompt &&
+        k == 2048 &&
+        (rows % 2) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider;
+    }
     if (device_context->policy.enable_q4_k_swiglu_row2_prompt &&
         k == 2048 &&
         (rows % 2) == 0 &&
@@ -6312,6 +6484,32 @@ static const char * ggml_backend_pyre_mul_mat_id_q4_k_swiglu_trace_suffix(
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_packed_wg64";
     }
+    if (device_context->policy.enable_q4_k_swiglu_grouped_prompt &&
+        k == 2048 &&
+        (rows % 4) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_grouped_row2_route4_wg64";
+    }
+    if (device_context->policy.enable_q4_k_swiglu_grouped_prompt &&
+        k == 2048 &&
+        (rows % 4) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_grouped_row4_wg64";
+    }
     if (device_context->policy.enable_q4_k_swiglu_row2_prompt &&
         k == 2048 &&
         (rows % 2) == 0 &&
@@ -6346,6 +6544,19 @@ static const char * ggml_backend_pyre_mul_mat_id_q4_k_trace_suffix(
         int64_t rows,
         int64_t n_ids,
         int64_t n_tokens) {
+    if (device_context->policy.enable_q4_k_id_grouped_prompt &&
+        k == 512 &&
+        (rows % 4) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_grouped_row4_wg64";
+    }
     if (device_context->policy.enable_q4_k_id_row8_prompt &&
         k == 512 &&
         (rows % 8) == 0 &&
@@ -6931,6 +7142,122 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
 
     const ggml_backend_pyre_op_provider * provider = ggml_backend_pyre_select_mul_mat_id_q4_k_provider(
         context->device_context, constants.k, constants.rows, constants.n_ids, constants.n_tokens);
+    if (provider == &context->device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider) {
+        pyre_buffer_ref_t scratch_ref = {};
+        const size_t route_capacity = static_cast<size_t>(constants.n_ids * constants.n_tokens);
+        const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
+        const size_t routes_size = static_cast<size_t>(constants.n_experts) * route_capacity * sizeof(uint32_t);
+        if (!ggml_backend_pyre_ensure_route_scratch(context, counts_size + routes_size, &scratch_ref)) {
+            return GGML_STATUS_FAILED;
+        }
+        pyre_buffer_ref_t counts_ref = {
+            /* .buffer = */ scratch_ref.buffer,
+            /* .offset = */ scratch_ref.offset,
+            /* .length = */ counts_size,
+        };
+        pyre_buffer_ref_t routes_ref = {
+            /* .buffer = */ scratch_ref.buffer,
+            /* .offset = */ scratch_ref.offset + counts_size,
+            /* .length = */ routes_size,
+        };
+
+        ggml_backend_pyre_clear_u32_constants clear_constants = {
+            /* .n = */ constants.n_experts,
+        };
+        const auto & clear_provider = context->device_context->clear_u32_provider;
+        pyre_dispatch_config_t clear_config = {
+            /* .workgroup_count = */ { static_cast<uint32_t>((clear_constants.n + 255) / 256), 1, 1 },
+            /* .workgroup_size = */ { clear_provider.export_info.workgroup_size[0] ?
+                clear_provider.export_info.workgroup_size[0] : 256, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream,
+                clear_provider.executable,
+                clear_provider.export_ordinal,
+                &clear_config,
+                &clear_constants,
+                sizeof(clear_constants),
+                &counts_ref,
+                1,
+                PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+
+        pyre_buffer_ref_t compact_bindings[3] = { bindings[2], counts_ref, routes_ref };
+        ggml_backend_pyre_compact_moe_routes_constants compact_constants = {
+            /* .n_ids          = */ constants.n_ids,
+            /* .n_tokens       = */ constants.n_tokens,
+            /* .n_experts      = */ constants.n_experts,
+            /* .route_capacity = */ static_cast<int64_t>(route_capacity),
+            /* .ids_nb0        = */ constants.ids_nb0,
+            /* .ids_nb1        = */ constants.ids_nb1,
+        };
+        const auto & compact_provider = context->device_context->compact_moe_routes_provider;
+        pyre_dispatch_config_t compact_config = {
+            /* .workgroup_count = */ {
+                static_cast<uint32_t>((compact_constants.n_ids * compact_constants.n_tokens + 255) / 256), 1, 1 },
+            /* .workgroup_size = */ { compact_provider.export_info.workgroup_size[0] ?
+                compact_provider.export_info.workgroup_size[0] : 256, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream,
+                compact_provider.executable,
+                compact_provider.export_ordinal,
+                &compact_config,
+                &compact_constants,
+                sizeof(compact_constants),
+                compact_bindings,
+                3,
+                PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+
+        pyre_buffer_ref_t grouped_bindings[5] = { bindings[0], bindings[1], counts_ref, routes_ref, bindings[3] };
+        ggml_backend_pyre_mul_mat_id_q4_k_grouped_constants grouped_constants = {
+            /* .k              = */ constants.k,
+            /* .rows           = */ constants.rows,
+            /* .n_ids          = */ constants.n_ids,
+            /* .n_tokens       = */ constants.n_tokens,
+            /* .n_experts      = */ constants.n_experts,
+            /* .route_capacity = */ static_cast<int64_t>(route_capacity),
+            /* .src0_nb1       = */ constants.src0_nb1,
+            /* .src0_nb2       = */ constants.src0_nb2,
+            /* .src1_nb1       = */ constants.src1_nb1,
+            /* .src1_nb2       = */ constants.src1_nb2,
+            /* .dst_nb1        = */ constants.dst_nb1,
+            /* .dst_nb2        = */ constants.dst_nb2,
+        };
+        pyre_dispatch_config_t grouped_config = {
+            /* .workgroup_count = */ {
+                static_cast<uint32_t>((grouped_constants.rows + 3) / 4),
+                static_cast<uint32_t>(grouped_constants.n_experts),
+                1,
+            },
+            /* .workgroup_size = */ {
+                provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : 64, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream,
+                provider->executable,
+                provider->export_ordinal,
+                &grouped_config,
+                &grouped_constants,
+                sizeof(grouped_constants),
+                grouped_bindings,
+                5,
+                PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+        context->mul_mat_id_count++;
+        return GGML_STATUS_SUCCESS;
+    }
+
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(
@@ -7075,6 +7402,129 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_swiglu(
 
     const ggml_backend_pyre_op_provider * provider = ggml_backend_pyre_select_mul_mat_id_q4_k_swiglu_provider(
         context->device_context, constants.k, constants.rows, constants.n_ids, constants.n_tokens);
+    if (provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider) {
+        pyre_buffer_ref_t scratch_ref = {};
+        const size_t route_capacity = static_cast<size_t>(constants.n_ids * constants.n_tokens);
+        const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
+        const size_t routes_size = static_cast<size_t>(constants.n_experts) * route_capacity * sizeof(uint32_t);
+        if (!ggml_backend_pyre_ensure_route_scratch(context, counts_size + routes_size, &scratch_ref)) {
+            return GGML_STATUS_FAILED;
+        }
+        pyre_buffer_ref_t counts_ref = {
+            /* .buffer = */ scratch_ref.buffer,
+            /* .offset = */ scratch_ref.offset,
+            /* .length = */ counts_size,
+        };
+        pyre_buffer_ref_t routes_ref = {
+            /* .buffer = */ scratch_ref.buffer,
+            /* .offset = */ scratch_ref.offset + counts_size,
+            /* .length = */ routes_size,
+        };
+
+        ggml_backend_pyre_clear_u32_constants clear_constants = {
+            /* .n = */ constants.n_experts,
+        };
+        const auto & clear_provider = context->device_context->clear_u32_provider;
+        pyre_dispatch_config_t clear_config = {
+            /* .workgroup_count = */ { static_cast<uint32_t>((clear_constants.n + 255) / 256), 1, 1 },
+            /* .workgroup_size = */ { clear_provider.export_info.workgroup_size[0] ?
+                clear_provider.export_info.workgroup_size[0] : 256, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream,
+                clear_provider.executable,
+                clear_provider.export_ordinal,
+                &clear_config,
+                &clear_constants,
+                sizeof(clear_constants),
+                &counts_ref,
+                1,
+                PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+
+        pyre_buffer_ref_t compact_bindings[3] = { bindings[3], counts_ref, routes_ref };
+        ggml_backend_pyre_compact_moe_routes_constants compact_constants = {
+            /* .n_ids          = */ constants.n_ids,
+            /* .n_tokens       = */ constants.n_tokens,
+            /* .n_experts      = */ constants.n_experts,
+            /* .route_capacity = */ static_cast<int64_t>(route_capacity),
+            /* .ids_nb0        = */ constants.ids_nb0,
+            /* .ids_nb1        = */ constants.ids_nb1,
+        };
+        const auto & compact_provider = context->device_context->compact_moe_routes_provider;
+        pyre_dispatch_config_t compact_config = {
+            /* .workgroup_count = */ {
+                static_cast<uint32_t>((compact_constants.n_ids * compact_constants.n_tokens + 255) / 256), 1, 1 },
+            /* .workgroup_size = */ { compact_provider.export_info.workgroup_size[0] ?
+                compact_provider.export_info.workgroup_size[0] : 256, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream,
+                compact_provider.executable,
+                compact_provider.export_ordinal,
+                &compact_config,
+                &compact_constants,
+                sizeof(compact_constants),
+                compact_bindings,
+                3,
+                PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+
+        pyre_buffer_ref_t grouped_bindings[6] = {
+            bindings[0], bindings[1], bindings[2], counts_ref, routes_ref, bindings[4] };
+        ggml_backend_pyre_mul_mat_id_q4_k_swiglu_grouped_constants grouped_constants = {
+            /* .k              = */ constants.k,
+            /* .rows           = */ constants.rows,
+            /* .n_ids          = */ constants.n_ids,
+            /* .n_tokens       = */ constants.n_tokens,
+            /* .n_experts      = */ constants.n_experts,
+            /* .route_capacity = */ static_cast<int64_t>(route_capacity),
+            /* .gate_nb1       = */ constants.gate_nb1,
+            /* .gate_nb2       = */ constants.gate_nb2,
+            /* .up_nb1         = */ constants.up_nb1,
+            /* .up_nb2         = */ constants.up_nb2,
+            /* .src1_nb1       = */ constants.src1_nb1,
+            /* .src1_nb2       = */ constants.src1_nb2,
+            /* .dst_nb1        = */ constants.dst_nb1,
+            /* .dst_nb2        = */ constants.dst_nb2,
+        };
+        pyre_dispatch_config_t grouped_config = {
+            /* .workgroup_count = */ {
+                static_cast<uint32_t>(
+                    provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider ?
+                        (grouped_constants.rows + 1) / 2 :
+                        (grouped_constants.rows + 3) / 4),
+                static_cast<uint32_t>(grouped_constants.n_experts),
+                1,
+            },
+            /* .workgroup_size = */ {
+                provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : 64, 1, 1 },
+            /* .subgroup_size = */ 0,
+        };
+        if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+                context->stream,
+                provider->executable,
+                provider->export_ordinal,
+                &grouped_config,
+                &grouped_constants,
+                sizeof(grouped_constants),
+                grouped_bindings,
+                6,
+                PYRE_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        context->dispatch_count++;
+        context->mul_mat_id_count++;
+        return GGML_STATUS_SUCCESS;
+    }
+
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(
@@ -7538,13 +7988,20 @@ static void ggml_backend_pyre_free(ggml_backend_t backend) {
             context->synchronize_count);
     }
     if (context->stream) {
-        if (context->scratch_q8_1 || !context->retired_scratch_q8_1.empty()) {
+        if (context->scratch_q8_1 || !context->retired_scratch_q8_1.empty() ||
+            context->scratch_routes || !context->retired_scratch_routes.empty()) {
             GGML_PYRE_CHECK(pyre_stream_synchronize(context->stream));
         }
         if (context->scratch_q8_1) {
             pyre_buffer_release(context->scratch_q8_1);
         }
         for (pyre_buffer_t buffer : context->retired_scratch_q8_1) {
+            pyre_buffer_release(buffer);
+        }
+        if (context->scratch_routes) {
+            pyre_buffer_release(context->scratch_routes);
+        }
+        for (pyre_buffer_t buffer : context->retired_scratch_routes) {
             pyre_buffer_release(buffer);
         }
         pyre_stream_release(context->stream);
@@ -8752,6 +9209,9 @@ static ggml_backend_t ggml_backend_pyre_device_init_backend(ggml_backend_dev_t d
         /* .scratch_q8_1   = */ nullptr,
         /* .scratch_q8_1_size = */ 0,
         /* .retired_scratch_q8_1 = */ {},
+        /* .scratch_routes   = */ nullptr,
+        /* .scratch_routes_size = */ 0,
+        /* .retired_scratch_routes = */ {},
     };
     if (!context) {
         pyre_stream_release(stream);
@@ -9065,6 +9525,9 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_row4_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_row8_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_id_q4_k_grouped_row4_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_clear_u32_provider(device_context.get());
+            (void) ggml_backend_pyre_load_compact_moe_routes_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_mul_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_mul_wg128_provider(device_context.get());
@@ -9076,6 +9539,9 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_row2_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_row4_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_grouped_row4_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider(
+                device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_swiglu_packed_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_mul_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_provider(device_context.get());
