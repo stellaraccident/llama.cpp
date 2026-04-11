@@ -37,6 +37,49 @@ static __device__ __forceinline__ float pyre_reduce_bf16(float sum, float * shar
 }
 
 template <int WG_SIZE>
+static __device__ __forceinline__ void pyre_reduce4_bf16(
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = (WG_SIZE + 31) / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+        sum2 += __shfl_down(sum2, offset);
+        sum3 += __shfl_down(sum3, offset);
+    }
+    if (WG_SIZE <= warpSize) {
+        return;
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+        shared[wave + 2 * waves] = sum2;
+        shared[wave + 3 * waves] = sum3;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    sum2 = lane < waves ? shared[lane + 2 * waves] : 0.0f;
+    sum3 = lane < waves ? shared[lane + 3 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+            sum2 += __shfl_down(sum2, offset);
+            sum3 += __shfl_down(sum3, offset);
+        }
+    }
+}
+
+template <int WG_SIZE>
 static __device__ __forceinline__ void pyre_mul_mat_vec_bf16_f32_impl(
         const uint16_t * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
@@ -91,7 +134,7 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_cols1_f32(
     }
     (void) cols;
 
-    __shared__ float sumsh[8];
+    __shared__ float sumsh[4 * (256 / 32)];
 
     const uint16_t * src0_row = src0 + row * k;
     float sum = 0.0f;
@@ -132,13 +175,7 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_cols4_f32(
         sum3 += a * src1_col0[3 * k + i];
     }
 
-    sum0 = pyre_reduce_bf16<256>(sum0, sumsh);
-    __syncthreads();
-    sum1 = pyre_reduce_bf16<256>(sum1, sumsh);
-    __syncthreads();
-    sum2 = pyre_reduce_bf16<256>(sum2, sumsh);
-    __syncthreads();
-    sum3 = pyre_reduce_bf16<256>(sum3, sumsh);
+    pyre_reduce4_bf16<256>(sum0, sum1, sum2, sum3, sumsh);
 
     if (tid == 0) {
         float * dst_col0 = dst + col0 * rows + row;
