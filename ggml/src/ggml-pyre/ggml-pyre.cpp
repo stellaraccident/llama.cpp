@@ -642,7 +642,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q4_k_swiglu_grouped_row2_route8_prompt = */ !ggml_backend_pyre_env_enabled(
             "GGML_PYRE_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT"),
         /* .enable_q5_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS4_PROMPT"),
-        /* .enable_q5_k_cols8_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q5_K_COLS8_PROMPT"),
+        /* .enable_q5_k_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS8_PROMPT"),
         /* .enable_q6_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS4_PROMPT"),
         /* .enable_q6_k_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS8_PROMPT"),
         /* .enable_f16_batched_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS4_PROMPT"),
