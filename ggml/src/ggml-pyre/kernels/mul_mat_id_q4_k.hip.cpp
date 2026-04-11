@@ -91,6 +91,36 @@ static __device__ __forceinline__ float pyre_reduce_wg(float sum, float * shared
 }
 
 template <int WG_SIZE>
+static __device__ __forceinline__ void pyre_reduce_wg2(float & sum0, float & sum1, float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = (WG_SIZE + 31) / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+    }
+    if (WG_SIZE <= warpSize) {
+        return;
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+        }
+    }
+}
+
+template <int WG_SIZE>
 static __device__ __forceinline__ void pyre_mul_mat_id_q4_k_f32_impl(
         const pyre_block_q4_K_id * src0, const float * src1, const int * ids, float * dst,
         pyre_mul_mat_id_q4_k_constants c) {
@@ -653,8 +683,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
         return;
     }
 
-    __shared__ float sumsh0[64 / 32];
-    __shared__ float sumsh1[64 / 32];
+    __shared__ float sumsh[2 * (64 / 32)];
     const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
     const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
     const char * src0_row1_base = src0_row0_base + c.src0_nb1;
@@ -747,8 +776,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
 
 #define PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(S, ROUTE) \
         do { \
-            s0##S = pyre_reduce_wg<64>(s0##S, sumsh0); \
-            s1##S = pyre_reduce_wg<64>(s1##S, sumsh1); \
+            pyre_reduce_wg2<64>(s0##S, s1##S, sumsh); \
             if (tid == 0) { \
                 const uint32_t route = (ROUTE); \
                 const long long id = route % c.n_ids; \

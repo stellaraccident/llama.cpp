@@ -712,6 +712,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_f32",
+        "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 6,
+        "constants_size": 112,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_id_q4_k_swiglu_packed_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
         "format": "FPIH",

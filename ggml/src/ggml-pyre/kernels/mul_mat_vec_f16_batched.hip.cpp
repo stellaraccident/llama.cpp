@@ -43,6 +43,45 @@ static __device__ __forceinline__ float pyre_reduce_256(float sum, float * share
     return sum;
 }
 
+static __device__ __forceinline__ void pyre_reduce4_256(
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = 256 / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+        sum2 += __shfl_down(sum2, offset);
+        sum3 += __shfl_down(sum3, offset);
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+        shared[wave + 2 * waves] = sum2;
+        shared[wave + 3 * waves] = sum3;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    sum2 = lane < waves ? shared[lane + 2 * waves] : 0.0f;
+    sum3 = lane < waves ? shared[lane + 3 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+            sum2 += __shfl_down(sum2, offset);
+            sum3 += __shfl_down(sum3, offset);
+        }
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_f16_batched_f32(
         const __half * src0, const float * src1, float * dst,
         pyre_mul_mat_vec_f16_batched_constants c) {
@@ -68,7 +107,7 @@ extern "C" __global__ void pyre_mul_mat_vec_f16_batched_f32(
     const char * src1_col = reinterpret_cast<const char *>(src1) +
         i11 * c.src1_nb1 + i12 * c.src1_nb2 + i13 * c.src1_nb3;
 
-    __shared__ float sumsh[256];
+    __shared__ float sumsh[4 * (256 / 32)];
     float sum = 0.0f;
     for (long long i = tid; i < c.k; i += 256) {
         const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
@@ -155,13 +194,7 @@ extern "C" __global__ void pyre_mul_mat_vec_f16_batched_cols4_f32(
         sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
     }
 
-    sum0 = pyre_reduce_256(sum0, sumsh);
-    __syncthreads();
-    sum1 = pyre_reduce_256(sum1, sumsh);
-    __syncthreads();
-    sum2 = pyre_reduce_256(sum2, sumsh);
-    __syncthreads();
-    sum3 = pyre_reduce_256(sum3, sumsh);
+    pyre_reduce4_256(sum0, sum1, sum2, sum3, sumsh);
 
     if (tid == 0) {
         char * dst_row = reinterpret_cast<char *>(dst) +
