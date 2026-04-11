@@ -206,6 +206,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_row4_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_row8_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_grouped_row4_wg64_provider;
+    ggml_backend_pyre_op_provider mul_mat_id_q4_k_grouped_row2_route8_wg64_provider;
     ggml_backend_pyre_op_provider clear_u32_provider;
     ggml_backend_pyre_op_provider compact_moe_routes_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_q8_1_provider;
@@ -1324,6 +1325,14 @@ static bool ggml_backend_pyre_load_mul_mat_id_q4_k_grouped_row4_wg64_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_grouped_row4_wg64_f32"),
         &device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_id_q4_k_grouped_row2_route8_wg64_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32"),
+        &device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider);
 }
 
 static bool ggml_backend_pyre_load_clear_u32_provider(
@@ -6285,6 +6294,19 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_id
         int64_t n_tokens) {
     if (device_context->policy.enable_q4_k_id_grouped_prompt &&
         k == 512 &&
+        (rows % 2) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider;
+    }
+    if (device_context->policy.enable_q4_k_id_grouped_prompt &&
+        k == 512 &&
         (rows % 4) == 0 &&
         n_ids == 8 &&
         n_tokens == 512 &&
@@ -6486,7 +6508,7 @@ static const char * ggml_backend_pyre_mul_mat_id_q4_k_swiglu_trace_suffix(
     }
     if (device_context->policy.enable_q4_k_swiglu_grouped_prompt &&
         k == 2048 &&
-        (rows % 4) == 0 &&
+        (rows % 2) == 0 &&
         n_ids == 8 &&
         n_tokens == 512 &&
         device_context->clear_u32_provider.kind ==
@@ -6544,6 +6566,19 @@ static const char * ggml_backend_pyre_mul_mat_id_q4_k_trace_suffix(
         int64_t rows,
         int64_t n_ids,
         int64_t n_tokens) {
+    if (device_context->policy.enable_q4_k_id_grouped_prompt &&
+        k == 512 &&
+        (rows % 2) == 0 &&
+        n_ids == 8 &&
+        n_tokens == 512 &&
+        device_context->clear_u32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->compact_moe_routes_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable &&
+        device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_grouped_row2_route8_wg64";
+    }
     if (device_context->policy.enable_q4_k_id_grouped_prompt &&
         k == 512 &&
         (rows % 4) == 0 &&
@@ -7142,7 +7177,8 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
 
     const ggml_backend_pyre_op_provider * provider = ggml_backend_pyre_select_mul_mat_id_q4_k_provider(
         context->device_context, constants.k, constants.rows, constants.n_ids, constants.n_tokens);
-    if (provider == &context->device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider) {
+    if (provider == &context->device_context->mul_mat_id_q4_k_grouped_row4_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider) {
         pyre_buffer_ref_t scratch_ref = {};
         const size_t route_capacity = static_cast<size_t>(constants.n_ids * constants.n_tokens);
         const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
@@ -7233,7 +7269,10 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
         };
         pyre_dispatch_config_t grouped_config = {
             /* .workgroup_count = */ {
-                static_cast<uint32_t>((grouped_constants.rows + 3) / 4),
+                static_cast<uint32_t>(
+                    provider == &context->device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider ?
+                        (grouped_constants.rows + 1) / 2 :
+                        (grouped_constants.rows + 3) / 4),
                 static_cast<uint32_t>(grouped_constants.n_experts),
                 1,
             },
@@ -9526,6 +9565,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_row4_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_row8_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_grouped_row4_wg64_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_id_q4_k_grouped_row2_route8_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_clear_u32_provider(device_context.get());
             (void) ggml_backend_pyre_load_compact_moe_routes_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_id_q4_k_q8_1_provider(device_context.get());

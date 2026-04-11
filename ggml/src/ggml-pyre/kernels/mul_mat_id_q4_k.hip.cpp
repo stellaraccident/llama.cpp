@@ -633,3 +633,154 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row4_wg64_f32(
 #undef PYRE_Q4K_GROUPED_STORE
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
+        const pyre_block_q4_K_id * src0,
+        const float * src1,
+        const uint32_t * counts,
+        const uint32_t * routes,
+        float * dst,
+        pyre_mul_mat_id_q4_k_grouped_constants c) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long expert = static_cast<long long>(__builtin_amdgcn_workgroup_id_y());
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 + 1 >= c.rows || expert >= c.n_experts) {
+        return;
+    }
+
+    const uint32_t count = counts[expert];
+    if (count == 0) {
+        return;
+    }
+
+    __shared__ float sumsh0[64 / 32];
+    __shared__ float sumsh1[64 / 32];
+    const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
+    const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
+    const char * src0_row1_base = src0_row0_base + c.src0_nb1;
+    const uint32_t * expert_routes = routes + expert * c.route_capacity;
+
+    const int block_lane = tid & 63;
+    const int group = block_lane >> 3;
+    const int lane = (block_lane & 7) << 2;
+    const long long blocks_per_row = c.k / 256;
+
+    for (uint32_t route_base = 0; route_base < count; route_base += 8) {
+        const uint32_t route_a = expert_routes[route_base];
+        const uint32_t route_b = route_base + 1 < count ? expert_routes[route_base + 1] : route_a;
+        const uint32_t route_c = route_base + 2 < count ? expert_routes[route_base + 2] : route_a;
+        const uint32_t route_d = route_base + 3 < count ? expert_routes[route_base + 3] : route_a;
+        const uint32_t route_e = route_base + 4 < count ? expert_routes[route_base + 4] : route_a;
+        const uint32_t route_f = route_base + 5 < count ? expert_routes[route_base + 5] : route_a;
+        const uint32_t route_g = route_base + 6 < count ? expert_routes[route_base + 6] : route_a;
+        const uint32_t route_h = route_base + 7 < count ? expert_routes[route_base + 7] : route_a;
+        const bool has_b = route_base + 1 < count;
+        const bool has_c = route_base + 2 < count;
+        const bool has_d = route_base + 3 < count;
+        const bool has_e = route_base + 4 < count;
+        const bool has_f = route_base + 5 < count;
+        const bool has_g = route_base + 6 < count;
+        const bool has_h = route_base + 7 < count;
+
+#define PYRE_Q4K_GROUPED_ROUTE_COL(S) \
+        const long long id_##S = route_##S % c.n_ids; \
+        const long long tok_##S = route_##S / c.n_ids; \
+        const char * src1_##S = reinterpret_cast<const char *>(src1) + id_##S * c.src1_nb1 + tok_##S * c.src1_nb2
+        PYRE_Q4K_GROUPED_ROUTE_COL(a);
+        PYRE_Q4K_GROUPED_ROUTE_COL(b);
+        PYRE_Q4K_GROUPED_ROUTE_COL(c);
+        PYRE_Q4K_GROUPED_ROUTE_COL(d);
+        PYRE_Q4K_GROUPED_ROUTE_COL(e);
+        PYRE_Q4K_GROUPED_ROUTE_COL(f);
+        PYRE_Q4K_GROUPED_ROUTE_COL(g);
+        PYRE_Q4K_GROUPED_ROUTE_COL(h);
+#undef PYRE_Q4K_GROUPED_ROUTE_COL
+
+        float s0a = 0.0f, s1a = 0.0f;
+        float s0b = 0.0f, s1b = 0.0f;
+        float s0c = 0.0f, s1c = 0.0f;
+        float s0d = 0.0f, s1d = 0.0f;
+        float s0e = 0.0f, s1e = 0.0f;
+        float s0f = 0.0f, s1f = 0.0f;
+        float s0g = 0.0f, s1g = 0.0f;
+        float s0h = 0.0f, s1h = 0.0f;
+
+        for (long long block_idx = 0; block_idx < blocks_per_row; ++block_idx) {
+            const pyre_block_q4_K_id * block0 = reinterpret_cast<const pyre_block_q4_K_id *>(
+                src0_row0_base + block_idx * sizeof(pyre_block_q4_K_id));
+            const pyre_block_q4_K_id * block1 = reinterpret_cast<const pyre_block_q4_K_id *>(
+                src0_row1_base + block_idx * sizeof(pyre_block_q4_K_id));
+            uint8_t sc0 = 0, sc1 = 0;
+            uint8_t m0 = 0, m1 = 0;
+            pyre_get_scale_min_k4_id(group, block0->scales, &sc0, &m0);
+            pyre_get_scale_min_k4_id(group, block1->scales, &sc1, &m1);
+            const float d0 = __half2float(__ushort_as_half(block0->d)) * static_cast<float>(sc0);
+            const float d1 = __half2float(__ushort_as_half(block1->d)) * static_cast<float>(sc1);
+            const float min0 = __half2float(__ushort_as_half(block0->dmin)) * static_cast<float>(m0);
+            const float min1 = __half2float(__ushort_as_half(block1->dmin)) * static_cast<float>(m1);
+            const long long src_base = block_idx * 256 + group * 32 + lane;
+            const int qs_base = (group >> 1) * 32 + lane;
+
+            #pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const float ba = *reinterpret_cast<const float *>(src1_a + (src_base + j) * sizeof(float));
+                const float bb = has_b ? *reinterpret_cast<const float *>(src1_b + (src_base + j) * sizeof(float)) : 0.0f;
+                const float bc = has_c ? *reinterpret_cast<const float *>(src1_c + (src_base + j) * sizeof(float)) : 0.0f;
+                const float bd = has_d ? *reinterpret_cast<const float *>(src1_d + (src_base + j) * sizeof(float)) : 0.0f;
+                const float be = has_e ? *reinterpret_cast<const float *>(src1_e + (src_base + j) * sizeof(float)) : 0.0f;
+                const float bf = has_f ? *reinterpret_cast<const float *>(src1_f + (src_base + j) * sizeof(float)) : 0.0f;
+                const float bg = has_g ? *reinterpret_cast<const float *>(src1_g + (src_base + j) * sizeof(float)) : 0.0f;
+                const float bh = has_h ? *reinterpret_cast<const float *>(src1_h + (src_base + j) * sizeof(float)) : 0.0f;
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(N) \
+                do { \
+                    const uint8_t packed = block##N->qs[qs_base + j]; \
+                    const float q = (group & 1) ? static_cast<float>(packed >> 4) : static_cast<float>(packed & 0x0F); \
+                    const float v = d##N * q - min##N; \
+                    s##N##a += v * ba; s##N##b += v * bb; s##N##c += v * bc; s##N##d += v * bd; \
+                    s##N##e += v * be; s##N##f += v * bf; s##N##g += v * bg; s##N##h += v * bh; \
+                } while (0)
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(0);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(1);
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC
+            }
+        }
+
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(S, ROUTE) \
+        do { \
+            s0##S = pyre_reduce_wg<64>(s0##S, sumsh0); \
+            s1##S = pyre_reduce_wg<64>(s1##S, sumsh1); \
+            if (tid == 0) { \
+                const uint32_t route = (ROUTE); \
+                const long long id = route % c.n_ids; \
+                const long long token = route / c.n_ids; \
+                char * dst_base = reinterpret_cast<char *>(dst) + id * c.dst_nb1 + token * c.dst_nb2; \
+                *reinterpret_cast<float *>(dst_base + row0 * sizeof(float)) = s0##S; \
+                *reinterpret_cast<float *>(dst_base + (row0 + 1) * sizeof(float)) = s1##S; \
+            } \
+            __syncthreads(); \
+        } while (0)
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(a, route_a);
+        if (has_b) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(b, route_b);
+        }
+        if (has_c) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(c, route_c);
+        }
+        if (has_d) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(d, route_d);
+        }
+        if (has_e) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(e, route_e);
+        }
+        if (has_f) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(f, route_f);
+        }
+        if (has_g) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(g, route_g);
+        }
+        if (has_h) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(h, route_h);
+        }
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE
+    }
+}

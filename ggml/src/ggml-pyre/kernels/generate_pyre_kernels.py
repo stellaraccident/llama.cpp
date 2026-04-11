@@ -600,6 +600,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32",
+        "source": "mul_mat_id_q4_k.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 5,
+        "constants_size": 96,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_id_q4_k_q8_1_f32",
         "source": "mul_mat_id_q4_k_q8_1.hip.cpp",
         "format": "FPIH",
