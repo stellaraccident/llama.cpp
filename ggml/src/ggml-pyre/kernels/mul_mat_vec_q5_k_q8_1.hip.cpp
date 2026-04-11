@@ -49,6 +49,108 @@ static __device__ __forceinline__ float pyre_reduce_256_q5_q8_1(float sum, float
     return sum;
 }
 
+static __device__ __forceinline__ int pyre_sudot4_q5_q8_1(uint32_t qpack, int rpack) {
+    return __builtin_amdgcn_sudot4(false, static_cast<int>(qpack), true, rpack, 0, false);
+}
+
+static __device__ __forceinline__ uint32_t pyre_q5_k_pack4(
+        const pyre_block_q5_K_q8_1_lhs * block,
+        int group,
+        int iqs) {
+    const int qs_base = (group >> 1) * 32 + iqs * 4;
+    uint32_t qs =
+        static_cast<uint32_t>(block->qs[qs_base + 0]) |
+        (static_cast<uint32_t>(block->qs[qs_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->qs[qs_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->qs[qs_base + 3]) << 24);
+    qs = (qs >> ((group & 1) * 4)) & 0x0F0F0F0Fu;
+
+    const uint32_t qh =
+        static_cast<uint32_t>(block->qh[iqs * 4 + 0]) |
+        (static_cast<uint32_t>(block->qh[iqs * 4 + 1]) << 8) |
+        (static_cast<uint32_t>(block->qh[iqs * 4 + 2]) << 16) |
+        (static_cast<uint32_t>(block->qh[iqs * 4 + 3]) << 24);
+    return qs | (((qh >> group) & 0x01010101u) << 4);
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_f32(
+        const pyre_block_q5_K_q8_1_lhs * src0,
+        const pyre_block_q8_1_rhs_q5 * src1,
+        float * dst,
+        long long k, long long rows, long long cols) {
+    constexpr int BM = 32;
+    constexpr int BN = 32;
+    constexpr int COLS_PER_THREAD = 8;
+
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const int col_lane = static_cast<int>(tid >> 5);
+    const long long row = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM +
+        static_cast<long long>(tid & 31u);
+    const long long col_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN +
+        static_cast<long long>(col_lane * COLS_PER_THREAD);
+    if (row >= rows || col_base + COLS_PER_THREAD - 1 >= cols) {
+        return;
+    }
+
+    __shared__ int b_qs[BN][8];
+    __shared__ unsigned short b_d[BN];
+    __shared__ unsigned short b_s[BN];
+
+    const long long blocks_per_row = k / 256;
+    const long long q8_blocks_per_col = k / 32;
+    const pyre_block_q5_K_q8_1_lhs * row_blocks = src0 + row * blocks_per_row;
+    float sum[COLS_PER_THREAD] = {};
+
+    for (long long kb = 0; kb < q8_blocks_per_col; ++kb) {
+        #pragma unroll
+        for (int load_idx = static_cast<int>(tid); load_idx < BN * 8; load_idx += 128) {
+            const int c = load_idx >> 3;
+            const int iqs = load_idx & 7;
+            const pyre_block_q8_1_rhs_q5 * rhs =
+                src1 + (static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN + c) * q8_blocks_per_col + kb;
+            b_qs[c][iqs] = *reinterpret_cast<const int *>(rhs->qs + iqs * 4);
+            if (iqs == 0) {
+                b_d[c] = rhs->d;
+                b_s[c] = rhs->s;
+            }
+        }
+        __syncthreads();
+
+        const pyre_block_q5_K_q8_1_lhs * block = row_blocks + (kb >> 3);
+        const int group = static_cast<int>(kb & 7);
+
+        uint8_t sc = 0;
+        uint8_t m = 0;
+        pyre_get_scale_min_k4_q5_q8_1(group, block->scales, &sc, &m);
+        const float d = __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc);
+        const float min = __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m);
+
+        int qsum[COLS_PER_THREAD] = {};
+        #pragma unroll
+        for (int iqs = 0; iqs < 8; ++iqs) {
+            const uint32_t qpack = pyre_q5_k_pack4(block, group, iqs);
+            #pragma unroll
+            for (int col = 0; col < COLS_PER_THREAD; ++col) {
+                qsum[col] += pyre_sudot4_q5_q8_1(qpack, b_qs[col_lane * COLS_PER_THREAD + col][iqs]);
+            }
+        }
+
+        #pragma unroll
+        for (int col = 0; col < COLS_PER_THREAD; ++col) {
+            const int c = col_lane * COLS_PER_THREAD + col;
+            sum[col] += d * __half2float(__ushort_as_half(b_d[c])) * static_cast<float>(qsum[col]) -
+                min * __half2float(__ushort_as_half(b_s[c]));
+        }
+
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int col = 0; col < COLS_PER_THREAD; ++col) {
+        dst[(col_base + col) * rows + row] = sum[col];
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_q5_k_q8_1_f32(
         const pyre_block_q5_K_q8_1_lhs * src0,
         const pyre_block_q8_1_rhs_q5 * src1,
