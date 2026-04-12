@@ -749,6 +749,8 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
             const float min1 = __half2float(__ushort_as_half(block1->dmin)) * static_cast<float>(m1);
             const long long src_base = block_idx * 256 + group * 32 + lane;
             const int qs_base = (group >> 1) * 32 + lane;
+            const uint32_t packed_qs0 = *reinterpret_cast<const uint32_t *>(block0->qs + qs_base);
+            const uint32_t packed_qs1 = *reinterpret_cast<const uint32_t *>(block1->qs + qs_base);
 
             #pragma unroll
             for (int j = 0; j < 4; ++j) {
@@ -762,7 +764,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
                 const float bh = has_h ? *reinterpret_cast<const float *>(src1_h + (src_base + j) * sizeof(float)) : 0.0f;
 #define PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(N) \
                 do { \
-                    const uint8_t packed = block##N->qs[qs_base + j]; \
+                    const uint8_t packed = static_cast<uint8_t>(packed_qs##N >> (j * 8)); \
                     const float q = (group & 1) ? static_cast<float>(packed >> 4) : static_cast<float>(packed & 0x0F); \
                     const float v = d##N * q - min##N; \
                     s##N##a += v * ba; s##N##b += v * bb; s##N##c += v * bc; s##N##d += v * bd; \

@@ -30,76 +30,61 @@ set(GGML_PYRE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(GGML_PYRE_KERNEL_CATALOG_CPP "${GGML_PYRE_GENERATED_DIR}/pyre_kernel_catalog.cpp")
 file(MAKE_DIRECTORY "${GGML_PYRE_GENERATED_DIR}")
 
-if (Python3_Interpreter_FOUND)
+set(GGML_PYRE_KERNEL_GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GGML_PYRE_KERNEL_GENERATOR}")
+
+if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND GGML_PYRE_AMDGPU_TARGET)
+    set(GGML_PYRE_HSACO_DIR "${GGML_PYRE_GENERATED_DIR}/hsaco")
+    file(MAKE_DIRECTORY "${GGML_PYRE_HSACO_DIR}")
+
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}"
+            "${GGML_PYRE_KERNEL_GENERATOR}"
+            --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
+            --output "${GGML_PYRE_KERNEL_CATALOG_CPP}"
+            --list-sources
+        OUTPUT_VARIABLE GGML_PYRE_KERNEL_SOURCE_LIST_TEXT
+        RESULT_VARIABLE GGML_PYRE_KERNEL_SOURCE_LIST_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    if (NOT GGML_PYRE_KERNEL_SOURCE_LIST_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to list Pyre HIP kernel sources")
+    endif()
+
+    string(REPLACE "\n" ";" GGML_PYRE_KERNEL_SOURCE_LIST "${GGML_PYRE_KERNEL_SOURCE_LIST_TEXT}")
+    set(GGML_PYRE_HSACO_OUTPUTS)
+    foreach(GGML_PYRE_KERNEL_SOURCE IN LISTS GGML_PYRE_KERNEL_SOURCE_LIST)
+        get_filename_component(GGML_PYRE_KERNEL_SOURCE_NAME "${GGML_PYRE_KERNEL_SOURCE}" NAME)
+        string(REPLACE ".hip.cpp" ".hsaco" GGML_PYRE_HSACO_NAME "${GGML_PYRE_KERNEL_SOURCE_NAME}")
+        set(GGML_PYRE_HSACO_OUTPUT "${GGML_PYRE_HSACO_DIR}/${GGML_PYRE_HSACO_NAME}")
+        add_custom_command(
+            OUTPUT "${GGML_PYRE_HSACO_OUTPUT}"
+            COMMAND "${GGML_PYRE_CLANGXX}"
+                -x hip
+                --offload-device-only
+                "--offload-arch=${GGML_PYRE_AMDGPU_TARGET}"
+                "--rocm-path=${GGML_PYRE_ROCM_PATH}"
+                -O2
+                -c "${GGML_PYRE_KERNEL_SOURCE}"
+                -o "${GGML_PYRE_HSACO_OUTPUT}"
+            DEPENDS "${GGML_PYRE_KERNEL_SOURCE}"
+            VERBATIM
+        )
+        list(APPEND GGML_PYRE_HSACO_OUTPUTS "${GGML_PYRE_HSACO_OUTPUT}")
+    endforeach()
+
     add_custom_command(
         OUTPUT "${GGML_PYRE_KERNEL_CATALOG_CPP}"
         COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
-            --clang "${GGML_PYRE_CLANGXX}"
-            --rocm-path "${GGML_PYRE_ROCM_PATH}"
+            "${GGML_PYRE_KERNEL_GENERATOR}"
             --arch "${GGML_PYRE_AMDGPU_TARGET}"
             --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
+            --hsaco-dir "${GGML_PYRE_HSACO_DIR}"
             --output "${GGML_PYRE_KERNEL_CATALOG_CPP}"
         DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/generate_pyre_kernels.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_add_f32_broadcast.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_f32_broadcast.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/add_rms_norm_mul_f32_broadcast.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/argsort_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/clamp_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/concat_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/copy_f32_f16.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/copy_strided_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/div_f32_broadcast.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_bf16_decode.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f32_decode.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_decode.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_q4_0_decode.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_q8_0_decode.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_q8_0_q4_0_decode.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/gated_delta_net_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/get_rows_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/get_rows_q5_k.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_f32_broadcast.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16_set_rows.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_bf16_swiglu.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16_batched.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f16.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f32_batched.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_q8_1.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_mul.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_swiglu.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_id_q4_k_mul_q8_1.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q4_k.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q4_k_q8_1.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q5_k.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q5_k_q8_1.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q6_k.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q6_k_q8_1.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/mul_mat_vec_q8_0.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/quantize_q8_1.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm_mul_rope_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm_mul_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rms_norm.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rope_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/rope_set_rows_f32_f16.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/row_reduce_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/scale_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f16.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_q4_0.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/set_rows_f32_q8_0.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/sigmoid_mul_f32_strided.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/soft_max_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/ssm_conv_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/ssm_conv_update_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/topk_moe_f32.hip.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/kernels/unary_f32.hip.cpp"
+            "${GGML_PYRE_KERNEL_GENERATOR}"
+            ${GGML_PYRE_HSACO_OUTPUTS}
             "${CMAKE_CURRENT_SOURCE_DIR}/kernels/pyre_kernel_catalog.h"
         VERBATIM
     )
