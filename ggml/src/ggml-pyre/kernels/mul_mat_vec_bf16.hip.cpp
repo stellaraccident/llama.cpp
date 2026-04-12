@@ -297,3 +297,78 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_cols8_f32(
         dst_col0[7 * rows] = sum7;
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_cols16_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long col0 = __builtin_amdgcn_workgroup_id_y() * 16;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows || col0 + 15 >= cols) {
+        return;
+    }
+
+    __shared__ float sumsh0[8 * ((256 + 31) / 32)];
+    __shared__ float sumsh1[8 * ((256 + 31) / 32)];
+
+    const uint16_t * src0_row = src0 + row * k;
+    const float * src1_col0 = src1 + col0 * k;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+    float sum4 = 0.0f;
+    float sum5 = 0.0f;
+    float sum6 = 0.0f;
+    float sum7 = 0.0f;
+    float sum8 = 0.0f;
+    float sum9 = 0.0f;
+    float sum10 = 0.0f;
+    float sum11 = 0.0f;
+    float sum12 = 0.0f;
+    float sum13 = 0.0f;
+    float sum14 = 0.0f;
+    float sum15 = 0.0f;
+    for (long long i = tid; i < k; i += 256) {
+        const float a = pyre_bf16_to_f32(src0_row[i]);
+        sum0 += a * src1_col0[i];
+        sum1 += a * src1_col0[k + i];
+        sum2 += a * src1_col0[2 * k + i];
+        sum3 += a * src1_col0[3 * k + i];
+        sum4 += a * src1_col0[4 * k + i];
+        sum5 += a * src1_col0[5 * k + i];
+        sum6 += a * src1_col0[6 * k + i];
+        sum7 += a * src1_col0[7 * k + i];
+        sum8 += a * src1_col0[8 * k + i];
+        sum9 += a * src1_col0[9 * k + i];
+        sum10 += a * src1_col0[10 * k + i];
+        sum11 += a * src1_col0[11 * k + i];
+        sum12 += a * src1_col0[12 * k + i];
+        sum13 += a * src1_col0[13 * k + i];
+        sum14 += a * src1_col0[14 * k + i];
+        sum15 += a * src1_col0[15 * k + i];
+    }
+
+    pyre_reduce8_bf16<256>(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh0);
+    pyre_reduce8_bf16<256>(sum8, sum9, sum10, sum11, sum12, sum13, sum14, sum15, sumsh1);
+
+    if (tid == 0) {
+        float * dst_col0 = dst + col0 * rows + row;
+        dst_col0[0] = sum0;
+        dst_col0[rows] = sum1;
+        dst_col0[2 * rows] = sum2;
+        dst_col0[3 * rows] = sum3;
+        dst_col0[4 * rows] = sum4;
+        dst_col0[5 * rows] = sum5;
+        dst_col0[6 * rows] = sum6;
+        dst_col0[7 * rows] = sum7;
+        dst_col0[8 * rows] = sum8;
+        dst_col0[9 * rows] = sum9;
+        dst_col0[10 * rows] = sum10;
+        dst_col0[11 * rows] = sum11;
+        dst_col0[12 * rows] = sum12;
+        dst_col0[13 * rows] = sum13;
+        dst_col0[14 * rows] = sum14;
+        dst_col0[15 * rows] = sum15;
+    }
+}
