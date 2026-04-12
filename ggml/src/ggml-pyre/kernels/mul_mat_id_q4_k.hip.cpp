@@ -683,7 +683,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
         return;
     }
 
-    __shared__ float sumsh[2 * (64 / 32)];
+    __shared__ float sumsh[8 * 2 * (64 / 32)];
     const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
     const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
     const char * src0_row1_base = src0_row0_base + c.src0_nb1;
@@ -774,9 +774,76 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
             }
         }
 
+        const unsigned int reduce_lane = tid & (warpSize - 1);
+        const unsigned int wave = tid / warpSize;
+        constexpr int waves = 64 / 32;
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(S) \
+        do { \
+            s0##S += __shfl_down(s0##S, offset); \
+            s1##S += __shfl_down(s1##S, offset); \
+        } while (0)
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(a);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(b);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(c);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(d);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(e);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(f);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(g);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(h);
+        }
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(S, R) \
+        do { \
+            sumsh[wave + ((R) * 2 + 0) * waves] = s0##S; \
+            sumsh[wave + ((R) * 2 + 1) * waves] = s1##S; \
+        } while (0)
+        if (reduce_lane == 0) {
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(a, 0);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(b, 1);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(c, 2);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(d, 3);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(e, 4);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(f, 5);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(g, 6);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE(h, 7);
+        }
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_SAVE
+        __syncthreads();
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(S, R) \
+        do { \
+            s0##S = reduce_lane < waves ? sumsh[reduce_lane + ((R) * 2 + 0) * waves] : 0.0f; \
+            s1##S = reduce_lane < waves ? sumsh[reduce_lane + ((R) * 2 + 1) * waves] : 0.0f; \
+        } while (0)
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(a, 0);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(b, 1);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(c, 2);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(d, 3);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(e, 4);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(f, 5);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(g, 6);
+        PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD(h, 7);
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD
+        if (wave == 0) {
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(S) \
+            do { \
+                s0##S += __shfl_down(s0##S, offset); \
+                s1##S += __shfl_down(s1##S, offset); \
+            } while (0)
+            for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(a);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(b);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(c);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(d);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(e);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(f);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(g);
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL(h);
+            }
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_SHFL
+        }
 #define PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(S, ROUTE) \
         do { \
-            pyre_reduce_wg2<64>(s0##S, s1##S, sumsh); \
             if (tid == 0) { \
                 const uint32_t route = (ROUTE); \
                 const long long id = route % c.n_ids; \
@@ -785,30 +852,16 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
                 *reinterpret_cast<float *>(dst_base + row0 * sizeof(float)) = s0##S; \
                 *reinterpret_cast<float *>(dst_base + (row0 + 1) * sizeof(float)) = s1##S; \
             } \
-            __syncthreads(); \
         } while (0)
         PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(a, route_a);
-        if (has_b) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(b, route_b);
-        }
-        if (has_c) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(c, route_c);
-        }
-        if (has_d) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(d, route_d);
-        }
-        if (has_e) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(e, route_e);
-        }
-        if (has_f) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(f, route_f);
-        }
-        if (has_g) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(g, route_g);
-        }
-        if (has_h) {
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(h, route_h);
-        }
+        if (has_b) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(b, route_b); }
+        if (has_c) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(c, route_c); }
+        if (has_d) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(d, route_d); }
+        if (has_e) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(e, route_e); }
+        if (has_f) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(f, route_f); }
+        if (has_g) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(g, route_g); }
+        if (has_h) { PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE(h, route_h); }
 #undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_STORE
+        __syncthreads();
     }
 }
