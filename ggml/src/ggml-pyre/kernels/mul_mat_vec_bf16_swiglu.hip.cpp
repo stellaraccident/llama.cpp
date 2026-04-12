@@ -269,3 +269,97 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_cols4_f32(
         dst_col0[3 * rows] = up_sum3 * silu_gate3;
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_cols8_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long col0 = __builtin_amdgcn_workgroup_id_y() * 8;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows || col0 + 7 >= cols) {
+        return;
+    }
+
+    __shared__ float gate_sumsh[8 * (256 / 32)];
+    __shared__ float up_sumsh[8 * (256 / 32)];
+
+    const uint16_t * gate_row = gate + row * k;
+    const uint16_t * up_row = up + row * k;
+    const float * src1_col0 = src1 + col0 * k;
+    float gate_sum0 = 0.0f;
+    float gate_sum1 = 0.0f;
+    float gate_sum2 = 0.0f;
+    float gate_sum3 = 0.0f;
+    float gate_sum4 = 0.0f;
+    float gate_sum5 = 0.0f;
+    float gate_sum6 = 0.0f;
+    float gate_sum7 = 0.0f;
+    float up_sum0 = 0.0f;
+    float up_sum1 = 0.0f;
+    float up_sum2 = 0.0f;
+    float up_sum3 = 0.0f;
+    float up_sum4 = 0.0f;
+    float up_sum5 = 0.0f;
+    float up_sum6 = 0.0f;
+    float up_sum7 = 0.0f;
+    for (long long i = tid; i < k; i += 256) {
+        const float g = pyre_bf16_swiglu_to_f32(gate_row[i]);
+        const float u = pyre_bf16_swiglu_to_f32(up_row[i]);
+        const float b0 = src1_col0[i];
+        const float b1 = src1_col0[k + i];
+        const float b2 = src1_col0[2 * k + i];
+        const float b3 = src1_col0[3 * k + i];
+        const float b4 = src1_col0[4 * k + i];
+        const float b5 = src1_col0[5 * k + i];
+        const float b6 = src1_col0[6 * k + i];
+        const float b7 = src1_col0[7 * k + i];
+        gate_sum0 += g * b0;
+        gate_sum1 += g * b1;
+        gate_sum2 += g * b2;
+        gate_sum3 += g * b3;
+        gate_sum4 += g * b4;
+        gate_sum5 += g * b5;
+        gate_sum6 += g * b6;
+        gate_sum7 += g * b7;
+        up_sum0 += u * b0;
+        up_sum1 += u * b1;
+        up_sum2 += u * b2;
+        up_sum3 += u * b3;
+        up_sum4 += u * b4;
+        up_sum5 += u * b5;
+        up_sum6 += u * b6;
+        up_sum7 += u * b7;
+    }
+
+    pyre_reduce8_bf16_swiglu<256>(
+        gate_sum0, gate_sum1, gate_sum2, gate_sum3,
+        gate_sum4, gate_sum5, gate_sum6, gate_sum7, gate_sumsh);
+    pyre_reduce8_bf16_swiglu<256>(
+        up_sum0, up_sum1, up_sum2, up_sum3,
+        up_sum4, up_sum5, up_sum6, up_sum7, up_sumsh);
+
+    if (tid == 0) {
+        float * dst_col0 = dst + col0 * rows + row;
+        const float silu_gate0 = gate_sum0 / (1.0f + __expf(-gate_sum0));
+        const float silu_gate1 = gate_sum1 / (1.0f + __expf(-gate_sum1));
+        const float silu_gate2 = gate_sum2 / (1.0f + __expf(-gate_sum2));
+        const float silu_gate3 = gate_sum3 / (1.0f + __expf(-gate_sum3));
+        const float silu_gate4 = gate_sum4 / (1.0f + __expf(-gate_sum4));
+        const float silu_gate5 = gate_sum5 / (1.0f + __expf(-gate_sum5));
+        const float silu_gate6 = gate_sum6 / (1.0f + __expf(-gate_sum6));
+        const float silu_gate7 = gate_sum7 / (1.0f + __expf(-gate_sum7));
+        dst_col0[0] = up_sum0 * silu_gate0;
+        dst_col0[rows] = up_sum1 * silu_gate1;
+        dst_col0[2 * rows] = up_sum2 * silu_gate2;
+        dst_col0[3 * rows] = up_sum3 * silu_gate3;
+        dst_col0[4 * rows] = up_sum4 * silu_gate4;
+        dst_col0[5 * rows] = up_sum5 * silu_gate5;
+        dst_col0[6 * rows] = up_sum6 * silu_gate6;
+        dst_col0[7 * rows] = up_sum7 * silu_gate7;
+    }
+}
