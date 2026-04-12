@@ -236,3 +236,93 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols8_f32(
         *reinterpret_cast<float *>(dst_row + 7 * c.dst_nb1) = sum7;
     }
 }
+
+extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols16_f32(
+        const float * src0, const float * src1, float * dst,
+        pyre_mul_mat_vec_f32_batched_constants c) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long outer = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= c.rows) {
+        return;
+    }
+
+    const long long col_group = outer % (c.cols / 16);
+    const long long i11 = col_group * 16;
+    const long long t = outer / (c.cols / 16);
+    const long long i12 = t % c.dst_ne2;
+    const long long i13 = t / c.dst_ne2;
+    if (i13 >= c.dst_ne3) {
+        return;
+    }
+
+    const long long src0_i02 = c.src0_ne2 == c.dst_ne2 ? i12 : i12 / (c.dst_ne2 / c.src0_ne2);
+    const long long src0_i03 = c.src0_ne3 == c.dst_ne3 ? i13 : i13 / (c.dst_ne3 / c.src0_ne3);
+    const char * src0_row = reinterpret_cast<const char *>(src0) +
+        row * c.src0_nb1 + src0_i02 * c.src0_nb2 + src0_i03 * c.src0_nb3;
+    const char * src1_col0 = reinterpret_cast<const char *>(src1) +
+        i11 * c.src1_nb1 + i12 * c.src1_nb2 + i13 * c.src1_nb3;
+
+    __shared__ float sumsh0[8 * (256 / 32)];
+    __shared__ float sumsh1[8 * (256 / 32)];
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+    float sum4 = 0.0f;
+    float sum5 = 0.0f;
+    float sum6 = 0.0f;
+    float sum7 = 0.0f;
+    float sum8 = 0.0f;
+    float sum9 = 0.0f;
+    float sum10 = 0.0f;
+    float sum11 = 0.0f;
+    float sum12 = 0.0f;
+    float sum13 = 0.0f;
+    float sum14 = 0.0f;
+    float sum15 = 0.0f;
+    for (long long i = tid; i < c.k; i += 256) {
+        const float a = *reinterpret_cast<const float *>(src0_row + i * sizeof(float));
+        const long long rhs = i * sizeof(float);
+        sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+        sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
+        sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
+        sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
+        sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs);
+        sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs);
+        sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs);
+        sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs);
+        sum8 += a * *reinterpret_cast<const float *>(src1_col0 + 8 * c.src1_nb1 + rhs);
+        sum9 += a * *reinterpret_cast<const float *>(src1_col0 + 9 * c.src1_nb1 + rhs);
+        sum10 += a * *reinterpret_cast<const float *>(src1_col0 + 10 * c.src1_nb1 + rhs);
+        sum11 += a * *reinterpret_cast<const float *>(src1_col0 + 11 * c.src1_nb1 + rhs);
+        sum12 += a * *reinterpret_cast<const float *>(src1_col0 + 12 * c.src1_nb1 + rhs);
+        sum13 += a * *reinterpret_cast<const float *>(src1_col0 + 13 * c.src1_nb1 + rhs);
+        sum14 += a * *reinterpret_cast<const float *>(src1_col0 + 14 * c.src1_nb1 + rhs);
+        sum15 += a * *reinterpret_cast<const float *>(src1_col0 + 15 * c.src1_nb1 + rhs);
+    }
+
+    pyre_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh0);
+    pyre_reduce8_256(sum8, sum9, sum10, sum11, sum12, sum13, sum14, sum15, sumsh1);
+
+    if (tid == 0) {
+        char * dst_row = reinterpret_cast<char *>(dst) +
+            row * sizeof(float) + i11 * c.dst_nb1 + i12 * c.dst_nb2 + i13 * c.dst_nb3;
+        *reinterpret_cast<float *>(dst_row) = sum0;
+        *reinterpret_cast<float *>(dst_row + c.dst_nb1) = sum1;
+        *reinterpret_cast<float *>(dst_row + 2 * c.dst_nb1) = sum2;
+        *reinterpret_cast<float *>(dst_row + 3 * c.dst_nb1) = sum3;
+        *reinterpret_cast<float *>(dst_row + 4 * c.dst_nb1) = sum4;
+        *reinterpret_cast<float *>(dst_row + 5 * c.dst_nb1) = sum5;
+        *reinterpret_cast<float *>(dst_row + 6 * c.dst_nb1) = sum6;
+        *reinterpret_cast<float *>(dst_row + 7 * c.dst_nb1) = sum7;
+        *reinterpret_cast<float *>(dst_row + 8 * c.dst_nb1) = sum8;
+        *reinterpret_cast<float *>(dst_row + 9 * c.dst_nb1) = sum9;
+        *reinterpret_cast<float *>(dst_row + 10 * c.dst_nb1) = sum10;
+        *reinterpret_cast<float *>(dst_row + 11 * c.dst_nb1) = sum11;
+        *reinterpret_cast<float *>(dst_row + 12 * c.dst_nb1) = sum12;
+        *reinterpret_cast<float *>(dst_row + 13 * c.dst_nb1) = sum13;
+        *reinterpret_cast<float *>(dst_row + 14 * c.dst_nb1) = sum14;
+        *reinterpret_cast<float *>(dst_row + 15 * c.dst_nb1) = sum15;
+    }
+}
