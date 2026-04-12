@@ -134,19 +134,7 @@ static __device__ __forceinline__ void pyre_q6_k_mmqv_load_a(
         long long row,
         long long kb,
         int iqs,
-        long long blocks_per_row,
-        long long q8_blocks_per_row,
-        long long rows) {
-    if (row >= rows || kb >= q8_blocks_per_row) {
-        buf_a[buf_idx].qs[iqs] = 0;
-        if (iqs == 0) {
-            buf_a[buf_idx].d[0] = 0.0f;
-        } else if (iqs == 4) {
-            buf_a[buf_idx].d[1] = 0.0f;
-        }
-        return;
-    }
-
+        long long blocks_per_row) {
     const pyre_block_q6_K_q8_1_lhs * block = src0 + row * blocks_per_row + (kb >> 3);
     const int group = static_cast<int>(kb & 7);
     buf_a[buf_idx].qs[iqs] = pyre_q6_k_pack4(block, group, iqs);
@@ -164,19 +152,7 @@ static __device__ __forceinline__ void pyre_q6_k_mmqv_load_b(
         long long col,
         long long kb,
         int iqs_vec4,
-        long long q8_blocks_per_col,
-        long long cols) {
-    if (col >= cols || kb >= q8_blocks_per_col) {
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            buf_b[buf_idx].qs[iqs_vec4 * 4 + j] = 0;
-        }
-        if (iqs_vec4 == 0) {
-            buf_b[buf_idx].d = 0.0f;
-        }
-        return;
-    }
-
+        long long q8_blocks_per_col) {
     const long long linear_block = col * q8_blocks_per_col + kb;
     const pyre_block_q8_1_x4_rhs_q6 * rhs = src1 + (linear_block >> 2);
     const int inner = static_cast<int>(linear_block & 3);
@@ -225,7 +201,6 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
     __shared__ pyre_q8_1_mmqv_b_cache_q6 buf_b[BN * BK_STEP];
 
     const long long blocks_per_row = k / 256;
-    const long long q8_blocks_per_row = k / 32;
     const long long q8_blocks_per_col = k / 32;
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
     const long long col_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN;
@@ -246,9 +221,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
                     row_base + r,
                     kb_base + k_step,
                     loadr_a,
-                    blocks_per_row,
-                    q8_blocks_per_row,
-                    rows);
+                    blocks_per_row);
             }
         }
 
@@ -265,8 +238,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
                     col_base + c,
                     kb_base + k_step,
                     loadr_b,
-                    q8_blocks_per_col,
-                    cols);
+                    q8_blocks_per_col);
             }
         }
         __syncthreads();
@@ -313,9 +285,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
             #pragma unroll
             for (int cc = 0; cc < TN; ++cc) {
                 const long long col = col_base + warp_c * WN + wsic * WSUBN + tiwc * TN + cc;
-                if (row < rows && col < cols) {
-                    dst[col * rows + row] = sum[(wsic * TM + cr) * TN + cc];
-                }
+                dst[col * rows + row] = sum[(wsic * TM + cr) * TN + cc];
             }
         }
     }

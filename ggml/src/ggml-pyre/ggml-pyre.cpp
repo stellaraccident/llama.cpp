@@ -5715,6 +5715,9 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmql128_prompt(
         const ggml_tensor * op) {
     const ggml_tensor * src1 = op->src[1];
     return device_context->policy.enable_q5_k_q8_1_x4_mmql128_prompt &&
+           op->src[0] &&
+           (op->src[0]->ne[0] % 128) == 0 &&
+           (op->src[0]->ne[1] % 128) == 0 &&
            src1 &&
            src1->ne[1] == 512 &&
            (src1->ne[1] % 128) == 0 &&
@@ -5769,6 +5772,9 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_x4_mmql128_prompt(
     const ggml_tensor * src1 = op->src[1];
     return device_context->policy.enable_q6_k_q8_1_x4_mmql128_prompt &&
            ggml_backend_pyre_q8_1_mmvq_auto_shape(op, GGML_TYPE_Q6_K) &&
+           op->src[0] &&
+           (op->src[0]->ne[0] % 128) == 0 &&
+           (op->src[0]->ne[1] % 128) == 0 &&
            src1 &&
            src1->ne[1] == 512 &&
            (src1->ne[1] % 128) == 0 &&
