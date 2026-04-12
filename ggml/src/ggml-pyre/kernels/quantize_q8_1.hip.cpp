@@ -65,13 +65,16 @@ extern "C" __global__ void pyre_quantize_q8_1_f32(
 extern "C" __global__ void pyre_quantize_q8_1_x4_f32(
         const float * src, pyre_block_q8_1_x4_packed128 * dst,
         pyre_quantize_q8_1_constants c) {
-    const long long block = static_cast<long long>(__builtin_amdgcn_workgroup_id_x());
+    const long long block_group = static_cast<long long>(__builtin_amdgcn_workgroup_id_x());
     const long long i1 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y());
     const long long z = static_cast<long long>(__builtin_amdgcn_workgroup_id_z());
-    const int lane = static_cast<int>(__builtin_amdgcn_workitem_id_x());
+    const int tid = static_cast<int>(__builtin_amdgcn_workitem_id_x());
+    const int inner = tid >> 5;
+    const int lane = tid & 31;
 
     const long long i3 = z / c.ne2;
     const long long i2 = z - i3 * c.ne2;
+    const long long block = block_group * 4 + inner;
     const long long i0 = block * 32 + lane;
     if (i0 >= c.ne0 || i1 >= c.ne1) {
         return;
@@ -97,7 +100,6 @@ extern "C" __global__ void pyre_quantize_q8_1_x4_f32(
     const long long blocks_per_col = c.ne0 / 32;
     const long long linear_block = (z * c.ne1 + i1) * blocks_per_col + block;
     pyre_block_q8_1_x4_packed128 * out = dst + (linear_block >> 2);
-    const int inner = static_cast<int>(linear_block & 3);
 
     if ((lane & 3) == 0) {
         const unsigned int q0 = static_cast<unsigned char>(q);

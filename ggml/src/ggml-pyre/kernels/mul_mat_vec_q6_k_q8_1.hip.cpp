@@ -165,18 +165,18 @@ static __device__ __forceinline__ void pyre_q6_k_mmqv_load_b(
     }
 }
 
-extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
+extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
         const pyre_block_q6_K_q8_1_lhs * src0,
         const pyre_block_q8_1_x4_rhs_q6 * src1,
         float * dst,
         long long k, long long rows, long long cols) {
     constexpr int BM = 128;
-    constexpr int BN = 128;
+    constexpr int BN = 64;
     constexpr int BK_STEP = 4;
     constexpr int BLOCK_SIZE = 256;
     constexpr int WARP = 64;
     constexpr int WM = 64;
-    constexpr int WN = 64;
+    constexpr int WN = 32;
     constexpr int WMITER = 1;
     constexpr int TM = 4;
     constexpr int TN = 2;
@@ -186,7 +186,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
     constexpr int LOAD_VEC_A = 4;
     constexpr int LOAD_VEC_B = 16;
 
-    static_assert(WNITER == 8, "unexpected Vulkan large Q6 MMQ tile shape");
+    static_assert(WNITER == 4, "unexpected Q6 MMQ 128x64 tile shape");
     static_assert(WSUBM == 64 && WSUBN == 8, "unexpected Vulkan large Q6 MMQ subtile shape");
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
@@ -262,14 +262,21 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32(
                 for (int cr = 0; cr < TM; ++cr) {
                     #pragma unroll
                     for (int cc = 0; cc < TN; ++cc) {
-                        float qsum = 0.0f;
+                        int qsum0 = 0;
+                        int qsum1 = 0;
                         #pragma unroll
-                        for (int iqs = 0; iqs < 8; ++iqs) {
-                            qsum += cache_a[cr].d[iqs >> 2] * cache_b[cc].d *
-                                static_cast<float>(pyre_sdot4_q6_q8_1_qpack(
-                                    cache_a[cr].qs[iqs], cache_b[cc].qs[iqs]));
+                        for (int iqs = 0; iqs < 4; ++iqs) {
+                            qsum0 += pyre_sdot4_q6_q8_1_qpack(
+                                cache_a[cr].qs[iqs], cache_b[cc].qs[iqs]);
                         }
-                        sum[(wsic * TM + cr) * TN + cc] += qsum;
+                        #pragma unroll
+                        for (int iqs = 4; iqs < 8; ++iqs) {
+                            qsum1 += pyre_sdot4_q6_q8_1_qpack(
+                                cache_a[cr].qs[iqs], cache_b[cc].qs[iqs]);
+                        }
+                        sum[(wsic * TM + cr) * TN + cc] += cache_b[cc].d *
+                            (cache_a[cr].d[0] * static_cast<float>(qsum0) +
+                             cache_a[cr].d[1] * static_cast<float>(qsum1));
                     }
                 }
             }

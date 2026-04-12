@@ -50,7 +50,7 @@ static __device__ __forceinline__ void pyre_reduce8_bf16_swiglu(
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
     const unsigned int wave = tid / warpSize;
-    constexpr int waves = (WG_SIZE + 31) / 32;
+    const int waves = (WG_SIZE + warpSize - 1) / warpSize;
 
     for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
         sum0 += __shfl_down(sum0, offset);
@@ -361,6 +361,76 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_cols8_f32(
         dst_col0[5 * rows] = up_sum5 * silu_gate5;
         dst_col0[6 * rows] = up_sum6 * silu_gate6;
         dst_col0[7 * rows] = up_sum7 * silu_gate7;
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_rows2_cols8_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    const long long row0 = __builtin_amdgcn_workgroup_id_x() * 2;
+    const long long row1 = row0 + 1;
+    const long long col0 = __builtin_amdgcn_workgroup_id_y() * 8;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row1 >= rows || col0 + 7 >= cols) {
+        return;
+    }
+
+    __shared__ float gate_sumsh0[8 * ((32 + 31) / 32)];
+    __shared__ float gate_sumsh1[8 * ((32 + 31) / 32)];
+    __shared__ float up_sumsh0[8 * ((32 + 31) / 32)];
+    __shared__ float up_sumsh1[8 * ((32 + 31) / 32)];
+
+    const uint16_t * gate_row0 = gate + row0 * k;
+    const uint16_t * gate_row1 = gate + row1 * k;
+    const uint16_t * up_row0 = up + row0 * k;
+    const uint16_t * up_row1 = up + row1 * k;
+    const float * src1_col0 = src1 + col0 * k;
+    float gate0[8] = {};
+    float gate1[8] = {};
+    float up0[8] = {};
+    float up1[8] = {};
+    for (long long i = tid; i < k; i += 32) {
+        const float g0 = pyre_bf16_swiglu_to_f32(gate_row0[i]);
+        const float g1 = pyre_bf16_swiglu_to_f32(gate_row1[i]);
+        const float u0 = pyre_bf16_swiglu_to_f32(up_row0[i]);
+        const float u1 = pyre_bf16_swiglu_to_f32(up_row1[i]);
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            const float b = src1_col0[static_cast<long long>(c) * k + i];
+            gate0[c] += g0 * b;
+            gate1[c] += g1 * b;
+            up0[c] += u0 * b;
+            up1[c] += u1 * b;
+        }
+    }
+
+    pyre_reduce8_bf16_swiglu<32>(
+        gate0[0], gate0[1], gate0[2], gate0[3],
+        gate0[4], gate0[5], gate0[6], gate0[7], gate_sumsh0);
+    pyre_reduce8_bf16_swiglu<32>(
+        gate1[0], gate1[1], gate1[2], gate1[3],
+        gate1[4], gate1[5], gate1[6], gate1[7], gate_sumsh1);
+    pyre_reduce8_bf16_swiglu<32>(
+        up0[0], up0[1], up0[2], up0[3],
+        up0[4], up0[5], up0[6], up0[7], up_sumsh0);
+    pyre_reduce8_bf16_swiglu<32>(
+        up1[0], up1[1], up1[2], up1[3],
+        up1[4], up1[5], up1[6], up1[7], up_sumsh1);
+
+    if (tid == 0) {
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            float * dst_col = dst + (col0 + c) * rows;
+            const float silu_gate0 = gate0[c] / (1.0f + __expf(-gate0[c]));
+            const float silu_gate1 = gate1[c] / (1.0f + __expf(-gate1[c]));
+            dst_col[row0] = up0[c] * silu_gate0;
+            dst_col[row1] = up1[c] * silu_gate1;
+        }
     }
 }
 

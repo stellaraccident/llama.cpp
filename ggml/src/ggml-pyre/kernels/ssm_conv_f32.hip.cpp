@@ -19,26 +19,29 @@ struct pyre_ssm_conv_constants {
 extern "C" __global__ void pyre_ssm_conv_f32(
         const float * src0, const float * weight, float * dst,
         pyre_ssm_conv_constants c) {
-    const long long linear = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 256 +
+    const long long channel = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 32 +
         __builtin_amdgcn_workitem_id_x();
-    const long long total = c.d_inner * c.n_tokens * c.n_seqs;
-    if (linear >= total) {
+    const long long token = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 16 +
+        __builtin_amdgcn_workitem_id_y();
+    const long long seq = __builtin_amdgcn_workgroup_id_z();
+    if (channel >= c.d_inner || token >= c.n_tokens || seq >= c.n_seqs) {
         return;
     }
-
-    const long long channel = linear % c.d_inner;
-    const long long t1 = linear / c.d_inner;
-    const long long token = t1 % c.n_tokens;
-    const long long seq = t1 / c.n_tokens;
 
     const char * src_base = reinterpret_cast<const char *>(src0) +
         channel * c.src0_nb1 + token * sizeof(float) + seq * c.src0_nb2;
     const char * weight_base = reinterpret_cast<const char *>(weight) + channel * c.weight_nb1;
     float sum = 0.0f;
-    for (long long i = 0; i < c.d_conv; ++i) {
-        const float x = *reinterpret_cast<const float *>(src_base + i * sizeof(float));
-        const float w = *reinterpret_cast<const float *>(weight_base + i * sizeof(float));
-        sum += x * w;
+    if (c.d_conv == 4) {
+        const float4 x = *reinterpret_cast<const float4 *>(src_base);
+        const float4 w = *reinterpret_cast<const float4 *>(weight_base);
+        sum = x.x * w.x + x.y * w.y + x.z * w.z + x.w * w.w;
+    } else {
+        for (long long i = 0; i < c.d_conv; ++i) {
+            const float x = *reinterpret_cast<const float *>(src_base + i * sizeof(float));
+            const float w = *reinterpret_cast<const float *>(weight_base + i * sizeof(float));
+            sum += x * w;
+        }
     }
     if (c.apply_silu) {
         sum = sum / (1.0f + __builtin_expf(-sum));

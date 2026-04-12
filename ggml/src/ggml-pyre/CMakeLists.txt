@@ -64,6 +64,12 @@ if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND 
                 "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_prefill_gfx11_direct_generic.inc"
                 "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_prefill_gfx11_direct_gfx11.inc")
         endif()
+        set(GGML_PYRE_KERNEL_COMPILE_FLAGS)
+        if (GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "mul_mat_vec_q5_k_q8_1.hip.cpp" OR
+            GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "mul_mat_vec_q6_k_q8_1.hip.cpp" OR
+            GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "ssm_conv_f32.hip.cpp")
+            list(APPEND GGML_PYRE_KERNEL_COMPILE_FLAGS -mwavefrontsize64)
+        endif()
         add_custom_command(
             OUTPUT "${GGML_PYRE_HSACO_OUTPUT}"
             COMMAND "${GGML_PYRE_CLANGXX}"
@@ -72,6 +78,7 @@ if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND 
                 "--offload-arch=${GGML_PYRE_AMDGPU_TARGET}"
                 "--rocm-path=${GGML_PYRE_ROCM_PATH}"
                 -O2
+                ${GGML_PYRE_KERNEL_COMPILE_FLAGS}
                 -c "${GGML_PYRE_KERNEL_SOURCE}"
                 -o "${GGML_PYRE_HSACO_OUTPUT}"
             DEPENDS ${GGML_PYRE_KERNEL_DEPS}

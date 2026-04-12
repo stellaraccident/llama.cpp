@@ -25,15 +25,13 @@ struct pyre_add_add_f32_broadcast_constants {
 extern "C" __global__ void pyre_add_add_f32_broadcast(
         const float * src0, const float * src1, const float * src2, float * dst,
         pyre_add_add_f32_broadcast_constants c) {
-    const long long idx = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 256 +
+    const long long col = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 256 +
         __builtin_amdgcn_workitem_id_x();
-    const long long n = c.ne0 * c.nrows;
-    if (idx >= n) {
+    const long long row = static_cast<long long>(__builtin_amdgcn_workgroup_id_y());
+    if (col >= c.ne0 || row >= c.nrows) {
         return;
     }
 
-    const long long col = idx % c.ne0;
-    const long long row = idx / c.ne0;
     const long long i3 = row / (c.ne1 * c.ne2);
     const long long i2 = (row - i3 * c.ne1 * c.ne2) / c.ne1;
     const long long i1 = row - i3 * c.ne1 * c.ne2 - i2 * c.ne1;

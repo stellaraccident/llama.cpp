@@ -22,10 +22,12 @@ struct pyre_rms_norm_mul_constants {
     int _pad;
 };
 
-static __device__ __forceinline__ float pyre_rms_norm_mul_reduce_512(float sum, float * shared) {
+template <int WG_SIZE>
+static __device__ __forceinline__ float pyre_rms_norm_mul_reduce(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & 31;
     const unsigned int wave = tid >> 5;
+    constexpr int waves = (WG_SIZE + 31) / 32;
 
     for (int offset = 16; offset > 0; offset >>= 1) {
         sum += __shfl_down(sum, offset);
@@ -35,7 +37,7 @@ static __device__ __forceinline__ float pyre_rms_norm_mul_reduce_512(float sum, 
     }
     __builtin_amdgcn_s_barrier();
 
-    sum = tid < 16 ? shared[lane] : 0.0f;
+    sum = lane < waves ? shared[lane] : 0.0f;
     if (wave == 0) {
         for (int offset = 16; offset > 0; offset >>= 1) {
             sum += __shfl_down(sum, offset);
@@ -48,7 +50,8 @@ static __device__ __forceinline__ float pyre_rms_norm_mul_reduce_512(float sum, 
     return shared[0];
 }
 
-extern "C" __global__ void pyre_rms_norm_mul_f32(
+template <int WG_SIZE>
+static __device__ __forceinline__ void pyre_rms_norm_mul_impl(
         const float * src, const float * weight, float * dst,
         pyre_rms_norm_mul_constants c) {
     const long long row = __builtin_amdgcn_workgroup_id_x();
@@ -57,7 +60,7 @@ extern "C" __global__ void pyre_rms_norm_mul_f32(
         return;
     }
 
-    __shared__ float sumsh[16];
+    __shared__ float sumsh[(WG_SIZE + 31) / 32];
 
     const long long i3 = row / (c.ne1 * c.ne2);
     const long long i2 = (row - i3 * c.ne1 * c.ne2) / c.ne1;
@@ -74,16 +77,28 @@ extern "C" __global__ void pyre_rms_norm_mul_f32(
         i1 * c.dst_nb1 + i2 * c.dst_nb2 + i3 * c.dst_nb3;
 
     float sum = 0.0f;
-    for (long long col = tid; col < c.ncols; col += 512) {
+    for (long long col = tid; col < c.ncols; col += WG_SIZE) {
         const float value = *reinterpret_cast<const float *>(src_row + col * sizeof(float));
         sum += value * value;
     }
 
-    const float scale = 1.0f / __builtin_sqrtf(pyre_rms_norm_mul_reduce_512(sum, sumsh) / (float) c.ncols + c.eps);
-    for (long long col = tid; col < c.ncols; col += 512) {
+    const float scale = 1.0f / __builtin_sqrtf(pyre_rms_norm_mul_reduce<WG_SIZE>(sum, sumsh) / (float) c.ncols + c.eps);
+    for (long long col = tid; col < c.ncols; col += WG_SIZE) {
         const long long wcol = c.weight_ne0 == 1 ? 0 : col;
         const float src_value = *reinterpret_cast<const float *>(src_row + col * sizeof(float));
         const float weight_value = *reinterpret_cast<const float *>(weight_row + wcol * sizeof(float));
         *reinterpret_cast<float *>(dst_row + col * sizeof(float)) = src_value * scale * weight_value;
     }
+}
+
+extern "C" __global__ void pyre_rms_norm_mul_f32(
+        const float * src, const float * weight, float * dst,
+        pyre_rms_norm_mul_constants c) {
+    pyre_rms_norm_mul_impl<512>(src, weight, dst, c);
+}
+
+extern "C" __global__ void pyre_rms_norm_mul_wg128_f32(
+        const float * src, const float * weight, float * dst,
+        pyre_rms_norm_mul_constants c) {
+    pyre_rms_norm_mul_impl<128>(src, weight, dst, c);
 }

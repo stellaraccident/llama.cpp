@@ -22,6 +22,14 @@ KERNELS = [
         "workgroup_size": (512, 1, 1),
     },
     {
+        "name": "pyre_rms_norm_mul_wg128_f32",
+        "source": "rms_norm_mul_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 144,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
         "name": "pyre_rms_norm_mul_rope_f32",
         "source": "rms_norm_mul_rope_f32.hip.cpp",
         "format": "FPIH",
@@ -267,7 +275,7 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 3,
         "constants_size": 88,
-        "workgroup_size": (256, 1, 1),
+        "workgroup_size": (32, 16, 1),
     },
     {
         "name": "pyre_flash_attn_ext_f32_f16_decode",
@@ -371,7 +379,7 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 3,
         "constants_size": 64,
-        "workgroup_size": (64, 1, 1),
+        "workgroup_size": (32, 1, 1),
     },
     {
         "name": "pyre_topk_moe_f32_subgroup",
@@ -387,7 +395,7 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 3,
         "constants_size": 88,
-        "workgroup_size": (256, 1, 1),
+        "workgroup_size": (32, 16, 1),
     },
     {
         "name": "pyre_ssm_conv_update_f32",
@@ -475,7 +483,7 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 3,
         "constants_size": 24,
-        "workgroup_size": (128, 1, 1),
+        "workgroup_size": (64, 1, 1),
     },
     {
         "name": "pyre_mul_mat_vec_bf16_wg64_f32",
@@ -524,6 +532,14 @@ KERNELS = [
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_bf16_rows2_cols16_f32",
+        "source": "mul_mat_vec_bf16.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (32, 1, 1),
     },
     {
         "name": "pyre_mul_mat_vec_bf16_swiglu_f32",
@@ -582,6 +598,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_vec_bf16_swiglu_rows2_cols8_f32",
+        "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 24,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_bf16_set_rows_f16",
         "source": "mul_mat_vec_bf16_set_rows.hip.cpp",
         "format": "FPIH",
@@ -623,6 +647,14 @@ KERNELS = [
     },
     {
         "name": "pyre_mul_mat_vec_f32_batched_cols16_f32",
+        "source": "mul_mat_vec_f32_batched.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 128,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_f32_batched_rows2_cols8_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
         "format": "FPIH",
         "binding_count": 3,
@@ -891,7 +923,7 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 2,
         "constants_size": 56,
-        "workgroup_size": (32, 1, 1),
+        "workgroup_size": (128, 1, 1),
     },
     {
         "name": "pyre_mul_mat_vec_q4_k_q8_1_f32",
@@ -1006,7 +1038,7 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
-        "name": "pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x128_wg256_f32",
+        "name": "pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32",
         "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
         "format": "FPIH",
         "binding_count": 3,
@@ -1052,6 +1084,14 @@ KERNELS = [
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_q8_0_add_rows4_cols4_f32",
+        "source": "mul_mat_vec_q8_0.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 24,
+        "workgroup_size": (128, 1, 1),
     },
 ]
 

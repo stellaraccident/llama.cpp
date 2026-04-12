@@ -46,7 +46,7 @@ static __device__ __forceinline__ void pyre_reduce4_bf16(
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
     const unsigned int wave = tid / warpSize;
-    constexpr int waves = (WG_SIZE + 31) / 32;
+    const int waves = (WG_SIZE + warpSize - 1) / warpSize;
 
     for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
         sum0 += __shfl_down(sum0, offset);
@@ -93,7 +93,7 @@ static __device__ __forceinline__ void pyre_reduce8_bf16(
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
     const unsigned int wave = tid / warpSize;
-    constexpr int waves = (WG_SIZE + 31) / 32;
+    const int waves = (WG_SIZE + warpSize - 1) / warpSize;
 
     for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
         sum0 += __shfl_down(sum0, offset);
@@ -138,6 +138,44 @@ static __device__ __forceinline__ void pyre_reduce8_bf16(
             sum5 += __shfl_down(sum5, offset);
             sum6 += __shfl_down(sum6, offset);
             sum7 += __shfl_down(sum7, offset);
+        }
+    }
+}
+
+template <int WG_SIZE>
+static __device__ __forceinline__ void pyre_reduce16_bf16(float sum[16], float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    const int waves = (WG_SIZE + warpSize - 1) / warpSize;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+            sum[i] += __shfl_down(sum[i], offset);
+        }
+    }
+    if (WG_SIZE <= warpSize) {
+        return;
+    }
+    if (lane == 0) {
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+            shared[wave + i * waves] = sum[i];
+        }
+    }
+    __syncthreads();
+
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        sum[i] = lane < waves ? shared[lane + i * waves] : 0.0f;
+    }
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+#pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                sum[i] += __shfl_down(sum[i], offset);
+            }
         }
     }
 }
@@ -370,6 +408,49 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_cols16_f32(
         dst_col0[13 * rows] = sum13;
         dst_col0[14 * rows] = sum14;
         dst_col0[15 * rows] = sum15;
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_rows2_cols16_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row0 = __builtin_amdgcn_workgroup_id_x() * 2;
+    const long long row1 = row0 + 1;
+    const long long col0 = __builtin_amdgcn_workgroup_id_y() * 16;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row1 >= rows || col0 + 15 >= cols) {
+        return;
+    }
+
+    __shared__ float sumsh0[16 * ((32 + 31) / 32)];
+    __shared__ float sumsh1[16 * ((32 + 31) / 32)];
+
+    const uint16_t * src0_row0 = src0 + row0 * k;
+    const uint16_t * src0_row1 = src0 + row1 * k;
+    const float * src1_col0 = src1 + col0 * k;
+    float sum0[16] = {};
+    float sum1[16] = {};
+    for (long long i = tid; i < k; i += 32) {
+        const float a0 = pyre_bf16_to_f32(src0_row0[i]);
+        const float a1 = pyre_bf16_to_f32(src0_row1[i]);
+#pragma unroll
+        for (int c = 0; c < 16; ++c) {
+            const float b = src1_col0[static_cast<long long>(c) * k + i];
+            sum0[c] += a0 * b;
+            sum1[c] += a1 * b;
+        }
+    }
+
+    pyre_reduce16_bf16<32>(sum0, sumsh0);
+    pyre_reduce16_bf16<32>(sum1, sumsh1);
+
+    if (tid == 0) {
+#pragma unroll
+        for (int c = 0; c < 16; ++c) {
+            float * dst_col = dst + (col0 + c) * rows;
+            dst_col[row0] = sum0[c];
+            dst_col[row1] = sum1[c];
+        }
     }
 }
 
