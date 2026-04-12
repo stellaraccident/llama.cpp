@@ -286,6 +286,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_flash_attn_ext_f32_f16_prefill_wmma16",
+        "source": "flash_attn_ext_f32_f16_prefill_wmma16.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 6,
+        "constants_size": 208,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
         "name": "pyre_flash_attn_ext_f32_bf16_decode",
         "source": "flash_attn_ext_f32_bf16_decode.hip.cpp",
         "format": "FPIH",
