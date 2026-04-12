@@ -125,6 +125,7 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_bf16_swiglu_cols16_prompt = false;
     bool enable_q8_0_cols8_prompt = false;
     bool enable_f16_prefill_fa_wmma = false;
+    bool enable_f16_prefill_fa_gfx11_direct = false;
     bool enable_f16_prefill_fa_tile = false;
     int mul_mat_vec_bf16_workgroup_size = 0;
     int mul_mat_vec_k_workgroup_size = 0;
@@ -185,6 +186,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider soft_max_f32_mask_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_decode_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_prefill_wmma_provider;
+    ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_prefill_gfx11_direct_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f16_prefill_tile_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_bf16_decode_provider;
     ggml_backend_pyre_op_provider flash_attn_ext_f32_f32_decode_provider;
@@ -707,6 +709,8 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_bf16_swiglu_cols16_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_SWIGLU_COLS16_PROMPT"),
         /* .enable_q8_0_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_0_COLS8_PROMPT"),
         /* .enable_f16_prefill_fa_wmma = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_PREFILL_FA_WMMA"),
+        /* .enable_f16_prefill_fa_gfx11_direct = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_F16_PREFILL_FA_GFX11_DIRECT"),
         /* .enable_f16_prefill_fa_tile = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_PREFILL_FA_TILE"),
         /* .mul_mat_vec_bf16_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env(),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
@@ -1120,6 +1124,14 @@ static bool ggml_backend_pyre_load_flash_attn_ext_f32_f16_prefill_wmma_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_f16_prefill_wmma16"),
         &device_context->flash_attn_ext_f32_f16_prefill_wmma_provider);
+}
+
+static bool ggml_backend_pyre_load_flash_attn_ext_f32_f16_prefill_gfx11_direct_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_flash_attn_ext_f32_f16_prefill_gfx11_direct"),
+        &device_context->flash_attn_ext_f32_f16_prefill_gfx11_direct_provider);
 }
 
 static bool ggml_backend_pyre_load_flash_attn_ext_f32_f16_prefill_tile_provider(
@@ -2554,6 +2566,59 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_wmma(
     memcpy(&logit_softcap, reinterpret_cast<const float *>(op->op_params) + 2, sizeof(float));
     return device_context->policy.enable_f16_prefill_fa_wmma &&
            device_context->flash_attn_ext_f32_f16_prefill_wmma_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           q && k && v && mask &&
+           !sinks &&
+           q->type == GGML_TYPE_F32 &&
+           k->type == GGML_TYPE_F16 &&
+           v->type == GGML_TYPE_F16 &&
+           mask->type == GGML_TYPE_F16 &&
+           max_bias == 0.0f &&
+           logit_softcap == 0.0f &&
+           op->type == GGML_TYPE_F32 &&
+           q->ne[0] == 256 &&
+           k->ne[0] == 256 &&
+           v->ne[0] == 256 &&
+           op->ne[0] == 256 &&
+           q->ne[1] == 512 &&
+           k->ne[1] == 512 &&
+           v->ne[1] == 512 &&
+           q->ne[2] == 16 &&
+           k->ne[2] == 2 &&
+           v->ne[2] == 2 &&
+           q->ne[3] == k->ne[3] &&
+           q->ne[3] == v->ne[3] &&
+           q->ne[2] == op->ne[1] &&
+           q->ne[1] == op->ne[2] &&
+           q->ne[3] == op->ne[3] &&
+           mask->ne[0] == 512 &&
+           mask->ne[1] >= 512 &&
+           mask->ne[2] == 1 &&
+           mask->ne[3] == q->ne[3] &&
+           q->nb[0] == sizeof(float) &&
+           k->nb[0] == ggml_type_size(k->type) &&
+           v->nb[0] == ggml_type_size(v->type) &&
+           mask->nb[0] == ggml_type_size(mask->type) &&
+           op->nb[0] == sizeof(float) &&
+           ggml_is_contiguous(mask) &&
+           ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_gfx11_direct(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * q = op->src[0];
+    const ggml_tensor * k = op->src[1];
+    const ggml_tensor * v = op->src[2];
+    const ggml_tensor * mask = op->src[3];
+    const ggml_tensor * sinks = op->src[4];
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&max_bias, reinterpret_cast<const float *>(op->op_params) + 1, sizeof(float));
+    memcpy(&logit_softcap, reinterpret_cast<const float *>(op->op_params) + 2, sizeof(float));
+    return device_context->policy.enable_f16_prefill_fa_gfx11_direct &&
+           device_context->architecture.rfind("gfx11", 0) == 0 &&
+           device_context->flash_attn_ext_f32_f16_prefill_gfx11_direct_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            q && k && v && mask &&
            !sinks &&
@@ -5008,11 +5073,15 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
         /* .has_sinks = */ sinks ? 1 : 0,
     };
 
-    const bool use_prefill_wmma =
+    const bool use_prefill_gfx11_direct =
+        ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_gfx11_direct(context->device_context, dst);
+    const bool use_prefill_wmma = !use_prefill_gfx11_direct &&
         ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_wmma(context->device_context, dst);
-    const bool use_prefill_tile = !use_prefill_wmma &&
+    const bool use_prefill_tile = !use_prefill_gfx11_direct && !use_prefill_wmma &&
         ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_tile(context->device_context, dst);
-    const ggml_backend_pyre_op_provider * selected_provider = use_prefill_wmma ?
+    const ggml_backend_pyre_op_provider * selected_provider = use_prefill_gfx11_direct ?
+        &context->device_context->flash_attn_ext_f32_f16_prefill_gfx11_direct_provider :
+        use_prefill_wmma ?
         &context->device_context->flash_attn_ext_f32_f16_prefill_wmma_provider :
         use_prefill_tile ?
         &context->device_context->flash_attn_ext_f32_f16_prefill_tile_provider :
@@ -5025,9 +5094,10 @@ static ggml_status ggml_backend_pyre_dispatch_flash_attn_ext_f32_f16_decode(
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(
-                use_prefill_wmma ? ((constants.N + 15) / 16) :
+                (use_prefill_gfx11_direct || use_prefill_wmma) ? ((constants.N + 15) / 16) :
                 use_prefill_tile ? ((constants.N + 7) / 8) : constants.H),
-            static_cast<uint32_t>((use_prefill_wmma || use_prefill_tile) ? constants.H : constants.N),
+            static_cast<uint32_t>((use_prefill_gfx11_direct || use_prefill_wmma || use_prefill_tile) ?
+                constants.H : constants.N),
             static_cast<uint32_t>(constants.S),
         },
         /* .workgroup_size = */ {
@@ -9800,7 +9870,14 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     GGML_LOG_ERROR("%s: FLASH_ATTN_EXT shape/type/layout is unsupported\n", __func__);
                     return GGML_STATUS_FAILED;
                 }
-                if (ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_wmma(context->device_context, node)) {
+                if (ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_gfx11_direct(context->device_context, node)) {
+                    ggml_backend_pyre_trace_provider(
+                        context->device_context,
+                        "claim FLASH_ATTN_EXT provider=pure_hip_f32_k_f16_v_f16_prefill_gfx11_direct D=%" PRId64
+                        " KV=%" PRId64 " N=%" PRId64 " H=%" PRId64 " H_KV=%" PRId64 "\n",
+                        node->src[0]->ne[0], node->src[1]->ne[1], node->src[0]->ne[1],
+                        node->src[0]->ne[2], node->src[1]->ne[2]);
+                } else if (ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_wmma(context->device_context, node)) {
                     ggml_backend_pyre_trace_provider(
                         context->device_context,
                         "claim FLASH_ATTN_EXT provider=pure_hip_f32_k_f16_v_f16_prefill_wmma16 D=%" PRId64
@@ -10374,6 +10451,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_soft_max_f32_mask_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_prefill_wmma_provider(device_context.get());
+            (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_prefill_gfx11_direct_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f16_prefill_tile_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_bf16_decode_provider(device_context.get());
             (void) ggml_backend_pyre_load_flash_attn_ext_f32_f32_decode_provider(device_context.get());
