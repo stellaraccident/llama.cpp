@@ -57,18 +57,6 @@ static __device__ __forceinline__ float pyre_wave_reduce_sum_wmma16(float v) {
     return v;
 }
 
-static __device__ __forceinline__ float pyre_alibi_slope_wmma16(
-        const pyre_flash_attn_ext_f32_f16_prefill_wmma16_constants c,
-        long long head) {
-    if (c.max_bias <= 0.0f) {
-        return 1.0f;
-    }
-    const float base = head < c.n_head_log2 ? c.m0 : c.m1;
-    const int exp_h = head < c.n_head_log2 ? static_cast<int>(head + 1) :
-        static_cast<int>(2 * (head - c.n_head_log2) + 1);
-    return powf(base, exp_h);
-}
-
 extern "C" __global__ void pyre_flash_attn_ext_f32_f16_prefill_wmma16(
         const float * q,
         const __half * k,
@@ -102,7 +90,6 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_prefill_wmma16(
     const long long kv_head = head / kv_group;
     const char * k_head = reinterpret_cast<const char *>(k) + kv_head * c.k_nb2 + seq * c.k_nb3;
     const char * v_head = reinterpret_cast<const char *>(v) + kv_head * c.v_nb2 + seq * c.v_nb3;
-    const float slope = pyre_alibi_slope_wmma16(c, head);
     const float sink = c.has_sinks ? sinks[head] : -FLT_MAX;
 
     for (int idx = tid; idx < BR * 256; idx += WG) {
@@ -147,16 +134,13 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_prefill_wmma16(
 
             const char * mask_row = reinterpret_cast<const char *>(mask) + token * c.mask_nb1 + seq * c.mask_nb3;
             float score = matrix_tile[w][r][t_inner & 15];
-            if (c.logit_softcap != 0.0f) {
-                score = c.logit_softcap * tanhf(score);
-            }
             if (c.has_mask) {
                 const float mask_value =
                     pyre_load_f16_wmma16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
                 if (mask_value <= -60000.0f) {
                     score = -65504.0f;
                 } else {
-                    score += slope * mask_value;
+                    score += mask_value;
                 }
             }
             logits[r][t] = static_cast<_Float16>(score);

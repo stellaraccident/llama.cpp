@@ -706,7 +706,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_bf16_swiglu_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_SWIGLU_COLS8_PROMPT"),
         /* .enable_bf16_swiglu_cols16_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_SWIGLU_COLS16_PROMPT"),
         /* .enable_q8_0_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_0_COLS8_PROMPT"),
-        /* .enable_f16_prefill_fa_wmma = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_F16_PREFILL_FA_WMMA"),
+        /* .enable_f16_prefill_fa_wmma = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_PREFILL_FA_WMMA"),
         /* .enable_f16_prefill_fa_tile = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_PREFILL_FA_TILE"),
         /* .mul_mat_vec_bf16_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env(),
         /* .mul_mat_vec_k_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_k_workgroup_size_from_env(),
@@ -2548,6 +2548,10 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_wmma(
     const ggml_tensor * v = op->src[2];
     const ggml_tensor * mask = op->src[3];
     const ggml_tensor * sinks = op->src[4];
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&max_bias, reinterpret_cast<const float *>(op->op_params) + 1, sizeof(float));
+    memcpy(&logit_softcap, reinterpret_cast<const float *>(op->op_params) + 2, sizeof(float));
     return device_context->policy.enable_f16_prefill_fa_wmma &&
            device_context->flash_attn_ext_f32_f16_prefill_wmma_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
@@ -2557,6 +2561,8 @@ static bool ggml_backend_pyre_supports_flash_attn_ext_f32_f16_prefill_wmma(
            k->type == GGML_TYPE_F16 &&
            v->type == GGML_TYPE_F16 &&
            mask->type == GGML_TYPE_F16 &&
+           max_bias == 0.0f &&
+           logit_softcap == 0.0f &&
            op->type == GGML_TYPE_F32 &&
            q->ne[0] == 256 &&
            k->ne[0] == 256 &&
