@@ -366,6 +366,7 @@ llama_context::llama_context(
 
 llama_context::~llama_context() {
     if (!model.hparams.no_alloc) {
+        update_backend_buf_exp_sizes();
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
             ggml_backend_t             backend = backend_ptrs[i];
             ggml_backend_buffer_type_t buft    = backend_buft[i];
@@ -382,6 +383,19 @@ llama_context::~llama_context() {
         }
     }
     ggml_opt_free(opt_ctx);
+}
+
+void llama_context::update_backend_buf_exp_sizes() {
+    if (model.hparams.no_alloc || !sched) {
+        return;
+    }
+
+    for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+        ggml_backend_t backend = backend_ptrs[i];
+        backend_buf_exp_size[i] = std::max(
+            backend_buf_exp_size[i],
+            ggml_backend_sched_get_buffer_size(sched.get(), backend));
+    }
 }
 
 void llama_context::sched_reserve() {
@@ -1212,6 +1226,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+        update_backend_buf_exp_sizes();
     }
 
     // set the input data for the input tensors

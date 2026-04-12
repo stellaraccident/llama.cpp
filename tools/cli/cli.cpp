@@ -175,6 +175,11 @@ struct cli_context {
             auto res_final = dynamic_cast<server_task_result_cmpl_final *>(result.get());
             if (res_final) {
                 out_timings = std::move(res_final->timings);
+                if (is_thinking) {
+                    console::log("\n[End thinking]\n\n");
+                    console::set_display(DISPLAY_TYPE_RESET);
+                    is_thinking = false;
+                }
                 break;
             }
             result = rd.next(should_stop);
