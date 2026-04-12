@@ -112,6 +112,7 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_f16_batched_cols4_prompt = false;
     bool enable_f16_batched_cols8_prompt = false;
     bool enable_bf16_cols4_prompt = false;
+    bool enable_bf16_cols8_prompt = false;
     bool enable_bf16_swiglu_cols4_prompt = false;
     bool enable_q8_0_cols8_prompt = false;
     int mul_mat_vec_bf16_workgroup_size = 0;
@@ -193,6 +194,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_cols1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_cols4_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_bf16_cols8_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_swiglu_wg64_provider;
@@ -668,6 +670,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_f16_batched_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS4_PROMPT"),
         /* .enable_f16_batched_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS8_PROMPT"),
         /* .enable_bf16_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_COLS4_PROMPT"),
+        /* .enable_bf16_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_COLS8_PROMPT"),
         /* .enable_bf16_swiglu_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_SWIGLU_COLS4_PROMPT"),
         /* .enable_q8_0_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_0_COLS8_PROMPT"),
         /* .mul_mat_vec_bf16_workgroup_size = */ ggml_backend_pyre_mul_mat_vec_bf16_workgroup_size_from_env(),
@@ -1252,6 +1255,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_bf16_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_cols4_f32"),
         &device_context->mul_mat_vec_bf16_cols4_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_bf16_cols8_f32"),
+        &device_context->mul_mat_vec_bf16_cols8_provider) || ok;
     return ok;
 }
 
@@ -6250,6 +6257,13 @@ static const ggml_backend_pyre_op_provider * ggml_backend_pyre_select_mul_mat_ve
             ggml_backend_pyre_provider_kind::direct_executable) {
         return &device_context->mul_mat_vec_bf16_cols1_provider;
     }
+    if (device_context->policy.enable_bf16_cols8_prompt &&
+        cols == 512 &&
+        (cols % 8) == 0 &&
+        device_context->mul_mat_vec_bf16_cols8_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return &device_context->mul_mat_vec_bf16_cols8_provider;
+    }
     if (device_context->policy.enable_bf16_cols4_prompt &&
         cols == 512 &&
         (cols % 4) == 0 &&
@@ -6423,6 +6437,13 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
         device_context->mul_mat_vec_bf16_cols1_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_cols1";
+    }
+    if (op->src[0]->type == GGML_TYPE_BF16 &&
+        op->src[1]->ne[1] == 512 &&
+        device_context->policy.enable_bf16_cols8_prompt &&
+        device_context->mul_mat_vec_bf16_cols8_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_cols8";
     }
     if (op->src[0]->type == GGML_TYPE_BF16 &&
         op->src[1]->ne[1] == 512 &&
@@ -7237,6 +7258,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
     const uint32_t provider_cols_per_workgroup =
         (provider == &context->device_context->mul_mat_vec_q6_k_cols16_wg128_provider) ? 16 :
         (provider == &context->device_context->mul_mat_vec_q8_0_cols8_provider) ? 8 :
+        (provider == &context->device_context->mul_mat_vec_bf16_cols8_provider) ? 8 :
         (provider == &context->device_context->mul_mat_vec_bf16_cols4_provider) ? 4 : 1;
 
     pyre_dispatch_config_t config = {
