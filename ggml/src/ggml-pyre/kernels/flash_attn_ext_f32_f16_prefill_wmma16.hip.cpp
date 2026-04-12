@@ -83,7 +83,6 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_prefill_wmma16(
     constexpr int WG = 128;
     __shared__ _Float16 q_tile[BR][256];
     __shared__ _Float16 p_tile[BR][BK];
-    __shared__ _Float16 v_tile[4][BK][BK];
     __shared__ float matrix_tile[4][BR][BK];
     __shared__ _Float16 logits[BR][512];
     __shared__ float row_reduce[BR][4];
@@ -243,23 +242,14 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_prefill_wmma16(
                 const float inv_sum = 1.0f / row_reduce[r][0];
                 p_tile[r][c_inner] = static_cast<_Float16>(static_cast<float>(logits[r][tb + c_inner]) * inv_sum);
             }
-            for (int idx = tid; idx < 4 * BK * BK; idx += WG) {
-                const int w = idx >> 8;
-                const int rem = idx & 255;
-                const int r = rem >> 4;
-                const int d_inner = rem & 15;
-                const char * v_row = v_head + static_cast<long long>(tb + r) * c.v_nb1;
-                v_tile[w][r][d_inner] = static_cast<_Float16>(
-                    pyre_load_f16_wmma16(
-                        reinterpret_cast<const __half *>(v_row),
-                        (d_base + w * BK + d_inner) * static_cast<long long>(sizeof(__half))));
-            }
             __syncthreads();
 
             rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, _Float16, rocwmma::row_major> a_frag;
             rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, _Float16, rocwmma::row_major> b_frag;
+            const _Float16 * v_block = reinterpret_cast<const _Float16 *>(
+                v_head + static_cast<long long>(tb) * c.v_nb1 + d_block * static_cast<long long>(sizeof(__half)));
             rocwmma::load_matrix_sync(a_frag, &p_tile[0][0], BK);
-            rocwmma::load_matrix_sync(b_frag, &v_tile[wave][0][0], BK);
+            rocwmma::load_matrix_sync(b_frag, v_block, static_cast<uint32_t>(c.v_nb1 / sizeof(__half)));
             rocwmma::mma_sync(acc, a_frag, b_frag, acc);
             __syncthreads();
         }
