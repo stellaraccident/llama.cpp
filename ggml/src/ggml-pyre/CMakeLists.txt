@@ -58,6 +58,12 @@ if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND 
         get_filename_component(GGML_PYRE_KERNEL_SOURCE_NAME "${GGML_PYRE_KERNEL_SOURCE}" NAME)
         string(REPLACE ".hip.cpp" ".hsaco" GGML_PYRE_HSACO_NAME "${GGML_PYRE_KERNEL_SOURCE_NAME}")
         set(GGML_PYRE_HSACO_OUTPUT "${GGML_PYRE_HSACO_DIR}/${GGML_PYRE_HSACO_NAME}")
+        set(GGML_PYRE_KERNEL_DEPS "${GGML_PYRE_KERNEL_SOURCE}")
+        if (GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "flash_attn_ext_f32_f16_prefill_gfx11_direct.hip.cpp")
+            list(APPEND GGML_PYRE_KERNEL_DEPS
+                "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_prefill_gfx11_direct_generic.inc"
+                "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_prefill_gfx11_direct_gfx11.inc")
+        endif()
         add_custom_command(
             OUTPUT "${GGML_PYRE_HSACO_OUTPUT}"
             COMMAND "${GGML_PYRE_CLANGXX}"
@@ -68,7 +74,7 @@ if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND 
                 -O2
                 -c "${GGML_PYRE_KERNEL_SOURCE}"
                 -o "${GGML_PYRE_HSACO_OUTPUT}"
-            DEPENDS "${GGML_PYRE_KERNEL_SOURCE}"
+            DEPENDS ${GGML_PYRE_KERNEL_DEPS}
             VERBATIM
         )
         list(APPEND GGML_PYRE_HSACO_OUTPUTS "${GGML_PYRE_HSACO_OUTPUT}")
