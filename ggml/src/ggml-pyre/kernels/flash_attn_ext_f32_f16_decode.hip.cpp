@@ -40,23 +40,23 @@ static __device__ __forceinline__ float pyre_load_f16(const __half * base, long 
     return __half2float(*reinterpret_cast<const __half *>(reinterpret_cast<const char *>(base) + byte_offset));
 }
 
-static __device__ __forceinline__ double pyre_alibi_slope(
+static __device__ __forceinline__ float pyre_alibi_slope(
         const pyre_flash_attn_ext_f32_f16_decode_constants c,
         long long head) {
     if (c.max_bias <= 0.0f) {
-        return 1.0;
+        return 1.0f;
     }
-    const double base = head < c.n_head_log2 ? c.m0 : c.m1;
+    const float base = head < c.n_head_log2 ? c.m0 : c.m1;
     const int exp_h = head < c.n_head_log2 ? static_cast<int>(head + 1) :
         static_cast<int>(2 * (head - c.n_head_log2) + 1);
-    return pow(base, exp_h);
+    return powf(base, exp_h);
 }
 
 extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
         const float * q, const __half * k, const __half * v, const __half * mask, const float * sinks, float * dst,
         pyre_flash_attn_ext_f32_f16_decode_constants c) {
     __shared__ float logits[1024];
-    __shared__ double partial[256];
+    __shared__ float partial[256];
 
     const long long head = __builtin_amdgcn_workgroup_id_x();
     const long long token = __builtin_amdgcn_workgroup_id_y();
@@ -72,12 +72,22 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
     const char * k_head = reinterpret_cast<const char *>(k) + kv_head * c.k_nb2 + seq * c.k_nb3;
     const char * v_head = reinterpret_cast<const char *>(v) + kv_head * c.v_nb2 + seq * c.v_nb3;
     const char * mask_row = reinterpret_cast<const char *>(mask) + token * c.mask_nb1 + seq * c.mask_nb3;
-    const double slope = pyre_alibi_slope(c, head);
-    const double sink = c.has_sinks ? static_cast<double>(sinks[head]) : -DBL_MAX;
+    const float slope = pyre_alibi_slope(c, head);
+    const float sink = c.has_sinks ? sinks[head] : -FLT_MAX;
 
-    double local_max = sink;
+    float local_max = sink;
     for (long long t = tid; t < c.KV; t += 256) {
-        double score = 0.0;
+        float mask_value = 0.0f;
+        if (c.has_mask) {
+            mask_value = pyre_load_f16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
+            // Causal prefill masks future columns with F16 -inf. Avoid the
+            // expensive QK dot for columns that will be zero after softmax.
+            if (mask_value <= -60000.0f) {
+                logits[t] = -FLT_MAX;
+                continue;
+            }
+        }
+        float score = 0.0f;
         const char * k_row = k_head + t * c.k_nb1;
         for (long long d = 0; d < c.D; ++d) {
             const float qv = *reinterpret_cast<const float *>(q_head + d * static_cast<long long>(sizeof(float)));
@@ -85,29 +95,29 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
         }
         score *= c.scale;
         if (c.logit_softcap != 0.0f) {
-            score = static_cast<double>(c.logit_softcap) * tanh(score);
+            score = c.logit_softcap * tanhf(score);
         }
         if (c.has_mask) {
-            score += slope * pyre_load_f16(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
+            score += slope * mask_value;
         }
         logits[t] = static_cast<float>(score);
-        local_max = fmax(local_max, score);
+        local_max = fmaxf(local_max, score);
     }
 
     partial[tid] = local_max;
     __syncthreads();
     for (int stride = 128; stride > 0; stride >>= 1) {
         if (tid < static_cast<unsigned int>(stride)) {
-            partial[tid] = fmax(partial[tid], partial[tid + stride]);
+            partial[tid] = fmaxf(partial[tid], partial[tid + stride]);
         }
         __syncthreads();
     }
-    const double max_val = partial[0];
+    const float max_val = partial[0];
 
-    double local_sum = c.has_sinks && tid == 0 ? exp(sink - max_val) : 0.0;
+    float local_sum = c.has_sinks && tid == 0 ? expf(sink - max_val) : 0.0f;
     for (long long t = tid; t < c.KV; t += 256) {
-        const double prob = exp(static_cast<double>(logits[t]) - max_val);
-        logits[t] = static_cast<float>(prob);
+        const float prob = expf(logits[t] - max_val);
+        logits[t] = prob;
         local_sum += prob;
     }
 
@@ -119,29 +129,16 @@ extern "C" __global__ void pyre_flash_attn_ext_f32_f16_decode(
         }
         __syncthreads();
     }
-    const double inv_sum = 1.0 / partial[0];
+    const float inv_sum = 1.0f / partial[0];
 
     char * dst_head = reinterpret_cast<char *>(dst) + head * c.dst_nb1 + token * c.dst_nb2 + seq * c.dst_nb3;
-    for (long long d = 0; d < c.D; ++d) {
-        double local = 0.0;
-        for (long long t = tid; t < c.KV; t += 256) {
+    if (tid < static_cast<unsigned int>(c.D)) {
+        float local = 0.0f;
+        for (long long t = 0; t < c.KV; ++t) {
             const char * v_row = v_head + t * c.v_nb1;
             local += logits[t] * inv_sum *
-                pyre_load_f16(reinterpret_cast<const __half *>(v_row), d * static_cast<long long>(sizeof(__half)));
+                pyre_load_f16(reinterpret_cast<const __half *>(v_row), tid * static_cast<long long>(sizeof(__half)));
         }
-
-        partial[tid] = local;
-        __syncthreads();
-        for (int stride = 128; stride > 0; stride >>= 1) {
-            if (tid < static_cast<unsigned int>(stride)) {
-                partial[tid] += partial[tid + stride];
-            }
-            __syncthreads();
-        }
-        if (tid == 0) {
-            *reinterpret_cast<float *>(dst_head + d * static_cast<long long>(sizeof(float))) =
-                static_cast<float>(partial[0]);
-        }
-        __syncthreads();
+        *reinterpret_cast<float *>(dst_head + tid * static_cast<long long>(sizeof(float))) = local;
     }
 }

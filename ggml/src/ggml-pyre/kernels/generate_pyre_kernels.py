@@ -278,6 +278,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_flash_attn_ext_f32_f16_prefill_tile8",
+        "source": "flash_attn_ext_f32_f16_prefill_tile8.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 6,
+        "constants_size": 208,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_flash_attn_ext_f32_bf16_decode",
         "source": "flash_attn_ext_f32_bf16_decode.hip.cpp",
         "format": "FPIH",
@@ -678,6 +686,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32",
+        "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 5,
+        "constants_size": 96,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_id_q4_k_q8_1_f32",
         "source": "mul_mat_id_q4_k_q8_1.hip.cpp",
         "format": "FPIH",
@@ -784,6 +800,14 @@ KERNELS = [
     {
         "name": "pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 6,
+        "constants_size": 112,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32",
+        "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
         "format": "FPIH",
         "binding_count": 6,
         "constants_size": 112,
