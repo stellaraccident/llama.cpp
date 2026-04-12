@@ -1415,6 +1415,25 @@ struct test_case {
             double err = ud->tc->err(f1.data(), f2.data(), f1.size());
             if (err > ud->tc->max_err(ud->backend1)) {
                 printf("[%s] ERR = %.9f > %.9f ", ggml_op_desc(t1), err, ud->tc->max_err(ud->backend1));
+                if (std::getenv("GGML_TEST_BACKEND_OPS_PRINT_MAX_DIFF") != nullptr) {
+                    size_t max_i = 0;
+                    float  max_d = 0.0f;
+                    for (size_t i = 0; i < f1.size(); ++i) {
+                        const float diff = fabsf(f1[i] - f2[i]);
+                        if (diff > max_d) {
+                            max_d = diff;
+                            max_i = i;
+                        }
+                    }
+                    const int64_t i0 = max_i % t1->ne[0];
+                    const int64_t i1 = (max_i / t1->ne[0]) % t1->ne[1];
+                    const int64_t i2 = (max_i / (t1->ne[0]*t1->ne[1])) % t1->ne[2];
+                    const int64_t i3 = max_i / (t1->ne[0]*t1->ne[1]*t1->ne[2]);
+                    printf("MAX_DIFF index=%zu ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64
+                           "] coord=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "] %s=%f %s=%f abs=%f ",
+                           max_i, t1->ne[0], t1->ne[1], t1->ne[2], t1->ne[3], i0, i1, i2, i3,
+                           bn1, f1[max_i], bn2, f2[max_i], max_d);
+                }
                 //for (int i = 0; i < (int) f1.size(); i++) {
                 //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
                 //}
