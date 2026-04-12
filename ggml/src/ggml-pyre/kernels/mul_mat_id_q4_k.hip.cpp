@@ -752,21 +752,16 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
             const uint32_t packed_qs0 = *reinterpret_cast<const uint32_t *>(block0->qs + qs_base);
             const uint32_t packed_qs1 = *reinterpret_cast<const uint32_t *>(block1->qs + qs_base);
 
-#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(S, HAS) \
-            float4 b4_##S; \
-            if (HAS) { \
-                b4_##S = *reinterpret_cast<const float4 *>(src1_##S + src_base * sizeof(float)); \
-            } else { \
-                b4_##S = { 0.0f, 0.0f, 0.0f, 0.0f }; \
-            }
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(a, true);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(b, has_b);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(c, has_c);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(d, has_d);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(e, has_e);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(f, has_f);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(g, has_g);
-            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(h, has_h);
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(S) \
+            const float4 b4_##S = *reinterpret_cast<const float4 *>(src1_##S + src_base * sizeof(float))
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(a);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(b);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(c);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(d);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(e);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(f);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(g);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(h);
 #undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4
 
 #define PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(N, J) \
