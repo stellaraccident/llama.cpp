@@ -106,10 +106,13 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_q5_k_cols8_prompt = false;
     bool enable_q5_k_cols16_prompt = false;
     bool enable_q5_k_q8_1_mmq_prompt = true;
+    bool enable_q5_k_q8_1_x4_mmq32_prompt = false;
+    bool enable_q5_k_q8_1_x4_mmq64_prompt = false;
     bool enable_q6_k_cols4_prompt = false;
     bool enable_q6_k_cols8_prompt = false;
     bool enable_q6_k_cols16_prompt = false;
     bool enable_q6_k_q8_1_cols8_prompt = false;
+    bool enable_q6_k_q8_1_x4_mmq32_prompt = false;
     bool enable_f16_batched_cols4_prompt = false;
     bool enable_f16_batched_cols8_prompt = false;
     bool enable_bf16_cols4_prompt = false;
@@ -237,6 +240,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_wg64_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_packed_wg64_provider;
     ggml_backend_pyre_op_provider quantize_q8_1_provider;
+    ggml_backend_pyre_op_provider quantize_q8_1_x4_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q4_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q5_k_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q5_k_wg128_provider;
@@ -246,6 +250,8 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_q5_k_cols16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q5_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_wg64_provider;
@@ -254,6 +260,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_cols16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_q8_1_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q6_k_q8_1_cols8_wg128_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q8_0_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_q8_0_add_provider;
     uint32_t fallback_trace_count = 0;
@@ -655,10 +662,16 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q5_k_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS8_PROMPT"),
         /* .enable_q5_k_cols16_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_COLS16_PROMPT"),
         /* .enable_q5_k_q8_1_mmq_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
+        /* .enable_q5_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ32_PROMPT"),
+        /* .enable_q5_k_q8_1_x4_mmq64_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ64_PROMPT"),
         /* .enable_q6_k_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS4_PROMPT"),
         /* .enable_q6_k_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS8_PROMPT"),
         /* .enable_q6_k_cols16_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS16_PROMPT"),
         /* .enable_q6_k_q8_1_cols8_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q6_K_Q8_1_COLS8_PROMPT"),
+        /* .enable_q6_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q6_K_Q8_1_X4_MMQ32_PROMPT"),
         /* .enable_f16_batched_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS4_PROMPT"),
         /* .enable_f16_batched_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS8_PROMPT"),
         /* .enable_bf16_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_COLS4_PROMPT"),
@@ -1542,6 +1555,14 @@ static bool ggml_backend_pyre_load_quantize_q8_1_provider(
         &device_context->quantize_q8_1_provider);
 }
 
+static bool ggml_backend_pyre_load_quantize_q8_1_x4_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_quantize_q8_1_x4_f32"),
+        &device_context->quantize_q8_1_x4_provider);
+}
+
 static bool ggml_backend_pyre_load_mul_mat_vec_q4_k_q8_1_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -1614,6 +1635,22 @@ static bool ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider
         &device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider);
 }
 
+static bool ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_f32"),
+        &device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32"),
+        &device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider);
+}
+
 static bool ggml_backend_pyre_load_mul_mat_vec_q6_k_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
@@ -1676,6 +1713,14 @@ static bool ggml_backend_pyre_load_mul_mat_vec_q6_k_q8_1_cols8_wg128_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q6_k_q8_1_cols8_wg128_f32"),
         &device_context->mul_mat_vec_q6_k_q8_1_cols8_wg128_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_f32"),
+        &device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_mat_vec_q8_0_provider(
@@ -5615,6 +5660,38 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_mmq_prompt(
                device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider, 256);
 }
 
+static bool ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq32_prompt(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src1 = op->src[1];
+    return device_context->policy.enable_q5_k_q8_1_x4_mmq32_prompt &&
+           src1 &&
+           src1->ne[1] == 512 &&
+           (src1->ne[1] % 32) == 0 &&
+           ggml_backend_pyre_q8_1_mmvq_auto_shape(op, GGML_TYPE_Q5_K) &&
+           device_context->quantize_q8_1_x4_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+               device_context, op, GGML_TYPE_Q5_K,
+               device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider, 256);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq64_prompt(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src1 = op->src[1];
+    return device_context->policy.enable_q5_k_q8_1_x4_mmq64_prompt &&
+           src1 &&
+           src1->ne[1] == 512 &&
+           (src1->ne[1] % 64) == 0 &&
+           ggml_backend_pyre_q8_1_mmvq_auto_shape(op, GGML_TYPE_Q5_K) &&
+           device_context->quantize_q8_1_x4_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+               device_context, op, GGML_TYPE_Q5_K,
+               device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider, 256);
+}
+
 static bool ggml_backend_pyre_supports_mul_mat_vec_q6_k(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
@@ -5650,6 +5727,22 @@ static bool ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_cols8_prompt(
            ggml_backend_pyre_supports_mul_mat_vec_k_quant(
                device_context, op, GGML_TYPE_Q6_K,
                device_context->mul_mat_vec_q6_k_q8_1_cols8_wg128_provider, 256);
+}
+
+static bool ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_x4_mmq32_prompt(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src1 = op->src[1];
+    return device_context->policy.enable_q6_k_q8_1_x4_mmq32_prompt &&
+           ggml_backend_pyre_q8_1_mmvq_auto_shape(op, GGML_TYPE_Q6_K) &&
+           src1 &&
+           src1->ne[1] == 512 &&
+           (src1->ne[1] % 32) == 0 &&
+           device_context->quantize_q8_1_x4_provider.kind ==
+               ggml_backend_pyre_provider_kind::direct_executable &&
+           ggml_backend_pyre_supports_mul_mat_vec_k_quant(
+               device_context, op, GGML_TYPE_Q6_K,
+               device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider, 256);
 }
 
 static bool ggml_backend_pyre_supports_mul_mat_vec_q8_0(
@@ -5801,9 +5894,12 @@ static bool ggml_backend_pyre_supports_mul_mat_vec(
            ggml_backend_pyre_supports_mul_mat_vec_q4_k_q8_1(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q5_k(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq64_prompt(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq32_prompt(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_mmq_prompt(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q6_k(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1(device_context, op) ||
+           ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_x4_mmq32_prompt(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_cols8_prompt(device_context, op) ||
            ggml_backend_pyre_supports_mul_mat_vec_q8_0(device_context, op);
 }
@@ -6287,6 +6383,15 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
         const ggml_tensor * op) {
     if (ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_cols8_prompt(device_context, op)) {
         return "_q8_1_cols8_wg128";
+    }
+    if (ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_x4_mmq32_prompt(device_context, op)) {
+        return "_q8_1_x4_mmq32x32_wg128";
+    }
+    if (ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq64_prompt(device_context, op)) {
+        return "_q8_1_x4_mmq64x64_wg256";
+    }
+    if (ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq32_prompt(device_context, op)) {
+        return "_q8_1_x4_mmq32x32_wg128";
     }
     if (ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_mmq_prompt(device_context, op)) {
         return "_q8_1_mmq32x32_wg128";
@@ -6860,7 +6965,18 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_k_q8_1(
     }
 
     const int64_t k_padded = src1->ne[0];
-    const size_t q8_1_size = static_cast<size_t>(src1->ne[3] * src1->ne[2] * src1->ne[1] * (k_padded / 32) * 36);
+    const bool use_q5_x4_mmq64 = src0->type == GGML_TYPE_Q5_K &&
+        ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq64_prompt(context->device_context, dst);
+    const bool use_q5_x4_mmq32 = src0->type == GGML_TYPE_Q5_K &&
+        ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq32_prompt(context->device_context, dst);
+    const bool use_q6_x4_mmq32 = src0->type == GGML_TYPE_Q6_K &&
+        ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_x4_mmq32_prompt(context->device_context, dst);
+    const bool use_x4_mmq = use_q5_x4_mmq64 || use_q5_x4_mmq32 || use_q6_x4_mmq32;
+    const int64_t q8_1_blocks =
+        src1->ne[3] * src1->ne[2] * src1->ne[1] * (k_padded / 32);
+    const size_t q8_1_size = use_x4_mmq ?
+        static_cast<size_t>(((q8_1_blocks + 3) / 4) * 144) :
+        static_cast<size_t>(q8_1_blocks * 36);
     pyre_buffer_ref_t q8_1_ref = {};
     if (!ggml_backend_pyre_ensure_q8_1_scratch(context, q8_1_size, &q8_1_ref)) {
         return GGML_STATUS_FAILED;
@@ -6877,7 +6993,9 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_k_q8_1(
         /* .ne2  = */ src1->ne[2],
     };
 
-    const auto & quant_provider = context->device_context->quantize_q8_1_provider;
+    const auto & quant_provider = use_x4_mmq ?
+        context->device_context->quantize_q8_1_x4_provider :
+        context->device_context->quantize_q8_1_provider;
     pyre_dispatch_config_t quant_config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>(quant_constants.ne0 / 32),
@@ -6924,25 +7042,39 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_k_q8_1(
             provider = &context->device_context->mul_mat_vec_q4_k_q8_1_provider;
             break;
         case GGML_TYPE_Q5_K:
-            provider = ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_mmq_prompt(
-                context->device_context, dst) ?
-                &context->device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider :
-                &context->device_context->mul_mat_vec_q5_k_q8_1_provider;
+            if (use_q5_x4_mmq64) {
+                provider = &context->device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider;
+            } else if (use_q5_x4_mmq32) {
+                provider = &context->device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider;
+            } else if (ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_mmq_prompt(
+                    context->device_context, dst)) {
+                provider = &context->device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider;
+            } else {
+                provider = &context->device_context->mul_mat_vec_q5_k_q8_1_provider;
+            }
             break;
         case GGML_TYPE_Q6_K:
-            provider = ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_cols8_prompt(
+            provider = use_q6_x4_mmq32 ?
+                &context->device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider :
+                (ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_cols8_prompt(
                 context->device_context, dst) ?
                 &context->device_context->mul_mat_vec_q6_k_q8_1_cols8_wg128_provider :
-                &context->device_context->mul_mat_vec_q6_k_q8_1_provider;
+                &context->device_context->mul_mat_vec_q6_k_q8_1_provider);
             break;
         default:
             return GGML_STATUS_FAILED;
     }
     const uint32_t provider_cols_per_workgroup =
+        (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider) ? 64 :
+        (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider) ? 32 :
         (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider) ? 32 :
+        (provider == &context->device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider) ? 32 :
         (provider == &context->device_context->mul_mat_vec_q6_k_q8_1_cols8_wg128_provider) ? 8 : 1;
     const uint32_t provider_rows_per_workgroup =
-        (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider) ? 32 : 1;
+        (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider) ? 64 :
+        (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider) ? 32 :
+        (provider == &context->device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider) ? 32 :
+        (provider == &context->device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider) ? 32 : 1;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>((constants.rows + provider_rows_per_workgroup - 1) / provider_rows_per_workgroup),
@@ -7081,8 +7213,11 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
 
     if (ggml_backend_pyre_supports_mul_mat_vec_q4_k_q8_1(context->device_context, dst) ||
         ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1(context->device_context, dst) ||
+        ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq64_prompt(context->device_context, dst) ||
+        ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_x4_mmq32_prompt(context->device_context, dst) ||
         ggml_backend_pyre_supports_mul_mat_vec_q5_k_q8_1_mmq_prompt(context->device_context, dst) ||
         ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1(context->device_context, dst) ||
+        ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_x4_mmq32_prompt(context->device_context, dst) ||
         ggml_backend_pyre_supports_mul_mat_vec_q6_k_q8_1_cols8_prompt(context->device_context, dst)) {
         return ggml_backend_pyre_dispatch_mul_mat_vec_k_q8_1(context, dst);
     }
@@ -9789,6 +9924,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_packed_wg64_provider(device_context.get());
             (void) ggml_backend_pyre_load_quantize_q8_1_provider(device_context.get());
+            (void) ggml_backend_pyre_load_quantize_q8_1_x4_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q4_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_wg128_provider(device_context.get());
@@ -9798,6 +9934,8 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_cols16_wg128_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_wg128_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_wg64_provider(device_context.get());
@@ -9806,6 +9944,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_cols16_wg128_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_q8_1_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_q8_1_cols8_wg128_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q8_0_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_mat_vec_q8_0_add_provider(device_context.get());
         }

@@ -784,6 +784,14 @@ KERNELS = [
         "workgroup_size": (32, 1, 1),
     },
     {
+        "name": "pyre_quantize_q8_1_x4_f32",
+        "source": "quantize_q8_1.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 2,
+        "constants_size": 56,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_q4_k_q8_1_f32",
         "source": "mul_mat_vec_q4_k_q8_1.hip.cpp",
         "format": "FPIH",
@@ -856,6 +864,22 @@ KERNELS = [
         "workgroup_size": (128, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_f32",
+        "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32",
+        "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_q6_k_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
         "format": "FPIH",
@@ -913,6 +937,14 @@ KERNELS = [
     },
     {
         "name": "pyre_mul_mat_vec_q6_k_q8_1_cols8_wg128_f32",
+        "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_f32",
         "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
         "format": "FPIH",
         "binding_count": 3,
