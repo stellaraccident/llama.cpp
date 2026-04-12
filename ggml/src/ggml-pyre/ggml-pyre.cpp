@@ -81,6 +81,9 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_mul_mat_id = false;
     bool disable_add_add_fusion = false;
     bool disable_add_rms_norm_mul_fusion = false;
+    bool disable_ssm_conv = false;
+    bool disable_gated_delta_net = false;
+    bool enable_gated_delta_net_cluster16 = false;
     bool enable_multi_add_fusion = false;
     bool disable_mul_mat_swiglu_fusion = false;
     bool disable_mul_mat_id_swiglu_fusion = false;
@@ -666,6 +669,10 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_mul_mat_id = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID"),
         /* .disable_add_add_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_ADD_FUSION"),
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
+        /* .disable_ssm_conv = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_SSM_CONV"),
+        /* .disable_gated_delta_net = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET"),
+        /* .enable_gated_delta_net_cluster16 = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_GATED_DELTA_NET_CLUSTER16") &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET_CLUSTER16"),
         /* .enable_multi_add_fusion = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MULTI_ADD_FUSION"),
         /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
@@ -683,25 +690,30 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q4_k_id_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_ROW4_PROMPT"),
         /* .enable_q4_k_id_row8_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_ID_ROW8_PROMPT"),
         /* .enable_q4_k_id_grouped_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_GROUPED_PROMPT"),
-        /* .enable_q4_k_id_q8_1_x4_mmq_prompt = */ !ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_DISABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT"),
+        /* .enable_q4_k_id_q8_1_x4_mmq_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT") &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT"),
         /* .enable_q4_k_swiglu_row2_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_SWIGLU_ROW2_PROMPT"),
         /* .enable_q4_k_swiglu_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_ROW4_PROMPT"),
         /* .enable_q4_k_swiglu_grouped_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT"),
         /* .enable_q4_k_swiglu_grouped_row2_route8_prompt = */ !ggml_backend_pyre_env_enabled(
             "GGML_PYRE_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT"),
-        /* .enable_q4_k_swiglu_q8_1_x4_mmq_prompt = */ !ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_DISABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT"),
-        /* .enable_q5_k_q8_1_mmq_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
+        /* .enable_q4_k_swiglu_q8_1_x4_mmq_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT") &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT"),
+        /* .enable_q5_k_q8_1_mmq_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q5_K_Q8_1_MMQ_PROMPT") &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ32_PROMPT"),
-        /* .enable_q5_k_q8_1_x4_mmql128_prompt = */ !ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_DISABLE_Q5_K_Q8_1_X4_MMQL128_PROMPT"),
+        /* .enable_q5_k_q8_1_x4_mmql128_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQL128_PROMPT") &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_X4_MMQL128_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmq64_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ64_PROMPT"),
         /* .enable_q6_k_cols16_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS16_PROMPT"),
-        /* .enable_q6_k_q8_1_x4_mmql128_prompt = */ !ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_DISABLE_Q6_K_Q8_1_X4_MMQL128_PROMPT"),
+        /* .enable_q6_k_q8_1_x4_mmql128_prompt = */ ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_ENABLE_Q6_K_Q8_1_X4_MMQL128_PROMPT") &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_Q8_1_X4_MMQL128_PROMPT"),
         /* .enable_q6_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q6_K_Q8_1_X4_MMQ32_PROMPT"),
         /* .enable_f16_batched_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS4_PROMPT"),
@@ -2855,7 +2867,8 @@ static bool ggml_backend_pyre_supports_ssm_conv(
         const ggml_tensor * op) {
     const ggml_tensor * src0 = op->src[0];
     const ggml_tensor * src1 = op->src[1];
-    return device_context->ssm_conv_provider.kind ==
+    return !device_context->policy.disable_ssm_conv &&
+           device_context->ssm_conv_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            src0 && src1 &&
            src0->type == GGML_TYPE_F32 &&
@@ -2936,7 +2949,8 @@ static bool ggml_backend_pyre_supports_gated_delta_net(
     const ggml_tensor * g = op->src[3];
     const ggml_tensor * beta = op->src[4];
     const ggml_tensor * state = op->src[5];
-    if (device_context->gated_delta_net_provider.kind != ggml_backend_pyre_provider_kind::direct_executable ||
+    if (device_context->policy.disable_gated_delta_net ||
+        device_context->gated_delta_net_provider.kind != ggml_backend_pyre_provider_kind::direct_executable ||
         !q || !k || !v || !g || !beta || !state) {
         return false;
     }
@@ -5634,6 +5648,7 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
 
     const bool use_s128_cluster16 =
         constants.S_v == 128 &&
+        context->device_context->policy.enable_gated_delta_net_cluster16 &&
         context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable;
     const auto & provider = use_s128_cluster16 ?
