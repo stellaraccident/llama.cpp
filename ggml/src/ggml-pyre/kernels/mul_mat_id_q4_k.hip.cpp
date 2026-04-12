@@ -752,28 +752,50 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
             const uint32_t packed_qs0 = *reinterpret_cast<const uint32_t *>(block0->qs + qs_base);
             const uint32_t packed_qs1 = *reinterpret_cast<const uint32_t *>(block1->qs + qs_base);
 
-            #pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                const float ba = *reinterpret_cast<const float *>(src1_a + (src_base + j) * sizeof(float));
-                const float bb = has_b ? *reinterpret_cast<const float *>(src1_b + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bc = has_c ? *reinterpret_cast<const float *>(src1_c + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bd = has_d ? *reinterpret_cast<const float *>(src1_d + (src_base + j) * sizeof(float)) : 0.0f;
-                const float be = has_e ? *reinterpret_cast<const float *>(src1_e + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bf = has_f ? *reinterpret_cast<const float *>(src1_f + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bg = has_g ? *reinterpret_cast<const float *>(src1_g + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bh = has_h ? *reinterpret_cast<const float *>(src1_h + (src_base + j) * sizeof(float)) : 0.0f;
-#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(N) \
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(S, HAS) \
+            float4 b4_##S; \
+            if (HAS) { \
+                b4_##S = *reinterpret_cast<const float4 *>(src1_##S + src_base * sizeof(float)); \
+            } else { \
+                b4_##S = { 0.0f, 0.0f, 0.0f, 0.0f }; \
+            }
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(a, true);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(b, has_b);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(c, has_c);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(d, has_d);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(e, has_e);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(f, has_f);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(g, has_g);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4(h, has_h);
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_LOAD4
+
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(N, J) \
                 do { \
-                    const uint8_t packed = static_cast<uint8_t>(packed_qs##N >> (j * 8)); \
+                    const uint8_t packed = static_cast<uint8_t>(packed_qs##N >> ((J) * 8)); \
                     const float q = (group & 1) ? static_cast<float>(packed >> 4) : static_cast<float>(packed & 0x0F); \
                     const float v = d##N * q - min##N; \
                     s##N##a += v * ba; s##N##b += v * bb; s##N##c += v * bc; s##N##d += v * bd; \
                     s##N##e += v * be; s##N##f += v * bf; s##N##g += v * bg; s##N##h += v * bh; \
                 } while (0)
-                PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(0);
-                PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(1);
+#define PYRE_Q4K_GROUPED_ROW2_ROUTE8_STEP(J, FIELD) \
+            do { \
+                const float ba = b4_a.FIELD; \
+                const float bb = b4_b.FIELD; \
+                const float bc = b4_c.FIELD; \
+                const float bd = b4_d.FIELD; \
+                const float be = b4_e.FIELD; \
+                const float bf = b4_f.FIELD; \
+                const float bg = b4_g.FIELD; \
+                const float bh = b4_h.FIELD; \
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(0, J); \
+                PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC(1, J); \
+            } while (0)
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STEP(0, x);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STEP(1, y);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STEP(2, z);
+            PYRE_Q4K_GROUPED_ROW2_ROUTE8_STEP(3, w);
 #undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_ACC
-            }
+#undef PYRE_Q4K_GROUPED_ROW2_ROUTE8_STEP
         }
 
         const unsigned int reduce_lane = tid & (warpSize - 1);

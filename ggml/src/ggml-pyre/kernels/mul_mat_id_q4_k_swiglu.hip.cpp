@@ -975,21 +975,32 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_
             const float up_min1 = __half2float(__ushort_as_half(up_block1->dmin)) * static_cast<float>(up_m1);
             const long long src_base = block_idx * 256 + group * 32 + lane;
             const int qs_base = (group >> 1) * 32 + lane;
+            const uint32_t gate_packed_qs0 = *reinterpret_cast<const uint32_t *>(gate_block0->qs + qs_base);
+            const uint32_t gate_packed_qs1 = *reinterpret_cast<const uint32_t *>(gate_block1->qs + qs_base);
+            const uint32_t up_packed_qs0 = *reinterpret_cast<const uint32_t *>(up_block0->qs + qs_base);
+            const uint32_t up_packed_qs1 = *reinterpret_cast<const uint32_t *>(up_block1->qs + qs_base);
 
-            #pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                const float ba = *reinterpret_cast<const float *>(src1_a + (src_base + j) * sizeof(float));
-                const float bb = has_b ? *reinterpret_cast<const float *>(src1_b + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bc = has_c ? *reinterpret_cast<const float *>(src1_c + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bd = has_d ? *reinterpret_cast<const float *>(src1_d + (src_base + j) * sizeof(float)) : 0.0f;
-                const float be = has_e ? *reinterpret_cast<const float *>(src1_e + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bf = has_f ? *reinterpret_cast<const float *>(src1_f + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bg = has_g ? *reinterpret_cast<const float *>(src1_g + (src_base + j) * sizeof(float)) : 0.0f;
-                const float bh = has_h ? *reinterpret_cast<const float *>(src1_h + (src_base + j) * sizeof(float)) : 0.0f;
-#define PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC(N) \
+#define PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(S, HAS) \
+            float4 b4_##S; \
+            if (HAS) { \
+                b4_##S = *reinterpret_cast<const float4 *>(src1_##S + src_base * sizeof(float)); \
+            } else { \
+                b4_##S = { 0.0f, 0.0f, 0.0f, 0.0f }; \
+            }
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(a, true);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(b, has_b);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(c, has_c);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(d, has_d);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(e, has_e);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(f, has_f);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(g, has_g);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4(h, has_h);
+#undef PYRE_Q4K_SWIGLU_ROW2_ROUTE8_LOAD4
+
+#define PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC(N, J) \
                 do { \
-                    const uint8_t gate_packed = gate_block##N->qs[qs_base + j]; \
-                    const uint8_t up_packed = up_block##N->qs[qs_base + j]; \
+                    const uint8_t gate_packed = static_cast<uint8_t>(gate_packed_qs##N >> ((J) * 8)); \
+                    const uint8_t up_packed = static_cast<uint8_t>(up_packed_qs##N >> ((J) * 8)); \
                     const float gate_q = (group & 1) ? static_cast<float>(gate_packed >> 4) : static_cast<float>(gate_packed & 0x0F); \
                     const float up_q = (group & 1) ? static_cast<float>(up_packed >> 4) : static_cast<float>(up_packed & 0x0F); \
                     const float gate_val = gate_d##N * gate_q - gate_min##N; \
@@ -1003,10 +1014,25 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_
                     gate_sum##N##g += gate_val * bg; up_sum##N##g += up_val * bg; \
                     gate_sum##N##h += gate_val * bh; up_sum##N##h += up_val * bh; \
                 } while (0)
-                PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC(0);
-                PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC(1);
+#define PYRE_Q4K_SWIGLU_ROW2_ROUTE8_STEP(J, FIELD) \
+            do { \
+                const float ba = b4_a.FIELD; \
+                const float bb = b4_b.FIELD; \
+                const float bc = b4_c.FIELD; \
+                const float bd = b4_d.FIELD; \
+                const float be = b4_e.FIELD; \
+                const float bf = b4_f.FIELD; \
+                const float bg = b4_g.FIELD; \
+                const float bh = b4_h.FIELD; \
+                PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC(0, J); \
+                PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC(1, J); \
+            } while (0)
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_STEP(0, x);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_STEP(1, y);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_STEP(2, z);
+            PYRE_Q4K_SWIGLU_ROW2_ROUTE8_STEP(3, w);
 #undef PYRE_Q4K_SWIGLU_ROW2_ROUTE8_ACC
-            }
+#undef PYRE_Q4K_SWIGLU_ROW2_ROUTE8_STEP
         }
 
         const unsigned int lane = tid & (warpSize - 1);
