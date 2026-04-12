@@ -701,8 +701,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q4_k_swiglu_q8_1_x4_mmq_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT") &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT"),
-        /* .enable_q5_k_q8_1_mmq_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q5_K_Q8_1_MMQ_PROMPT") &&
-            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
+        /* .enable_q5_k_q8_1_mmq_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ32_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmql128_prompt = */ ggml_backend_pyre_env_enabled(
