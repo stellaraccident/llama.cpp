@@ -4,7 +4,7 @@
 //   - 256-thread workgroup, eight wave32 waves.
 //   - 16 query rows per CTA, 64 KV columns per online-softmax step.
 //   - QK uses f16 inputs with f32 WMMA accumulation for score accuracy.
-//   - PV uses f32 WMMA accumulation and keeps the two 128-wide output halves
+//   - PV uses f16 WMMA accumulation and keeps the two 128-wide output halves
 //     resident in per-wave accumulator fragments across the full KV loop.
 //
 // The generic rocWMMA path is intentionally kept as a readable fallback, but
@@ -20,9 +20,10 @@
 //   - VGPRs: 162 -> 110.
 //   - Static s_barrier instructions: 26 -> 14.
 //   - Static ds_swizzle_b32 instructions: 80 -> 64.
-//   - The gfx11 f32 accumulator lane layout is even/odd row interleaved; stores
-//     and online rescaling must use row = (lane >> 4) + 2*i, not contiguous
-//     row halves.
+//   - The gfx11 accumulator lane layout is even/odd row interleaved; stores and
+//     online rescaling must use row = (lane >> 4) + 2*i, not contiguous row
+//     halves. For f16 PV accumulators, the live output value is in the even
+//     element of each packed row pair.
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 #include <float.h>
@@ -227,11 +228,11 @@ static __device__ __forceinline__ void pyre_store_wmma_acc_row_major_f16_gfx11_d
         int ldm,
         pyre_gfx11_half16_vec acc,
         unsigned int lane) {
-    const int row_base = static_cast<int>(lane >> 4) * 8;
+    const int row_base = static_cast<int>(lane >> 4);
     const int col = static_cast<int>(lane & 15);
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
-        dst[(row_base + i) * ldm + col] = acc[i * 2];
+        dst[(row_base + i * 2) * ldm + col] = acc[i * 2];
     }
 }
 
@@ -239,10 +240,10 @@ static __device__ __forceinline__ pyre_gfx11_half16_vec pyre_scale_wmma_acc_rows
         pyre_gfx11_half16_vec acc,
         const float * row_scale,
         unsigned int lane) {
-    const int row_base = static_cast<int>(lane >> 4) * 8;
+    const int row_base = static_cast<int>(lane >> 4);
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
-        const _Float16 scale = static_cast<_Float16>(row_scale[row_base + i]);
+        const _Float16 scale = static_cast<_Float16>(row_scale[row_base + i * 2]);
         acc[i * 2] *= scale;
         acc[i * 2 + 1] *= scale;
     }
@@ -312,8 +313,8 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
 
     float l_frag[4];
     float m_frag[4];
-    pyre_gfx11_float8_vec out_acc0 = {};
-    pyre_gfx11_float8_vec out_acc1 = {};
+    pyre_gfx11_half16_vec out_acc0 = {};
+    pyre_gfx11_half16_vec out_acc1 = {};
 #pragma unroll
     for (int r = 0; r < 4; ++r) {
         l_frag[r] = 0.0f;
@@ -381,8 +382,8 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
         }
 
         __syncthreads();
-        out_acc0 = pyre_scale_wmma_acc_rows_f32_gfx11_direct(out_acc0, &row_scale[0], lane);
-        out_acc1 = pyre_scale_wmma_acc_rows_f32_gfx11_direct(out_acc1, &row_scale[0], lane);
+        out_acc0 = pyre_scale_wmma_acc_rows_f16_gfx11_direct(out_acc0, &row_scale[0], lane);
+        out_acc1 = pyre_scale_wmma_acc_rows_f16_gfx11_direct(out_acc1, &row_scale[0], lane);
 
 #pragma unroll
         for (int r_local = 0; r_local < 4; ++r_local) {
@@ -413,13 +414,13 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
                 v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block0 * static_cast<long long>(sizeof(__half)));
             const pyre_gfx11_half16_vec b_frag0 =
                 pyre_load_wmma_b_row_major_gfx11_direct(v_block0, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
-            out_acc0 = pyre_wmma_f32_16x16x16_f16_gfx11_direct(a_frag, b_frag0, out_acc0);
+            out_acc0 = pyre_wmma_f16_16x16x16_f16_gfx11_direct(a_frag, b_frag0, out_acc0);
 
             const _Float16 * v_block1 = reinterpret_cast<const _Float16 *>(
                 v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block1 * static_cast<long long>(sizeof(__half)));
             const pyre_gfx11_half16_vec b_frag1 =
                 pyre_load_wmma_b_row_major_gfx11_direct(v_block1, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
-            out_acc1 = pyre_wmma_f32_16x16x16_f16_gfx11_direct(a_frag, b_frag1, out_acc1);
+            out_acc1 = pyre_wmma_f16_16x16x16_f16_gfx11_direct(a_frag, b_frag1, out_acc1);
             __syncthreads();
         }
     }
@@ -448,8 +449,8 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
         const int out_d_block0 = static_cast<int>(wave) * BK;
         const int out_d_block1 = 2 * BC + static_cast<int>(wave) * BK;
         *reinterpret_cast<float *>(dst_row + (out_d_block0 + out_col) * static_cast<long long>(sizeof(float))) =
-            out_acc0[i] / l_sum;
+            static_cast<float>(out_acc0[i * 2]) / l_sum;
         *reinterpret_cast<float *>(dst_row + (out_d_block1 + out_col) * static_cast<long long>(sizeof(float))) =
-            out_acc1[i] / l_sum;
+            static_cast<float>(out_acc1[i * 2]) / l_sum;
     }
 }
