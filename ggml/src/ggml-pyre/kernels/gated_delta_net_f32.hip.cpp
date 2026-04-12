@@ -152,12 +152,33 @@ extern "C" __global__ void pyre_gated_delta_net_f32(
     }
 }
 
-static __device__ __forceinline__ float pyre_reduce_cluster16(float value) {
-    value += __shfl_down(value, 8);
-    value += __shfl_down(value, 4);
-    value += __shfl_down(value, 2);
-    value += __shfl_down(value, 1);
-    return value;
+static __device__ __forceinline__ float pyre_reduce_cluster16(
+        float value,
+        float * reduce,
+        unsigned int tid,
+        unsigned int lane,
+        unsigned int col_group) {
+    // Keep each 16-lane column group independent inside the wave64 workgroup.
+    reduce[tid] = value;
+    __builtin_amdgcn_s_barrier();
+
+    if (lane < 8) {
+        reduce[tid] += reduce[tid + 8];
+    }
+    __builtin_amdgcn_s_barrier();
+    if (lane < 4) {
+        reduce[tid] += reduce[tid + 4];
+    }
+    __builtin_amdgcn_s_barrier();
+    if (lane < 2) {
+        reduce[tid] += reduce[tid + 2];
+    }
+    __builtin_amdgcn_s_barrier();
+    if (lane < 1) {
+        reduce[tid] += reduce[tid + 1];
+    }
+    __builtin_amdgcn_s_barrier();
+    return reduce[col_group * 16];
 }
 
 extern "C" __global__ void pyre_gated_delta_net_s128_cluster16_f32(
@@ -192,6 +213,7 @@ extern "C" __global__ void pyre_gated_delta_net_s128_cluster16_f32(
     const long long iq3 = seq / c.rq3;
     const long long ik3 = seq / c.rk3;
     const bool kda = c.g_ne0 == S_v;
+    __shared__ float reduce[lanes_per_column * columns_per_workgroup];
 
     float * attn_out = dst + (seq * c.n_tokens * c.H + head) * S_v + col;
     float * state_out = state_dst + c.state_dst_offset + (seq * c.H + head) * S_v * S_v + col * S_v;
@@ -224,7 +246,7 @@ extern "C" __global__ void pyre_gated_delta_net_s128_cluster16_f32(
         for (unsigned int r = 0; r < rows_per_lane; ++r) {
             kv_partial += g_reg[r] * s_shard[r] * k_reg[r];
         }
-        const float kv_col = pyre_reduce_cluster16(kv_partial);
+        const float kv_col = pyre_reduce_cluster16(kv_partial, reduce, tid, lane, col_group);
         const float beta_val = *reinterpret_cast<const float *>(beta_base);
         const float v_col = *reinterpret_cast<const float *>(v_base + col * sizeof(float));
         const float g_scalar = kda ? 1.0f : __builtin_expf(*reinterpret_cast<const float *>(g_base));
@@ -238,7 +260,7 @@ extern "C" __global__ void pyre_gated_delta_net_s128_cluster16_f32(
             s_shard[r] = g_reg[r] * s_shard[r] + k_reg[r] * delta_col;
             attn_partial += s_shard[r] * q_reg[r];
         }
-        const float attn_col = pyre_reduce_cluster16(attn_partial);
+        const float attn_col = pyre_reduce_cluster16(attn_partial, reduce, tid, lane, col_group);
 
         if (lane == 0) {
             *attn_out = attn_col * c.scale;

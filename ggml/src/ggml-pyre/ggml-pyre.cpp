@@ -671,8 +671,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
         /* .disable_ssm_conv = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_SSM_CONV"),
         /* .disable_gated_delta_net = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET"),
-        /* .enable_gated_delta_net_cluster16 = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_GATED_DELTA_NET_CLUSTER16") &&
-            !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET_CLUSTER16"),
+        /* .enable_gated_delta_net_cluster16 = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET_CLUSTER16"),
         /* .enable_multi_add_fusion = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MULTI_ADD_FUSION"),
         /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
