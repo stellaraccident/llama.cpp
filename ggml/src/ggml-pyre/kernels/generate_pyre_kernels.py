@@ -926,7 +926,23 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_vec_q8_0_cols8_f32",
+        "source": "mul_mat_vec_q8_0.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_q8_0_add_f32",
+        "source": "mul_mat_vec_q8_0.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 4,
+        "constants_size": 24,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_mul_mat_vec_q8_0_add_cols8_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
         "format": "FPIH",
         "binding_count": 4,
