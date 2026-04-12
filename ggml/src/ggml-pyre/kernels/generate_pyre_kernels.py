@@ -291,7 +291,7 @@ KERNELS = [
         "format": "FPIH",
         "binding_count": 6,
         "constants_size": 208,
-        "workgroup_size": (128, 1, 1),
+        "workgroup_size": (256, 1, 1),
     },
     {
         "name": "pyre_flash_attn_ext_f32_bf16_decode",
