@@ -210,6 +210,20 @@ static __device__ __forceinline__ void pyre_store_wmma_acc_row_major_f16_gfx11_d
     }
 }
 
+static __device__ __forceinline__ pyre_gfx11_half16_vec pyre_scale_wmma_acc_rows_f16_gfx11_direct(
+        pyre_gfx11_half16_vec acc,
+        const float * row_scale,
+        unsigned int lane) {
+    const int row_base = static_cast<int>(lane >> 4) * 8;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const _Float16 scale = static_cast<_Float16>(row_scale[row_base + i]);
+        acc[i * 2] *= scale;
+        acc[i * 2 + 1] *= scale;
+    }
+    return acc;
+}
+
 extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_prefill_gfx11_direct(
         const float * q,
         const __half * k,
@@ -226,8 +240,8 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
     __shared__ _Float16 p_tile[BR][BK];
     __shared__ _Float16 prob_tile[BR][BC];
     __shared__ float matrix_tile[8][BR][BK];
-    __shared__ _Float16 pv_matrix_tile[8][BR][BK];
     __shared__ float row_reduce[4][4][2];
+    __shared__ float row_scale[BR];
 
     const long long tile = __builtin_amdgcn_workgroup_id_x();
     const long long head = __builtin_amdgcn_workgroup_id_y();
@@ -259,17 +273,14 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
     }
     __syncthreads();
 
-    __half2 out_frag[4][2];
     float l_frag[4];
     float m_frag[4];
+    pyre_gfx11_half16_vec out_acc0 = {};
+    pyre_gfx11_half16_vec out_acc1 = {};
 #pragma unroll
     for (int r = 0; r < 4; ++r) {
         l_frag[r] = 0.0f;
         m_frag[r] = -FLT_MAX * 0.5f;
-#pragma unroll
-        for (int d = 0; d < 2; ++d) {
-            out_frag[r][d] = __float2half2_rn(0.0f);
-        }
     }
 
     for (int jb = 0; jb < 512; jb += BC) {
@@ -326,14 +337,15 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
             e_m[r_local] = __expf(old_m - new_m);
             m_frag[r_local] = new_m;
             l_frag[r_local] *= e_m[r_local];
-#pragma unroll
-            for (int pair = 0; pair < 2; ++pair) {
-                out_frag[r_local][pair] =
-                    __float2half2_rn(e_m[r_local]) * out_frag[r_local][pair];
+            if (lane == 0 && col_half == 0) {
+                const int r = static_cast<int>(row_group) * 4 + r_local;
+                row_scale[r] = e_m[r_local];
             }
         }
 
         __syncthreads();
+        out_acc0 = pyre_scale_wmma_acc_rows_f16_gfx11_direct(out_acc0, &row_scale[0], lane);
+        out_acc1 = pyre_scale_wmma_acc_rows_f16_gfx11_direct(out_acc1, &row_scale[0], lane);
 
 #pragma unroll
         for (int r_local = 0; r_local < 4; ++r_local) {
@@ -349,47 +361,28 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
         }
         __syncthreads();
 
-        for (int d_base = 0; d_base < 256; d_base += 2 * BC) {
-            const int d_block = d_base + static_cast<int>(wave) * BK;
-            pyre_gfx11_half16_vec acc_pv = {};
-
-            for (int tb = 0; tb < BC; tb += BK) {
-                for (int idx = tid; idx < BR * BK; idx += WG) {
-                    const int r = idx >> 4;
-                    const int c_inner = idx & 15;
-                    p_tile[r][c_inner] = prob_tile[r][tb + c_inner];
-                }
-                __syncthreads();
-
-                const _Float16 * v_block = reinterpret_cast<const _Float16 *>(
-                    v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block * static_cast<long long>(sizeof(__half)));
-                const pyre_gfx11_half16_vec a_frag = pyre_load_wmma_a_row_major_gfx11_direct(&p_tile[0][0], BK, lane);
-                const pyre_gfx11_half16_vec b_frag =
-                    pyre_load_wmma_b_row_major_gfx11_direct(v_block, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
-                acc_pv = pyre_wmma_f16_16x16x16_f16_gfx11_direct(a_frag, b_frag, acc_pv);
-                __syncthreads();
+        const int d_block0 = static_cast<int>(wave) * BK;
+        const int d_block1 = 2 * BC + static_cast<int>(wave) * BK;
+        for (int tb = 0; tb < BC; tb += BK) {
+            for (int idx = tid; idx < BR * BK; idx += WG) {
+                const int r = idx >> 4;
+                const int c_inner = idx & 15;
+                p_tile[r][c_inner] = prob_tile[r][tb + c_inner];
             }
-
-            pyre_store_wmma_acc_row_major_f16_gfx11_direct(&pv_matrix_tile[wave][0][0], BK, acc_pv, lane);
             __syncthreads();
 
-#pragma unroll
-            for (int r_local = 0; r_local < 4; ++r_local) {
-                const int r = static_cast<int>(row_group) * 4 + r_local;
-                const int d_vec = static_cast<int>(col_half) * 32 + static_cast<int>(lane);
-                const int d_col = d_vec * 4;
-                if (d_col >= d_base && d_col < d_base + 2 * BC) {
-                    const int local_d = d_col - d_base;
-#pragma unroll
-                    for (int c4 = 0; c4 < 4; c4 += 2) {
-                        const int local_scalar = local_d + c4;
-                        const int out_idx = c4 >> 1;
-                        const __half2 add_v =
-                            *reinterpret_cast<const __half2 *>(&pv_matrix_tile[local_scalar >> 4][r][local_scalar & 15]);
-                        out_frag[r_local][out_idx] = out_frag[r_local][out_idx] + add_v;
-                    }
-                }
-            }
+            const pyre_gfx11_half16_vec a_frag = pyre_load_wmma_a_row_major_gfx11_direct(&p_tile[0][0], BK, lane);
+            const _Float16 * v_block0 = reinterpret_cast<const _Float16 *>(
+                v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block0 * static_cast<long long>(sizeof(__half)));
+            const pyre_gfx11_half16_vec b_frag0 =
+                pyre_load_wmma_b_row_major_gfx11_direct(v_block0, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
+            out_acc0 = pyre_wmma_f16_16x16x16_f16_gfx11_direct(a_frag, b_frag0, out_acc0);
+
+            const _Float16 * v_block1 = reinterpret_cast<const _Float16 *>(
+                v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block1 * static_cast<long long>(sizeof(__half)));
+            const pyre_gfx11_half16_vec b_frag1 =
+                pyre_load_wmma_b_row_major_gfx11_direct(v_block1, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
+            out_acc1 = pyre_wmma_f16_16x16x16_f16_gfx11_direct(a_frag, b_frag1, out_acc1);
             __syncthreads();
         }
     }
@@ -403,24 +396,24 @@ extern "C" __global__ __launch_bounds__(256) void pyre_flash_attn_ext_f32_f16_pr
     }
     __syncthreads();
 
+    const int out_row_base = static_cast<int>(lane >> 4) * 8;
+    const int out_col = static_cast<int>(lane & 15);
+    const int out_d_block0 = static_cast<int>(wave) * BK;
+    const int out_d_block1 = 2 * BC + static_cast<int>(wave) * BK;
 #pragma unroll
-    for (int r_local = 0; r_local < 4; ++r_local) {
-        const int r = static_cast<int>(row_group) * 4 + r_local;
+    for (int i = 0; i < 8; ++i) {
+        const int r = out_row_base + i;
         const long long token = token_base + r;
-        const float l_sum = row_reduce[row_group][r_local][0] + row_reduce[row_group][r_local][1];
+        const int reduce_group = r >> 2;
+        const int reduce_row = r & 3;
+        const float l_sum = row_reduce[reduce_group][reduce_row][0] + row_reduce[reduce_group][reduce_row][1];
         if (token >= c.N || l_sum == 0.0f) {
             continue;
         }
         char * dst_row = reinterpret_cast<char *>(dst) + head * c.dst_nb1 + token * c.dst_nb2 + seq * c.dst_nb3;
-        const int d_vec = static_cast<int>(col_half) * 32 + static_cast<int>(lane);
-        const int d = d_vec * 4;
-#pragma unroll
-        for (int pair = 0; pair < 2; ++pair) {
-            const __half2 out_v = out_frag[r_local][pair];
-            *reinterpret_cast<float *>(dst_row + (d + pair * 2) * static_cast<long long>(sizeof(float))) =
-                __low2float(out_v) / l_sum;
-            *reinterpret_cast<float *>(dst_row + (d + pair * 2 + 1) * static_cast<long long>(sizeof(float))) =
-                __high2float(out_v) / l_sum;
-        }
+        *reinterpret_cast<float *>(dst_row + (out_d_block0 + out_col) * static_cast<long long>(sizeof(float))) =
+            static_cast<float>(out_acc0[i * 2]) / l_sum;
+        *reinterpret_cast<float *>(dst_row + (out_d_block1 + out_col) * static_cast<long long>(sizeof(float))) =
+            static_cast<float>(out_acc1[i * 2]) / l_sum;
     }
 }
