@@ -926,8 +926,8 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_
         const bool has_g = route_idx + 6 < count;
         const bool has_h = route_idx + 7 < count;
 #define PYRE_Q4K_SWIGLU_ROW2_ROUTE8_COL(S) \
-        const long long id_##S = route_##S % c.n_ids; \
-        const long long tok_##S = route_##S / c.n_ids; \
+        const long long id_##S = static_cast<long long>(route_##S & 7u); \
+        const long long tok_##S = static_cast<long long>(route_##S >> 3); \
         const char * src1_##S = reinterpret_cast<const char *>(src1) + id_##S * c.src1_nb1 + tok_##S * c.src1_nb2
         PYRE_Q4K_SWIGLU_ROW2_ROUTE8_COL(a);
         PYRE_Q4K_SWIGLU_ROW2_ROUTE8_COL(b);

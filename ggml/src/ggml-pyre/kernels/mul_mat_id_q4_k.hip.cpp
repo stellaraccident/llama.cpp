@@ -712,8 +712,8 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
         const bool has_h = route_base + 7 < count;
 
 #define PYRE_Q4K_GROUPED_ROUTE_COL(S) \
-        const long long id_##S = route_##S % c.n_ids; \
-        const long long tok_##S = route_##S / c.n_ids; \
+        const long long id_##S = static_cast<long long>(route_##S & 7u); \
+        const long long tok_##S = static_cast<long long>(route_##S >> 3); \
         const char * src1_##S = reinterpret_cast<const char *>(src1) + id_##S * c.src1_nb1 + tok_##S * c.src1_nb2
         PYRE_Q4K_GROUPED_ROUTE_COL(a);
         PYRE_Q4K_GROUPED_ROUTE_COL(b);
@@ -865,8 +865,8 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32(
         do { \
             if (tid == 0) { \
                 const uint32_t route = (ROUTE); \
-                const long long id = route % c.n_ids; \
-                const long long token = route / c.n_ids; \
+                const long long id = static_cast<long long>(route & 7u); \
+                const long long token = static_cast<long long>(route >> 3); \
                 char * dst_base = reinterpret_cast<char *>(dst) + id * c.dst_nb1 + token * c.dst_nb2; \
                 *reinterpret_cast<float *>(dst_base + row0 * sizeof(float)) = s0##S; \
                 *reinterpret_cast<float *>(dst_base + (row0 + 1) * sizeof(float)) = s1##S; \
