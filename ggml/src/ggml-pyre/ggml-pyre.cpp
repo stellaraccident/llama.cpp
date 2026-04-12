@@ -112,6 +112,7 @@ struct ggml_backend_pyre_provider_policy {
     bool enable_f16_batched_cols4_prompt = false;
     bool enable_f16_batched_cols8_prompt = false;
     bool enable_f16_batched_cols16_prompt = false;
+    bool enable_f32_batched_cols8_prompt = false;
     bool enable_bf16_cols4_prompt = false;
     bool enable_bf16_cols8_prompt = false;
     bool enable_bf16_swiglu_cols4_prompt = false;
@@ -213,6 +214,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_f32_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols1_ne2_1_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols8_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_id_q4_k_wg64_provider;
@@ -674,6 +676,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_f16_batched_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS4_PROMPT"),
         /* .enable_f16_batched_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS8_PROMPT"),
         /* .enable_f16_batched_cols16_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F16_BATCHED_COLS16_PROMPT"),
+        /* .enable_f32_batched_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_F32_BATCHED_COLS8_PROMPT"),
         /* .enable_bf16_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_COLS4_PROMPT"),
         /* .enable_bf16_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_COLS8_PROMPT"),
         /* .enable_bf16_swiglu_cols4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_BF16_SWIGLU_COLS4_PROMPT"),
@@ -1327,6 +1330,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_f32_batched_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f32_batched_cols1_ne2_1_f32"),
         &device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f32_batched_cols8_f32"),
+        &device_context->mul_mat_vec_f32_batched_cols8_provider) || ok;
     return ok;
 }
 
@@ -6490,6 +6497,13 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_batched_cols1_ne2_1";
     }
+    if (op->src[0]->type == GGML_TYPE_F32 &&
+        op->src[1]->ne[1] == 512 &&
+        device_context->policy.enable_f32_batched_cols8_prompt &&
+        device_context->mul_mat_vec_f32_batched_cols8_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_batched_cols8";
+    }
     if (op->src[0]->type == GGML_TYPE_F16 &&
         op->src[1]->ne[1] == 1 &&
         device_context->mul_mat_vec_f16_batched_cols1_provider.kind ==
@@ -7162,6 +7176,13 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
             constants.dst_ne2 == 1 &&
             context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider.kind ==
                 ggml_backend_pyre_provider_kind::direct_executable;
+        const bool use_f32_cols8 =
+            src0->type == GGML_TYPE_F32 &&
+            constants.cols == 512 &&
+            (constants.cols % 8) == 0 &&
+            context->device_context->policy.enable_f32_batched_cols8_prompt &&
+            context->device_context->mul_mat_vec_f32_batched_cols8_provider.kind ==
+                ggml_backend_pyre_provider_kind::direct_executable;
         const bool use_f16_cols1 =
             src0->type == GGML_TYPE_F16 &&
             constants.cols == 1 &&
@@ -7200,14 +7221,17 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
                             context->device_context->mul_mat_vec_f16_batched_provider)))) :
             (use_f32_cols1_ne2_1 ?
                 context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider :
-                context->device_context->mul_mat_vec_f32_batched_provider);
+                (use_f32_cols8 ?
+                    context->device_context->mul_mat_vec_f32_batched_cols8_provider :
+                    context->device_context->mul_mat_vec_f32_batched_provider));
         pyre_dispatch_config_t config = {
             /* .workgroup_count = */ {
                 static_cast<uint32_t>(constants.rows),
                 static_cast<uint32_t>(
-                    (use_f16_cols16 ? constants.cols / 16 :
-                        (use_f16_cols8 ? constants.cols / 8 :
-                            (use_f16_cols4 ? constants.cols / 4 : constants.cols))) *
+                    (use_f32_cols8 ? constants.cols / 8 :
+                        (use_f16_cols16 ? constants.cols / 16 :
+                            (use_f16_cols8 ? constants.cols / 8 :
+                                (use_f16_cols4 ? constants.cols / 4 : constants.cols)))) *
                     constants.dst_ne2 * constants.dst_ne3),
                 1,
             },
