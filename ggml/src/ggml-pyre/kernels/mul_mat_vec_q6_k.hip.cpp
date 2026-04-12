@@ -138,14 +138,15 @@ static __device__ __forceinline__ float pyre_q6_k_dot4(
     return sum;
 }
 
-static __device__ __forceinline__ void pyre_q6_k_dot4_cols16(
+static __device__ __forceinline__ void pyre_q6_k_dot4_cols8_acc(
         const pyre_block_q6_K * block,
         const float * src0,
         long long k,
         float d,
         int group,
         int lane,
-        float (&sum)[16]) {
+        float (&sum)[16],
+        int sum_offset) {
     const int half = group >> 2;
     const int group_in_half = group & 3;
     const int ql_base = half * 64 + ((group_in_half & 1) ? 32 : 0) + lane;
@@ -171,8 +172,8 @@ static __device__ __forceinline__ void pyre_q6_k_dot4_cols16(
         const int qh = (qh_word >> (8 * j + qh_shift)) & 0x03;
         const float q = d * static_cast<float>((ql | (qh << 4)) - 32);
         #pragma unroll
-        for (int col = 0; col < 16; ++col) {
-            sum[col] += q * src0[col * k + j];
+        for (int col = 0; col < 8; ++col) {
+            sum[sum_offset + col] += q * src0[col * k + j];
         }
     }
 }
@@ -236,20 +237,21 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_wg64_f32(
     pyre_mul_mat_vec_q6_k_f32_impl<64>(src0, src1, dst, k, rows, cols);
 }
 
-extern "C" __global__ void pyre_mul_mat_vec_q6_k_cols16_wg128_f32(
+extern "C" __global__ void pyre_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
         const pyre_block_q6_K * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
-    const long long row = __builtin_amdgcn_workgroup_id_x();
-    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 16;
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 8;
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
-    if (row >= rows || col0 + 15 >= cols) {
+    if (row0 + 1 >= rows || col0 + 7 >= cols) {
         return;
     }
 
     __shared__ float sumsh[16 * (128 / 32)];
 
     const long long blocks_per_row = k / 256;
-    const pyre_block_q6_K * row_blocks = src0 + row * blocks_per_row;
+    const pyre_block_q6_K * row0_blocks = src0 + row0 * blocks_per_row;
+    const pyre_block_q6_K * row1_blocks = row0_blocks + blocks_per_row;
     const float * src1_col0 = src1 + col0 * k;
     float sum[16] = {};
 
@@ -260,20 +262,25 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_cols16_wg128_f32(
     const int in_block_base = group * 32 + lane;
 
     for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 2) {
-        const pyre_block_q6_K * block = row_blocks + block_idx;
+        const pyre_block_q6_K * block0 = row0_blocks + block_idx;
+        const pyre_block_q6_K * block1 = row1_blocks + block_idx;
         const long long src_base = block_idx * 256 + in_block_base;
-        const float d = __half2float(__ushort_as_half(block->d)) *
-            static_cast<float>(pyre_q6_k_scale(block, group, lane));
+        const float d0 = __half2float(__ushort_as_half(block0->d)) *
+            static_cast<float>(pyre_q6_k_scale(block0, group, lane));
+        const float d1 = __half2float(__ushort_as_half(block1->d)) *
+            static_cast<float>(pyre_q6_k_scale(block1, group, lane));
 
-        pyre_q6_k_dot4_cols16(block, src1_col0 + src_base, k, d, group, lane, sum);
+        pyre_q6_k_dot4_cols8_acc(block0, src1_col0 + src_base, k, d0, group, lane, sum, 0);
+        pyre_q6_k_dot4_cols8_acc(block1, src1_col0 + src_base, k, d1, group, lane, sum, 8);
     }
 
     pyre_reduce_wg16<128>(sum, sumsh);
 
     if (tid == 0) {
         #pragma unroll
-        for (int col = 0; col < 16; ++col) {
-            dst[(col0 + col) * rows + row] = sum[col];
+        for (int col = 0; col < 8; ++col) {
+            dst[(col0 + col) * rows + row0] = sum[col];
+            dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
         }
     }
 }
