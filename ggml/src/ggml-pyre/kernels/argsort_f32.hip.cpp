@@ -37,18 +37,13 @@ extern "C" __global__ void pyre_argsort_f32_i32(
             if (col < c.ncols_pad && ixj > col && ixj < c.ncols_pad) {
                 const bool left_invalid = indices[col] >= c.ncols;
                 const bool right_valid = indices[ixj] < c.ncols;
-                const bool compare = c.order == 0 ?
-                    src_row[indices[col]] > src_row[indices[ixj]] :
-                    src_row[indices[col]] < src_row[indices[ixj]];
-                const bool reverse_compare = c.order == 0 ?
-                    src_row[indices[col]] < src_row[indices[ixj]] :
-                    src_row[indices[col]] > src_row[indices[ixj]];
 
                 if ((col & k) == 0) {
-                    if (left_invalid || (right_valid && compare)) {
+                    if (left_invalid || (right_valid && src_row[indices[col]] > src_row[indices[ixj]])) {
                         pyre_swap_i32(indices[col], indices[ixj]);
                     }
-                } else if (indices[ixj] >= c.ncols || (!left_invalid && reverse_compare)) {
+                } else if (indices[ixj] >= c.ncols ||
+                           (!left_invalid && src_row[indices[col]] < src_row[indices[ixj]])) {
                     pyre_swap_i32(indices[col], indices[ixj]);
                 }
             }
@@ -57,6 +52,7 @@ extern "C" __global__ void pyre_argsort_f32_i32(
     }
 
     if (col < c.ncols) {
-        dst[row * c.ncols + col] = indices[col];
+        const int out_col = c.order == 0 ? col : static_cast<int>(c.ncols - 1 - col);
+        dst[row * c.ncols + col] = indices[out_col];
     }
 }
