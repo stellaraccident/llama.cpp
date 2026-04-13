@@ -758,6 +758,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_f32",
+        "source": "mul_mat_vec_f32_batched.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 128,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_f32_batched_cols8_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
         "format": "FPIH",

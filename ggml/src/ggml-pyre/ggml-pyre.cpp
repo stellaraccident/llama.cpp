@@ -282,6 +282,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider mul_mat_vec_f32_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols1_ne2_1_provider;
+    ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols8_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_cols16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_f32_batched_rows2_cols8_provider;
@@ -1623,6 +1624,10 @@ static bool ggml_backend_pyre_load_mul_mat_vec_f32_batched_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f32_batched_cols1_ne2_1_f32"),
         &device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_f32"),
+        &device_context->mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_provider) || ok;
     ok = ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_mul_mat_vec_f32_batched_cols8_f32"),
@@ -7825,6 +7830,14 @@ static const char * ggml_backend_pyre_mul_mat_vec_trace_suffix(
     if (op->src[0]->type == GGML_TYPE_F32 &&
         op->src[1]->ne[1] == 1 &&
         op->ne[2] == 1 &&
+        op->src[0]->ne[0] == 2048 &&
+        device_context->mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable) {
+        return "_batched_cols1_ne2_1_k2048_wg32";
+    }
+    if (op->src[0]->type == GGML_TYPE_F32 &&
+        op->src[1]->ne[1] == 1 &&
+        op->ne[2] == 1 &&
         device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable) {
         return "_batched_cols1_ne2_1";
@@ -8692,6 +8705,13 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
             constants.dst_ne2 == 1 &&
             context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider.kind ==
                 ggml_backend_pyre_provider_kind::direct_executable;
+        const bool use_f32_cols1_ne2_1_k2048_wg32 =
+            src0->type == GGML_TYPE_F32 &&
+            constants.k == 2048 &&
+            constants.cols == 1 &&
+            constants.dst_ne2 == 1 &&
+            context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_provider.kind ==
+                ggml_backend_pyre_provider_kind::direct_executable;
         const bool use_f32_cols8 =
             src0->type == GGML_TYPE_F32 &&
             constants.cols == 512 &&
@@ -8750,15 +8770,17 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_vec_f16(
                         (use_f16_cols4 ?
                             context->device_context->mul_mat_vec_f16_batched_cols4_provider :
                             context->device_context->mul_mat_vec_f16_batched_provider)))) :
-            (use_f32_cols1_ne2_1 ?
-                context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider :
+            (use_f32_cols1_ne2_1_k2048_wg32 ?
+                context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_provider :
+                (use_f32_cols1_ne2_1 ?
+                    context->device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider :
                 (use_f32_rows2_cols8 ?
                     context->device_context->mul_mat_vec_f32_batched_rows2_cols8_provider :
                 (use_f32_cols16 ?
                     context->device_context->mul_mat_vec_f32_batched_cols16_provider :
                     (use_f32_cols8 ?
                         context->device_context->mul_mat_vec_f32_batched_cols8_provider :
-                        context->device_context->mul_mat_vec_f32_batched_provider))));
+                        context->device_context->mul_mat_vec_f32_batched_provider)))));
         const uint32_t provider_rows_per_workgroup = use_f32_rows2_cols8 ? 2 : 1;
         const uint32_t provider_cols_per_workgroup =
             use_f32_rows2_cols8 ? 8 :

@@ -272,6 +272,42 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols1_ne2_1_f32(
     }
 }
 
+extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_f32(
+        const float * src0, const float * src1, float * dst,
+        pyre_mul_mat_vec_f32_batched_constants c) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long i13 = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= c.rows || i13 >= c.dst_ne3) {
+        return;
+    }
+
+    const long long src0_i03 = c.src0_ne3 == c.dst_ne3 ? i13 : i13 / (c.dst_ne3 / c.src0_ne3);
+    const char * src0_row = reinterpret_cast<const char *>(src0) +
+        row * c.src0_nb1 + src0_i03 * c.src0_nb3;
+    const char * src1_col = reinterpret_cast<const char *>(src1) + i13 * c.src1_nb3;
+
+    float sum = 0.0f;
+#pragma unroll
+    for (int iter = 0; iter < 16; ++iter) {
+        const unsigned int i = tid * 4 + static_cast<unsigned int>(iter) * 128;
+        const float4 a = *reinterpret_cast<const float4 *>(src0_row + i * sizeof(float));
+        const float4 b = *reinterpret_cast<const float4 *>(src1_col + i * sizeof(float));
+        sum += a.x * b.x;
+        sum += a.y * b.y;
+        sum += a.z * b.z;
+        sum += a.w * b.w;
+    }
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum += __shfl_down(sum, offset);
+    }
+
+    if (tid == 0) {
+        *reinterpret_cast<float *>(reinterpret_cast<char *>(dst) + row * sizeof(float) + i13 * c.dst_nb3) = sum;
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols8_f32(
         const float * src0, const float * src1, float * dst,
         pyre_mul_mat_vec_f32_batched_constants c) {
