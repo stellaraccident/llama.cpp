@@ -355,12 +355,12 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
         const uint32_t * routes,
         float * dst,
         pyre_mul_mat_id_q4_k_swiglu_grouped_constants c) {
-    constexpr int BM = 32;
+    constexpr int BM = 16;
     constexpr int BN = 32;
     constexpr int BK_STEP = 4;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
-    constexpr int WM = 32;
+    constexpr int WM = 16;
     constexpr int WN = 32;
     constexpr int WMITER = 1;
     constexpr int TM = 2;
@@ -375,9 +375,9 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
     constexpr int LOADS_A = BM / LOAD_STRIDE_A;
     constexpr int LOADS_B = BN / LOAD_STRIDE_B;
 
-    static_assert(WNITER == 4, "unexpected Q4 MoE SWIGLU MMQ tile shape");
-    static_assert(WSUBM == 32 && WSUBN == 8, "unexpected Q4 MoE SWIGLU MMQ subtile shape");
-    static_assert(LOADS_A == 4 && LOADS_B == 1, "unexpected Q4 MoE SWIGLU MMQ load shape");
+    static_assert(WNITER == 2, "unexpected Q4 MoE SWIGLU MMQ tile shape");
+    static_assert(WSUBM == 16 && WSUBN == 16, "unexpected Q4 MoE SWIGLU MMQ subtile shape");
+    static_assert(LOADS_A == 2 && LOADS_B == 1, "unexpected Q4 MoE SWIGLU MMQ load shape");
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;

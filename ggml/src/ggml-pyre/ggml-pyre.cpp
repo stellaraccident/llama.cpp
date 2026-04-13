@@ -8697,7 +8697,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_swiglu(
             /* .workgroup_count = */ {
                 static_cast<uint32_t>(
                     use_q8_1_x4_mmq ?
-                        (grouped_constants.rows + 31) / 32 :
+                        (grouped_constants.rows + 15) / 16 :
                     provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider ||
                     provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider ?
                         (grouped_constants.rows + 1) / 2 :
