@@ -338,6 +338,61 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_cols1_f32(
     }
 }
 
+extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_rows2_cols1_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long row1 = row0 + 1;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 >= rows) {
+        return;
+    }
+    (void) cols;
+
+    __shared__ float sumsh[8 * ((256 + 31) / 32)];
+
+    const uint16_t * gate_row0 = gate + row0 * k;
+    const uint16_t * up_row0 = up + row0 * k;
+    const uint16_t * gate_row1 = gate + row1 * k;
+    const uint16_t * up_row1 = up + row1 * k;
+    const bool have_row1 = row1 < rows;
+    float gate0 = 0.0f;
+    float up0 = 0.0f;
+    float gate1 = 0.0f;
+    float up1 = 0.0f;
+    float dummy0 = 0.0f;
+    float dummy1 = 0.0f;
+    float dummy2 = 0.0f;
+    float dummy3 = 0.0f;
+    for (long long i = tid; i < k; i += 256) {
+        const float b = src1[i];
+        gate0 += pyre_bf16_swiglu_to_f32(gate_row0[i]) * b;
+        up0 += pyre_bf16_swiglu_to_f32(up_row0[i]) * b;
+        if (have_row1) {
+            gate1 += pyre_bf16_swiglu_to_f32(gate_row1[i]) * b;
+            up1 += pyre_bf16_swiglu_to_f32(up_row1[i]) * b;
+        }
+    }
+
+    pyre_reduce8_bf16_swiglu<256>(
+        gate0, up0, gate1, up1,
+        dummy0, dummy1, dummy2, dummy3, sumsh);
+
+    if (tid == 0) {
+        const float silu_gate0 = gate0 / (1.0f + __expf(-gate0));
+        dst[row0] = up0 * silu_gate0;
+        if (have_row1) {
+            const float silu_gate1 = gate1 / (1.0f + __expf(-gate1));
+            dst[row1] = up1 * silu_gate1;
+        }
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_cols4_f32(
         const uint16_t * gate,
         const uint16_t * up,

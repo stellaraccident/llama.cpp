@@ -83,7 +83,8 @@ if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND 
             GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "mul_mat_vec_q6_k_q8_1.hip.cpp")
             list(APPEND GGML_PYRE_KERNEL_COMPILE_FLAGS -O3)
         endif()
-        if (GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "topk_moe_f32_wave32.hip.cpp")
+        if (GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "topk_moe_f32_wave32.hip.cpp" OR
+            GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "mul_mat_id_q4_k_mul.hip.cpp")
             list(APPEND GGML_PYRE_KERNEL_COMPILE_FLAGS -mno-wavefrontsize64)
         endif()
         add_custom_command(

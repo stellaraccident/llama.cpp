@@ -367,6 +367,133 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_cols1_f32(
     }
 }
 
+extern "C" __global__ void pyre_mul_mat_vec_bf16_rows2_cols1_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long row1 = row0 + 1;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 >= rows) {
+        return;
+    }
+    (void) cols;
+
+    __shared__ float sumsh[4 * ((256 + 31) / 32)];
+
+    const uint16_t * src0_row0 = src0 + row0 * k;
+    const uint16_t * src0_row1 = src0 + row1 * k;
+    const bool have_row1 = row1 < rows;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float dummy0 = 0.0f;
+    float dummy1 = 0.0f;
+    for (long long i = tid; i < k; i += 256) {
+        const float b = src1[i];
+        sum0 += pyre_bf16_to_f32(src0_row0[i]) * b;
+        if (have_row1) {
+            sum1 += pyre_bf16_to_f32(src0_row1[i]) * b;
+        }
+    }
+
+    pyre_reduce4_bf16<256>(sum0, sum1, dummy0, dummy1, sumsh);
+
+    if (tid == 0) {
+        dst[row0] = sum0;
+        if (have_row1) {
+            dst[row1] = sum1;
+        }
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_rows2_cols1_wg32_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long row1 = row0 + 1;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 >= rows) {
+        return;
+    }
+    (void) cols;
+
+    const uint16_t * src0_row0 = src0 + row0 * k;
+    const uint16_t * src0_row1 = src0 + row1 * k;
+    const bool have_row1 = row1 < rows;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+
+    for (long long i = static_cast<long long>(tid) * 2; i < k; i += 64) {
+        const float2 b = *reinterpret_cast<const float2 *>(src1 + i);
+        const uint32_t a0 = *reinterpret_cast<const uint32_t *>(src0_row0 + i);
+        sum0 += pyre_bf16_to_f32(static_cast<uint16_t>(a0 & 0xffffu)) * b.x;
+        sum0 += pyre_bf16_to_f32(static_cast<uint16_t>(a0 >> 16)) * b.y;
+        if (have_row1) {
+            const uint32_t a1 = *reinterpret_cast<const uint32_t *>(src0_row1 + i);
+            sum1 += pyre_bf16_to_f32(static_cast<uint16_t>(a1 & 0xffffu)) * b.x;
+            sum1 += pyre_bf16_to_f32(static_cast<uint16_t>(a1 >> 16)) * b.y;
+        }
+    }
+
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset, 32);
+        sum1 += __shfl_down(sum1, offset, 32);
+    }
+
+    if (tid == 0) {
+        dst[row0] = sum0;
+        if (have_row1) {
+            dst[row1] = sum1;
+        }
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_rows4_k512_cols1_lds_wg256_f32(
+        const uint16_t * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 4;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    (void) cols;
+    (void) k;
+
+    __shared__ float rhs[512];
+    __shared__ float partial[8];
+    for (unsigned int i = tid; i < 512; i += 256) {
+        rhs[i] = src1[i];
+    }
+    __syncthreads();
+
+    const unsigned int row_lane = tid >> 6;
+    const unsigned int lane = tid & 63;
+    const long long row = row0 + static_cast<long long>(row_lane);
+    float sum = 0.0f;
+    if (row < rows) {
+        const uint16_t * src0_row = src0 + row * 512;
+        #pragma unroll
+        for (int iter = 0; iter < 4; ++iter) {
+            const unsigned int i = lane * 2 + static_cast<unsigned int>(iter) * 128;
+            const uint32_t a = *reinterpret_cast<const uint32_t *>(src0_row + i);
+            const float2 b = *reinterpret_cast<const float2 *>(rhs + i);
+            sum += pyre_bf16_to_f32(static_cast<uint16_t>(a & 0xffffu)) * b.x;
+            sum += pyre_bf16_to_f32(static_cast<uint16_t>(a >> 16)) * b.y;
+        }
+    }
+
+    const unsigned int sublane = lane & 31;
+    const unsigned int subwave = lane >> 5;
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down(sum, offset, 32);
+    }
+
+    if (sublane == 0) {
+        partial[row_lane * 2 + subwave] = sum;
+    }
+    __syncthreads();
+
+    if (lane == 0 && row < rows) {
+        dst[row] = partial[row_lane * 2] + partial[row_lane * 2 + 1];
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_bf16_cols4_f32(
         const uint16_t * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
