@@ -7,6 +7,66 @@ struct pyre_block_q8_0 {
     int8_t qs[32];
 };
 
+struct pyre_block_q8_1_x4_rhs_q8 {
+    unsigned short ds[8];
+    int qs[32];
+};
+
+struct pyre_q8_0_mmqv_a_cache {
+    int qs[8];
+    float d;
+};
+
+struct pyre_q8_1_mmqv_b_cache_q8 {
+    int qs[8];
+    float d;
+};
+
+static __device__ __forceinline__ int pyre_sdot4_q8_q8_1(int qpack, int rpack) {
+    return __builtin_amdgcn_sudot4(true, qpack, true, rpack, 0, false);
+}
+
+static __device__ __forceinline__ int pyre_q8_0_pack4(const pyre_block_q8_0 * block, int iqs) {
+    const uint16_t lo = *reinterpret_cast<const uint16_t *>(block->qs + iqs * 4);
+    const uint16_t hi = *reinterpret_cast<const uint16_t *>(block->qs + iqs * 4 + 2);
+    return static_cast<int>(static_cast<uint32_t>(lo) | (static_cast<uint32_t>(hi) << 16));
+}
+
+static __device__ __forceinline__ void pyre_q8_0_mmqv_load_a(
+        pyre_q8_0_mmqv_a_cache * buf_a,
+        int buf_idx,
+        const pyre_block_q8_0 * src0,
+        long long row,
+        long long kb,
+        int iqs,
+        long long blocks_per_row) {
+    const pyre_block_q8_0 * block = src0 + row * blocks_per_row + kb;
+    buf_a[buf_idx].qs[iqs] = pyre_q8_0_pack4(block, iqs);
+    if (iqs == 0) {
+        buf_a[buf_idx].d = __half2float(__ushort_as_half(block->d));
+    }
+}
+
+static __device__ __forceinline__ void pyre_q8_0_mmqv_load_b(
+        pyre_q8_1_mmqv_b_cache_q8 * buf_b,
+        int buf_idx,
+        const pyre_block_q8_1_x4_rhs_q8 * src1,
+        long long col,
+        long long kb,
+        int iqs_vec4,
+        long long q8_blocks_per_col) {
+    const long long linear_block = col * q8_blocks_per_col + kb;
+    const pyre_block_q8_1_x4_rhs_q8 * rhs = src1 + (linear_block >> 2);
+    const int inner = static_cast<int>(linear_block & 3);
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        buf_b[buf_idx].qs[iqs_vec4 * 4 + j] = rhs->qs[inner * 8 + iqs_vec4 * 4 + j];
+    }
+    if (iqs_vec4 == 0) {
+        buf_b[buf_idx].d = __half2float(__ushort_as_half(rhs->ds[inner * 2 + 0]));
+    }
+}
+
 static __device__ __forceinline__ float pyre_reduce_256(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
@@ -373,6 +433,82 @@ extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_cols8_f32(
         dst[out_idx + 5 * rows] = sum5 + bias[out_idx + 5 * rows];
         dst[out_idx + 6 * rows] = sum6 + bias[out_idx + 6 * rows];
         dst[out_idx + 7 * rows] = sum7 + bias[out_idx + 7 * rows];
+    }
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_q8_1_x4_mmq64x64_wg256_f32(
+        const pyre_block_q8_0 * src0,
+        const pyre_block_q8_1_x4_rhs_q8 * src1,
+        const float * bias,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    constexpr int BM = 64;
+    constexpr int BN = 64;
+    constexpr int COLS_PER_THREAD = 16;
+
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const int row_lane = static_cast<int>(tid & 63u);
+    const int col_lane = static_cast<int>(tid >> 6);
+    const long long row = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM + row_lane;
+    const long long col_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN +
+        static_cast<long long>(col_lane * COLS_PER_THREAD);
+    if (row >= rows || col_base + COLS_PER_THREAD - 1 >= cols) {
+        return;
+    }
+
+    __shared__ int b_qs[BN][8];
+    __shared__ unsigned short b_d[BN];
+
+    const long long blocks_per_row = k / 32;
+    const long long q8_blocks_per_col = k / 32;
+    const long long col_block_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN;
+    const pyre_block_q8_0 * row_blocks = src0 + row * blocks_per_row;
+
+    float sum[COLS_PER_THREAD] = {};
+
+    for (long long kb = 0; kb < q8_blocks_per_col; ++kb) {
+        #pragma unroll
+        for (int load_idx = static_cast<int>(tid); load_idx < BN * 8; load_idx += 256) {
+            const int c = load_idx >> 3;
+            const int iqs = load_idx & 7;
+            const long long linear_block = (col_block_base + c) * q8_blocks_per_col + kb;
+            const pyre_block_q8_1_x4_rhs_q8 * rhs = src1 + (linear_block >> 2);
+            const int inner = static_cast<int>(linear_block & 3);
+            b_qs[c][iqs] = rhs->qs[inner * 8 + iqs];
+            if (iqs == 0) {
+                b_d[c] = rhs->ds[inner * 2 + 0];
+            }
+        }
+        __syncthreads();
+
+        const pyre_block_q8_0 * block = row_blocks + kb;
+        const float d = __half2float(__ushort_as_half(block->d));
+        int qsum[COLS_PER_THREAD] = {};
+
+        #pragma unroll
+        for (int iqs = 0; iqs < 8; ++iqs) {
+            const int qpack = pyre_q8_0_pack4(block, iqs);
+            #pragma unroll
+            for (int col = 0; col < COLS_PER_THREAD; ++col) {
+                qsum[col] += pyre_sdot4_q8_q8_1(qpack, b_qs[col_lane * COLS_PER_THREAD + col][iqs]);
+            }
+        }
+
+        #pragma unroll
+        for (int col = 0; col < COLS_PER_THREAD; ++col) {
+            const int c = col_lane * COLS_PER_THREAD + col;
+            sum[col] += d * __half2float(__ushort_as_half(b_d[c])) * static_cast<float>(qsum[col]);
+        }
+
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int col = 0; col < COLS_PER_THREAD; ++col) {
+        const long long out_idx = (col_base + col) * rows + row;
+        dst[out_idx] = sum[col] + bias[out_idx];
     }
 }
 
