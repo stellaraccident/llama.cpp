@@ -895,7 +895,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_
         return;
     }
 
-    __shared__ float sumsh[4 * (64 / 32)];
+    __shared__ float sumsh[8 * 4 * (64 / 32)];
     const char * gate_expert_base = reinterpret_cast<const char *>(gate) + expert * c.gate_nb2;
     const char * up_expert_base = reinterpret_cast<const char *>(up) + expert * c.up_nb2;
     const char * gate_row0_base = gate_expert_base + row0 * c.gate_nb1;
