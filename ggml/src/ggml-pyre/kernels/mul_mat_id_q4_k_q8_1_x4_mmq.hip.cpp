@@ -356,12 +356,12 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
         float * dst,
         pyre_mul_mat_id_q4_k_swiglu_grouped_constants c) {
     constexpr int BM = 32;
-    constexpr int BN = 16;
+    constexpr int BN = 32;
     constexpr int BK_STEP = 4;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = 32;
-    constexpr int WN = 16;
+    constexpr int WN = 32;
     constexpr int WMITER = 1;
     constexpr int TM = 2;
     constexpr int TN = 2;
@@ -369,13 +369,13 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
     constexpr int WSUBM = WM / WMITER;
     constexpr int WSUBN = WN / WNITER;
     constexpr int LOAD_VEC_A = 4;
-    constexpr int LOAD_VEC_B = 8;
+    constexpr int LOAD_VEC_B = 16;
     constexpr int LOAD_STRIDE_A = BLOCK_SIZE * LOAD_VEC_A / 32;
     constexpr int LOAD_STRIDE_B = BLOCK_SIZE * LOAD_VEC_B / 32;
     constexpr int LOADS_A = BM / LOAD_STRIDE_A;
     constexpr int LOADS_B = BN / LOAD_STRIDE_B;
 
-    static_assert(WNITER == 2, "unexpected Q4 MoE SWIGLU MMQ tile shape");
+    static_assert(WNITER == 4, "unexpected Q4 MoE SWIGLU MMQ tile shape");
     static_assert(WSUBM == 32 && WSUBN == 8, "unexpected Q4 MoE SWIGLU MMQ subtile shape");
     static_assert(LOADS_A == 4 && LOADS_B == 1, "unexpected Q4 MoE SWIGLU MMQ load shape");
 
