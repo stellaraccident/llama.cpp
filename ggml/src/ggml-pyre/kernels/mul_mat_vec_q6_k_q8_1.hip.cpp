@@ -211,9 +211,9 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
         const int loadr_a = static_cast<int>(tid % (32 / LOAD_VEC_A));
         const int loadc_a = static_cast<int>(tid / (32 / LOAD_VEC_A));
         const int loadstride_a = BLOCK_SIZE * LOAD_VEC_A / 32;
-        #pragma unroll
-        for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-            for (int r = loadc_a; r < BM; r += loadstride_a) {
+        for (int r = loadc_a; r < BM; r += loadstride_a) {
+            #pragma unroll
+            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
                 pyre_q6_k_mmqv_load_a(
                     buf_a,
                     k_step * BM + r,
@@ -228,9 +228,9 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
         const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
         const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
         const int loadstride_b = BLOCK_SIZE * LOAD_VEC_B / 32;
-        #pragma unroll
-        for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-            for (int c = loadc_b; c < BN; c += loadstride_b) {
+        for (int c = loadc_b; c < BN; c += loadstride_b) {
+            #pragma unroll
+            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
                 pyre_q6_k_mmqv_load_b(
                     buf_b,
                     k_step * BN + c,

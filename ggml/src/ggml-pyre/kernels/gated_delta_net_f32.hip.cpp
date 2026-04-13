@@ -296,11 +296,9 @@ extern "C" __global__ void pyre_gated_delta_net_s128_cluster8_nokda_f32(
         const char * beta_base =
             reinterpret_cast<const char *>(beta) + seq * c.beta_nb3 + token * c.beta_nb2 + head * c.beta_nb1;
 
-        float q_reg[rows_per_lane];
         float k_reg[rows_per_lane];
         for (unsigned int r = 0; r < rows_per_lane; ++r) {
             const unsigned int row = r * lanes_per_column + lane;
-            q_reg[r] = *reinterpret_cast<const float *>(q_base + row * sizeof(float));
             k_reg[r] = *reinterpret_cast<const float *>(k_base + row * sizeof(float));
         }
 
@@ -316,8 +314,10 @@ extern "C" __global__ void pyre_gated_delta_net_s128_cluster8_nokda_f32(
 
         float attn_partial = 0.0f;
         for (unsigned int r = 0; r < rows_per_lane; ++r) {
+            const unsigned int row = r * lanes_per_column + lane;
+            const float q_val = *reinterpret_cast<const float *>(q_base + row * sizeof(float));
             s_shard[r] = g_scalar * s_shard[r] + k_reg[r] * delta_col;
-            attn_partial += s_shard[r] * q_reg[r];
+            attn_partial += s_shard[r] * q_val;
         }
         const float attn_col = pyre_reduce_cluster8(attn_partial);
 
