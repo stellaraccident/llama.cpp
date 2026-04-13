@@ -222,6 +222,14 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "pyre_l2_norm_wg128_f32",
+        "source": "row_reduce_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 2,
+        "constants_size": 88,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
         "name": "pyre_clamp_f32",
         "source": "clamp_f32.hip.cpp",
         "format": "FPIH",

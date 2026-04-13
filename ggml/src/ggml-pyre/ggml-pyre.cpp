@@ -202,6 +202,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider swiglu_provider;
     ggml_backend_pyre_op_provider sum_rows_provider;
     ggml_backend_pyre_op_provider l2_norm_provider;
+    ggml_backend_pyre_op_provider l2_norm_wg128_provider;
     ggml_backend_pyre_op_provider clamp_provider;
     ggml_backend_pyre_op_provider get_rows_f32_provider;
     ggml_backend_pyre_op_provider get_rows_f32_nr1_provider;
@@ -1152,10 +1153,15 @@ static bool ggml_backend_pyre_load_sum_rows_provider(
 
 static bool ggml_backend_pyre_load_l2_norm_provider(
         ggml_backend_pyre_device_context * device_context) {
-    return ggml_backend_pyre_load_catalog_provider(
+    bool ok = ggml_backend_pyre_load_catalog_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_l2_norm_f32"),
         &device_context->l2_norm_provider);
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_l2_norm_wg128_f32"),
+        &device_context->l2_norm_wg128_provider) || ok;
+    return ok;
 }
 
 static bool ggml_backend_pyre_load_clamp_provider(
@@ -2633,8 +2639,10 @@ static bool ggml_backend_pyre_supports_l2_norm(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * op) {
     const ggml_tensor * src0 = op->src[0];
-    return device_context->l2_norm_provider.kind ==
-               ggml_backend_pyre_provider_kind::direct_executable &&
+    const bool has_provider =
+        device_context->l2_norm_provider.kind == ggml_backend_pyre_provider_kind::direct_executable ||
+        device_context->l2_norm_wg128_provider.kind == ggml_backend_pyre_provider_kind::direct_executable;
+    return has_provider &&
            src0 &&
            src0->type == GGML_TYPE_F32 &&
            op->type == GGML_TYPE_F32 &&
@@ -5356,7 +5364,14 @@ static ggml_status ggml_backend_pyre_dispatch_l2_norm(
         /* ._pad    = */ 0,
     };
 
-    const auto & provider = context->device_context->l2_norm_provider;
+    const bool use_wg128 =
+        !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_L2_NORM_WG128") &&
+        constants.ncols <= 128 &&
+        context->device_context->l2_norm_wg128_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
+    const auto & provider = use_wg128 ?
+        context->device_context->l2_norm_wg128_provider :
+        context->device_context->l2_norm_provider;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ { static_cast<uint32_t>(constants.nrows), 1, 1 },
         /* .workgroup_size = */ {
