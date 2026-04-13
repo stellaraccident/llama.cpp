@@ -195,12 +195,12 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f3
         float * dst,
         pyre_mul_mat_id_q4_k_grouped_constants c) {
     constexpr int BM = 64;
-    constexpr int BN = 64;
+    constexpr int BN = 32;
     constexpr int BK_STEP = 4;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = 64;
-    constexpr int WN = 64;
+    constexpr int WN = 32;
     constexpr int WMITER = 1;
     constexpr int TM = 4;
     constexpr int TN = 2;
@@ -214,9 +214,9 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f3
     constexpr int LOADS_A = BM / LOAD_STRIDE_A;
     constexpr int LOADS_B = BN / LOAD_STRIDE_B;
 
-    static_assert(WNITER == 8, "unexpected Q4 MoE MMQ tile shape");
+    static_assert(WNITER == 4, "unexpected Q4 MoE MMQ tile shape");
     static_assert(WSUBM == 64 && WSUBN == 8, "unexpected Q4 MoE MMQ subtile shape");
-    static_assert(LOADS_A == 8 && LOADS_B == 2, "unexpected Q4 MoE MMQ load shape");
+    static_assert(LOADS_A == 8 && LOADS_B == 1, "unexpected Q4 MoE MMQ load shape");
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;

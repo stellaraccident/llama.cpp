@@ -8380,7 +8380,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
                         (grouped_constants.rows + 3) / 4),
                 static_cast<uint32_t>(
                     use_q8_1_x4_mmq ?
-                        (grouped_constants.n_tokens + 63) / 64 :
+                        (grouped_constants.n_tokens + 31) / 32 :
                         grouped_constants.n_experts),
                 static_cast<uint32_t>(use_q8_1_x4_mmq ? grouped_constants.n_experts : 1),
             },
