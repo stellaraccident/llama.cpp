@@ -101,6 +101,105 @@ static __device__ __forceinline__ void pyre_reduce8_256(
     }
 }
 
+static __device__ __forceinline__ void pyre_reduce16_256(
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float & sum4,
+        float & sum5,
+        float & sum6,
+        float & sum7,
+        float & sum8,
+        float & sum9,
+        float & sum10,
+        float & sum11,
+        float & sum12,
+        float & sum13,
+        float & sum14,
+        float & sum15,
+        float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    const int waves = 256 / warpSize;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+        sum2 += __shfl_down(sum2, offset);
+        sum3 += __shfl_down(sum3, offset);
+        sum4 += __shfl_down(sum4, offset);
+        sum5 += __shfl_down(sum5, offset);
+        sum6 += __shfl_down(sum6, offset);
+        sum7 += __shfl_down(sum7, offset);
+        sum8 += __shfl_down(sum8, offset);
+        sum9 += __shfl_down(sum9, offset);
+        sum10 += __shfl_down(sum10, offset);
+        sum11 += __shfl_down(sum11, offset);
+        sum12 += __shfl_down(sum12, offset);
+        sum13 += __shfl_down(sum13, offset);
+        sum14 += __shfl_down(sum14, offset);
+        sum15 += __shfl_down(sum15, offset);
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+        shared[wave + 2 * waves] = sum2;
+        shared[wave + 3 * waves] = sum3;
+        shared[wave + 4 * waves] = sum4;
+        shared[wave + 5 * waves] = sum5;
+        shared[wave + 6 * waves] = sum6;
+        shared[wave + 7 * waves] = sum7;
+        shared[wave + 8 * waves] = sum8;
+        shared[wave + 9 * waves] = sum9;
+        shared[wave + 10 * waves] = sum10;
+        shared[wave + 11 * waves] = sum11;
+        shared[wave + 12 * waves] = sum12;
+        shared[wave + 13 * waves] = sum13;
+        shared[wave + 14 * waves] = sum14;
+        shared[wave + 15 * waves] = sum15;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    sum2 = lane < waves ? shared[lane + 2 * waves] : 0.0f;
+    sum3 = lane < waves ? shared[lane + 3 * waves] : 0.0f;
+    sum4 = lane < waves ? shared[lane + 4 * waves] : 0.0f;
+    sum5 = lane < waves ? shared[lane + 5 * waves] : 0.0f;
+    sum6 = lane < waves ? shared[lane + 6 * waves] : 0.0f;
+    sum7 = lane < waves ? shared[lane + 7 * waves] : 0.0f;
+    sum8 = lane < waves ? shared[lane + 8 * waves] : 0.0f;
+    sum9 = lane < waves ? shared[lane + 9 * waves] : 0.0f;
+    sum10 = lane < waves ? shared[lane + 10 * waves] : 0.0f;
+    sum11 = lane < waves ? shared[lane + 11 * waves] : 0.0f;
+    sum12 = lane < waves ? shared[lane + 12 * waves] : 0.0f;
+    sum13 = lane < waves ? shared[lane + 13 * waves] : 0.0f;
+    sum14 = lane < waves ? shared[lane + 14 * waves] : 0.0f;
+    sum15 = lane < waves ? shared[lane + 15 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+            sum2 += __shfl_down(sum2, offset);
+            sum3 += __shfl_down(sum3, offset);
+            sum4 += __shfl_down(sum4, offset);
+            sum5 += __shfl_down(sum5, offset);
+            sum6 += __shfl_down(sum6, offset);
+            sum7 += __shfl_down(sum7, offset);
+            sum8 += __shfl_down(sum8, offset);
+            sum9 += __shfl_down(sum9, offset);
+            sum10 += __shfl_down(sum10, offset);
+            sum11 += __shfl_down(sum11, offset);
+            sum12 += __shfl_down(sum12, offset);
+            sum13 += __shfl_down(sum13, offset);
+            sum14 += __shfl_down(sum14, offset);
+            sum15 += __shfl_down(sum15, offset);
+        }
+    }
+}
+
 extern "C" __global__ void pyre_mul_mat_vec_f32_batched_f32(
         const float * src0, const float * src1, float * dst,
         pyre_mul_mat_vec_f32_batched_constants c) {
@@ -263,8 +362,7 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols16_f32(
     const char * src1_col0 = reinterpret_cast<const char *>(src1) +
         i11 * c.src1_nb1 + i12 * c.src1_nb2 + i13 * c.src1_nb3;
 
-    __shared__ float sumsh0[8 * (256 / 32)];
-    __shared__ float sumsh1[8 * (256 / 32)];
+    __shared__ float sumsh[16 * (256 / 32)];
     float sum0 = 0.0f;
     float sum1 = 0.0f;
     float sum2 = 0.0f;
@@ -302,8 +400,9 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_cols16_f32(
         sum15 += a * *reinterpret_cast<const float *>(src1_col0 + 15 * c.src1_nb1 + rhs);
     }
 
-    pyre_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh0);
-    pyre_reduce8_256(sum8, sum9, sum10, sum11, sum12, sum13, sum14, sum15, sumsh1);
+    pyre_reduce16_256(
+        sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7,
+        sum8, sum9, sum10, sum11, sum12, sum13, sum14, sum15, sumsh);
 
     if (tid == 0) {
         char * dst_row = reinterpret_cast<char *>(dst) +
@@ -355,8 +454,7 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_rows2_cols8_f32(
     const char * src1_col0 = reinterpret_cast<const char *>(src1) +
         i11 * c.src1_nb1 + i12 * c.src1_nb2 + i13 * c.src1_nb3;
 
-    __shared__ float sumsh0[8 * (256 / 32)];
-    __shared__ float sumsh1[8 * (256 / 32)];
+    __shared__ float sumsh[16 * (256 / 32)];
     float sum00 = 0.0f;
     float sum01 = 0.0f;
     float sum02 = 0.0f;
@@ -403,8 +501,9 @@ extern "C" __global__ void pyre_mul_mat_vec_f32_batched_rows2_cols8_f32(
         sum17 += a1 * b7;
     }
 
-    pyre_reduce8_256(sum00, sum01, sum02, sum03, sum04, sum05, sum06, sum07, sumsh0);
-    pyre_reduce8_256(sum10, sum11, sum12, sum13, sum14, sum15, sum16, sum17, sumsh1);
+    pyre_reduce16_256(
+        sum00, sum01, sum02, sum03, sum04, sum05, sum06, sum07,
+        sum10, sum11, sum12, sum13, sum14, sum15, sum16, sum17, sumsh);
 
     if (tid == 0) {
         char * dst_row = reinterpret_cast<char *>(dst) +
