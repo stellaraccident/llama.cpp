@@ -576,13 +576,26 @@ static void run_bf16_decode_rows2_case(ggml_backend_t backend, ggml_backend_dev_
     run_bf16_decode_shape_case(backend, dev, 512, 3, "bf16_decode_rows2_output");
 }
 
+static void run_bf16_decode_k2048_rows32_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_bf16_decode_shape_case(backend, dev, 2048, 32, "bf16_decode_k2048_rows32_output");
+}
+
+static void run_bf16_decode_k2048_rows512_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_bf16_decode_shape_case(backend, dev, 2048, 512, "bf16_decode_k2048_rows512_output");
+}
+
 static void run_bf16_decode_k512_rows2048_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     run_bf16_decode_shape_case(backend, dev, 512, 2048, "bf16_decode_k512_rows2048_output");
 }
 
-static void run_bf16_decode_swiglu_rows2_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
-    constexpr int64_t k = 512;
-    constexpr int64_t rows = 3;
+static void run_bf16_decode_swiglu_shape_case(
+        ggml_backend_t backend,
+        ggml_backend_dev_t dev,
+        int64_t k,
+        int64_t rows,
+        const char * label,
+        float abs_tolerance = 1.0e-4f,
+        float rel_tolerance = 1.0e-5f) {
     constexpr int64_t cols = 1;
 
     ggml_context_ptr ctx = make_context();
@@ -642,7 +655,16 @@ static void run_bf16_decode_swiglu_rows2_case(ggml_backend_t backend, ggml_backe
     }
 
     ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
-    expect_near_rel(output, expected, 1.0e-4f, 1.0e-5f, "bf16_decode_swiglu_rows2_output");
+    expect_near_rel(output, expected, abs_tolerance, rel_tolerance, label);
+}
+
+static void run_bf16_decode_swiglu_rows2_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_bf16_decode_swiglu_shape_case(backend, dev, 512, 3, "bf16_decode_swiglu_rows2_output");
+}
+
+static void run_bf16_decode_swiglu_k2048_rows512_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_bf16_decode_swiglu_shape_case(
+        backend, dev, 2048, 512, "bf16_decode_swiglu_k2048_rows512_output", 5.0e-4f, 2.0e-5f);
 }
 
 static void run_wide_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
@@ -1824,8 +1846,11 @@ int main() {
     const char * test_filter = std::getenv("GGML_PYRE_TEST_FILTER");
     if (test_filter != nullptr && std::strcmp(test_filter, "bf16_decode") == 0) {
         run_bf16_decode_rows2_case(backend.get(), dev);
+        run_bf16_decode_k2048_rows32_case(backend.get(), dev);
+        run_bf16_decode_k2048_rows512_case(backend.get(), dev);
         run_bf16_decode_k512_rows2048_case(backend.get(), dev);
         run_bf16_decode_swiglu_rows2_case(backend.get(), dev);
+        run_bf16_decode_swiglu_k2048_rows512_case(backend.get(), dev);
         return 0;
     }
     if (test_filter != nullptr && std::strcmp(test_filter, "q4_id_mul_decode") == 0) {
