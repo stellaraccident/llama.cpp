@@ -422,7 +422,7 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
-        "name": "pyre_gated_delta_net_s128_cluster16_f32",
+        "name": "pyre_gated_delta_net_s128_cluster8_f32",
         "source": "gated_delta_net_f32.hip.cpp",
         "format": "FPIH",
         "binding_count": 8,

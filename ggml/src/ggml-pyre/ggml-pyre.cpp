@@ -90,7 +90,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_add_rms_norm_mul_fusion = false;
     bool disable_ssm_conv = false;
     bool disable_gated_delta_net = false;
-    bool enable_gated_delta_net_cluster16 = false;
+    bool enable_gated_delta_net_cluster8 = false;
     bool enable_multi_add_fusion = false;
     bool disable_mul_mat_swiglu_fusion = false;
     bool disable_mul_mat_id_swiglu_fusion = false;
@@ -225,7 +225,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider ssm_conv_update_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
-    ggml_backend_pyre_op_provider gated_delta_net_s128_cluster16_provider;
+    ggml_backend_pyre_op_provider gated_delta_net_s128_cluster8_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
@@ -714,7 +714,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_add_rms_norm_mul_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ADD_RMS_NORM_MUL_FUSION"),
         /* .disable_ssm_conv = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_SSM_CONV"),
         /* .disable_gated_delta_net = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET"),
-        /* .enable_gated_delta_net_cluster16 = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET_CLUSTER16"),
+        /* .enable_gated_delta_net_cluster8 = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_GATED_DELTA_NET_CLUSTER8"),
         /* .enable_multi_add_fusion = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MULTI_ADD_FUSION"),
         /* .disable_mul_mat_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_SWIGLU_FUSION"),
         /* .disable_mul_mat_id_swiglu_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_MUL_MAT_ID_SWIGLU_FUSION"),
@@ -1350,8 +1350,8 @@ static bool ggml_backend_pyre_load_gated_delta_net_provider(
         &device_context->gated_delta_net_provider);
     ok = ggml_backend_pyre_load_catalog_provider(
         device_context,
-        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster16_f32"),
-        &device_context->gated_delta_net_s128_cluster16_provider) || ok;
+        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster8_f32"),
+        &device_context->gated_delta_net_s128_cluster8_provider) || ok;
     return ok;
 }
 
@@ -5799,17 +5799,18 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
         /* ._pad     = */ 0,
     };
 
-    const bool use_s128_cluster16 =
+    const bool use_s128_cluster8 =
         constants.S_v == 128 &&
-        context->device_context->policy.enable_gated_delta_net_cluster16 &&
-        context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
+        context->device_context->policy.enable_gated_delta_net_cluster8 &&
+        context->device_context->gated_delta_net_s128_cluster8_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable;
-    const auto & provider = use_s128_cluster16 ?
-        context->device_context->gated_delta_net_s128_cluster16_provider :
+    const auto & provider = use_s128_cluster8 ?
+        context->device_context->gated_delta_net_s128_cluster8_provider :
         context->device_context->gated_delta_net_provider;
+    const uint32_t gdn_cols_per_workgroup = use_s128_cluster8 ? 8 : 4;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
-            static_cast<uint32_t>((constants.S_v + 3) / 4),
+            static_cast<uint32_t>((constants.S_v + gdn_cols_per_workgroup - 1) / gdn_cols_per_workgroup),
             static_cast<uint32_t>(constants.H),
             static_cast<uint32_t>(constants.n_seqs),
         },
@@ -10326,8 +10327,8 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                         "claim GATED_DELTA_NET_STATE_UPDATE provider=pure_hip_f32%s S_v=%" PRId64
                         " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 " dst=%s\n",
                         node->src[2]->ne[0] == 128 &&
-                            context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
-                                ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster16" : "",
+                            context->device_context->gated_delta_net_s128_cluster8_provider.kind ==
+                                ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster8" : "",
                         node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3],
                         ggml_get_name(state_update));
                     if (ggml_backend_pyre_dispatch_gated_delta_net(context, node, state_update) != GGML_STATUS_SUCCESS) {
@@ -10341,8 +10342,8 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     "claim GATED_DELTA_NET provider=pure_hip_f32%s S_v=%" PRId64
                     " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 "\n",
                     node->src[2]->ne[0] == 128 &&
-                        context->device_context->gated_delta_net_s128_cluster16_provider.kind ==
-                            ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster16" : "",
+                        context->device_context->gated_delta_net_s128_cluster8_provider.kind ==
+                            ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster8" : "",
                     node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3]);
                 if (ggml_backend_pyre_dispatch_gated_delta_net(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
