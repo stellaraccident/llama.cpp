@@ -229,6 +229,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider ssm_conv_update_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider gated_delta_net_s128_cluster8_provider;
+    ggml_backend_pyre_op_provider gated_delta_net_s128_cluster8_nokda_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
@@ -1365,6 +1366,10 @@ static bool ggml_backend_pyre_load_gated_delta_net_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster8_f32"),
         &device_context->gated_delta_net_s128_cluster8_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster8_nokda_f32"),
+        &device_context->gated_delta_net_s128_cluster8_nokda_provider) || ok;
     return ok;
 }
 
@@ -5833,7 +5838,14 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
         context->device_context->policy.enable_gated_delta_net_cluster8 &&
         context->device_context->gated_delta_net_s128_cluster8_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable;
-    const auto & provider = use_s128_cluster8 ?
+    const bool use_s128_cluster8_nokda =
+        use_s128_cluster8 &&
+        constants.g_ne0 != constants.S_v &&
+        context->device_context->gated_delta_net_s128_cluster8_nokda_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
+    const auto & provider = use_s128_cluster8_nokda ?
+        context->device_context->gated_delta_net_s128_cluster8_nokda_provider :
+        use_s128_cluster8 ?
         context->device_context->gated_delta_net_s128_cluster8_provider :
         context->device_context->gated_delta_net_provider;
     const uint32_t gdn_cols_per_workgroup = use_s128_cluster8 ? 8 : 4;
