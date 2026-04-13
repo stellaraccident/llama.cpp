@@ -462,6 +462,22 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_gated_delta_net_s128_cluster8_nokda_nomod_f32",
+        "source": "gated_delta_net_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 8,
+        "constants_size": 176,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
+        "name": "pyre_gated_delta_net_s128_h32_qk16_tok1_nokda_f32",
+        "source": "gated_delta_net_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 8,
+        "constants_size": 16,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_f16_f32",
         "source": "mul_mat_vec_f16.hip.cpp",
         "format": "FPIH",

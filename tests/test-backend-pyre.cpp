@@ -1710,13 +1710,15 @@ static void run_imrope_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
         "imrope_output");
 }
 
-static void run_gated_delta_net_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
-    constexpr int64_t S_v = 4;
-    constexpr int64_t H = 2;
-    constexpr int64_t q_heads = 1;
-    constexpr int64_t n_tokens = 2;
-    constexpr int64_t n_seqs = 1;
-
+static void run_gated_delta_net_shape_case(
+        ggml_backend_t backend,
+        ggml_backend_dev_t dev,
+        int64_t S_v,
+        int64_t H,
+        int64_t q_heads,
+        int64_t n_tokens,
+        int64_t n_seqs,
+        const char * label) {
     ggml_context_ptr ctx = make_context();
     ggml_tensor * q = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, S_v, q_heads, n_tokens, n_seqs);
     ggml_tensor * k = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, S_v, q_heads, n_tokens, n_seqs);
@@ -1740,7 +1742,7 @@ static void run_gated_delta_net_case(ggml_backend_t backend, ggml_backend_dev_t 
     std::vector<float> beta_data(g_data.size());
     std::vector<float> state_data(static_cast<size_t>(S_v * S_v * H * n_seqs));
     for (size_t i = 0; i < q_data.size(); ++i) {
-        q_data[i] = 0.05f * static_cast<float>(static_cast<int>(i) - 3);
+        q_data[i] = 0.05f * static_cast<float>(static_cast<int>(i % 17) - 8);
         k_data[i] = 0.04f * static_cast<float>(static_cast<int>(i % 5) - 2);
     }
     for (size_t i = 0; i < v_data.size(); ++i) {
@@ -1768,7 +1770,43 @@ static void run_gated_delta_net_case(ggml_backend_t backend, ggml_backend_dev_t 
         output,
         reference_gated_delta_net(q_data, k_data, v_data, g_data, beta_data, state_data, S_v, H, q_heads, n_tokens, n_seqs),
         1.0e-4f,
+        label);
+}
+
+static void run_gated_delta_net_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_gated_delta_net_shape_case(
+        backend,
+        dev,
+        /* S_v = */ 4,
+        /* H = */ 2,
+        /* q_heads = */ 1,
+        /* n_tokens = */ 2,
+        /* n_seqs = */ 1,
         "gated_delta_net_output");
+}
+
+static void run_gated_delta_net_s128_decode_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_gated_delta_net_shape_case(
+        backend,
+        dev,
+        /* S_v = */ 128,
+        /* H = */ 4,
+        /* q_heads = */ 1,
+        /* n_tokens = */ 1,
+        /* n_seqs = */ 1,
+        "gated_delta_net_s128_decode_output");
+}
+
+static void run_gated_delta_net_s128_decode_gqa_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_gated_delta_net_shape_case(
+        backend,
+        dev,
+        /* S_v = */ 128,
+        /* H = */ 32,
+        /* q_heads = */ 16,
+        /* n_tokens = */ 1,
+        /* n_seqs = */ 1,
+        "gated_delta_net_s128_decode_gqa_output");
 }
 
 } // namespace
@@ -1796,6 +1834,12 @@ int main() {
     }
     if (test_filter != nullptr && std::strcmp(test_filter, "q4_id_swiglu_decode") == 0) {
         run_mul_mat_id_q4_swiglu_decode_case(backend.get(), dev);
+        return 0;
+    }
+    if (test_filter != nullptr && std::strcmp(test_filter, "gated_delta_net") == 0) {
+        run_gated_delta_net_case(backend.get(), dev);
+        run_gated_delta_net_s128_decode_case(backend.get(), dev);
+        run_gated_delta_net_s128_decode_gqa_case(backend.get(), dev);
         return 0;
     }
 

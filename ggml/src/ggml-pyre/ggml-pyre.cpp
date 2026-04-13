@@ -243,6 +243,8 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider gated_delta_net_provider;
     ggml_backend_pyre_op_provider gated_delta_net_s128_cluster8_provider;
     ggml_backend_pyre_op_provider gated_delta_net_s128_cluster8_nokda_provider;
+    ggml_backend_pyre_op_provider gated_delta_net_s128_cluster8_nokda_nomod_provider;
+    ggml_backend_pyre_op_provider gated_delta_net_s128_h32_qk16_tok1_nokda_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg128_provider;
     ggml_backend_pyre_op_provider mul_mat_vec_bf16_wg64_provider;
@@ -1433,6 +1435,14 @@ static bool ggml_backend_pyre_load_gated_delta_net_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster8_nokda_f32"),
         &device_context->gated_delta_net_s128_cluster8_nokda_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_cluster8_nokda_nomod_f32"),
+        &device_context->gated_delta_net_s128_cluster8_nokda_nomod_provider) || ok;
+    ok = ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_gated_delta_net_s128_h32_qk16_tok1_nokda_f32"),
+        &device_context->gated_delta_net_s128_h32_qk16_tok1_nokda_provider) || ok;
     return ok;
 }
 
@@ -4378,6 +4388,42 @@ struct ggml_backend_pyre_gated_delta_net_constants {
     int32_t _pad;
 };
 
+struct ggml_backend_pyre_gated_delta_net_s128_nokda_nomod_constants {
+    int64_t H;
+    int64_t n_tokens;
+    int64_t n_seqs;
+    int64_t q_head_mask;
+    int64_t q_nb1;
+    int64_t q_nb2;
+    int64_t q_nb3;
+    int64_t k_head_mask;
+    int64_t k_nb1;
+    int64_t k_nb2;
+    int64_t k_nb3;
+    int64_t v_nb1;
+    int64_t v_nb2;
+    int64_t v_nb3;
+    int64_t g_nb1;
+    int64_t g_nb2;
+    int64_t g_nb3;
+    int64_t beta_nb1;
+    int64_t beta_nb2;
+    int64_t beta_nb3;
+    int64_t state_dst_offset;
+    float scale;
+    int32_t _pad;
+};
+
+static_assert(sizeof(ggml_backend_pyre_gated_delta_net_s128_nokda_nomod_constants) == 176);
+
+struct ggml_backend_pyre_gated_delta_net_s128_h32_qk16_tok1_nokda_constants {
+    int64_t state_dst_offset;
+    float scale;
+    int32_t _pad;
+};
+
+static_assert(sizeof(ggml_backend_pyre_gated_delta_net_s128_h32_qk16_tok1_nokda_constants) == 16);
+
 static ggml_status ggml_backend_pyre_dispatch_binary_elementwise_f32(
         ggml_backend_pyre_context * context,
         const ggml_tensor * dst,
@@ -6290,12 +6336,87 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
         constants.g_ne0 != constants.S_v &&
         context->device_context->gated_delta_net_s128_cluster8_nokda_provider.kind ==
             ggml_backend_pyre_provider_kind::direct_executable;
-    const auto & provider = use_s128_cluster8_nokda ?
-        context->device_context->gated_delta_net_s128_cluster8_nokda_provider :
+    const auto is_power_of_two = [](int64_t value) {
+        return value > 0 && (value & (value - 1)) == 0;
+    };
+    const bool use_s128_cluster8_nokda_nomod =
+        use_s128_cluster8_nokda &&
+        is_power_of_two(constants.neq1) &&
+        is_power_of_two(constants.nek1) &&
+        constants.rq3 == 1 &&
+        constants.rk3 == 1 &&
+        context->device_context->gated_delta_net_s128_cluster8_nokda_nomod_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
+    const bool use_s128_h32_qk16_tok1_nokda =
+        use_s128_cluster8_nokda &&
+        constants.H == 32 &&
+        constants.n_tokens == 1 &&
+        constants.n_seqs == 1 &&
+        constants.neq1 == 16 &&
+        constants.nek1 == 16 &&
+        constants.rq3 == 1 &&
+        constants.rk3 == 1 &&
+        q->nb[0] == sizeof(float) &&
+        k->nb[0] == sizeof(float) &&
+        v->nb[0] == sizeof(float) &&
+        g->nb[0] == sizeof(float) &&
+        beta->nb[0] == sizeof(float) &&
+        q->nb[1] == 128 * sizeof(float) &&
+        k->nb[1] == 128 * sizeof(float) &&
+        v->nb[1] == 128 * sizeof(float) &&
+        g->nb[1] == sizeof(float) &&
+        beta->nb[1] == sizeof(float) &&
+        context->device_context->gated_delta_net_s128_h32_qk16_tok1_nokda_provider.kind ==
+            ggml_backend_pyre_provider_kind::direct_executable;
+    const auto * provider = use_s128_h32_qk16_tok1_nokda ?
+        &context->device_context->gated_delta_net_s128_h32_qk16_tok1_nokda_provider :
+        use_s128_cluster8_nokda_nomod ?
+        &context->device_context->gated_delta_net_s128_cluster8_nokda_nomod_provider :
+        use_s128_cluster8_nokda ?
+        &context->device_context->gated_delta_net_s128_cluster8_nokda_provider :
         use_s128_cluster8 ?
-        context->device_context->gated_delta_net_s128_cluster8_provider :
-        context->device_context->gated_delta_net_provider;
-    const uint32_t gdn_cols_per_workgroup = use_s128_cluster8 ? 8 : 4;
+        &context->device_context->gated_delta_net_s128_cluster8_provider :
+        &context->device_context->gated_delta_net_provider;
+    ggml_backend_pyre_gated_delta_net_s128_nokda_nomod_constants nomod_constants = {
+        /* .H        = */ constants.H,
+        /* .n_tokens = */ constants.n_tokens,
+        /* .n_seqs   = */ constants.n_seqs,
+        /* .q_head_mask = */ constants.neq1 - 1,
+        /* .q_nb1    = */ constants.q_nb1,
+        /* .q_nb2    = */ constants.q_nb2,
+        /* .q_nb3    = */ constants.q_nb3,
+        /* .k_head_mask = */ constants.nek1 - 1,
+        /* .k_nb1    = */ constants.k_nb1,
+        /* .k_nb2    = */ constants.k_nb2,
+        /* .k_nb3    = */ constants.k_nb3,
+        /* .v_nb1    = */ constants.v_nb1,
+        /* .v_nb2    = */ constants.v_nb2,
+        /* .v_nb3    = */ constants.v_nb3,
+        /* .g_nb1    = */ constants.g_nb1,
+        /* .g_nb2    = */ constants.g_nb2,
+        /* .g_nb3    = */ constants.g_nb3,
+        /* .beta_nb1 = */ constants.beta_nb1,
+        /* .beta_nb2 = */ constants.beta_nb2,
+        /* .beta_nb3 = */ constants.beta_nb3,
+        /* .state_dst_offset = */ constants.state_dst_offset,
+        /* .scale    = */ constants.scale,
+        /* ._pad     = */ 0,
+    };
+    ggml_backend_pyre_gated_delta_net_s128_h32_qk16_tok1_nokda_constants h32_constants = {
+        /* .state_dst_offset = */ constants.state_dst_offset,
+        /* .scale    = */ constants.scale,
+        /* ._pad     = */ 0,
+    };
+    const void * dispatch_constants = use_s128_h32_qk16_tok1_nokda ?
+        static_cast<const void *>(&h32_constants) :
+        use_s128_cluster8_nokda_nomod ?
+        static_cast<const void *>(&nomod_constants) :
+        static_cast<const void *>(&constants);
+    const size_t dispatch_constants_size = use_s128_h32_qk16_tok1_nokda ?
+        sizeof(h32_constants) :
+        use_s128_cluster8_nokda_nomod ? sizeof(nomod_constants) : sizeof(constants);
+    const uint32_t gdn_cols_per_workgroup =
+        use_s128_h32_qk16_tok1_nokda ? 4 : use_s128_cluster8 ? 8 : 4;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>((constants.S_v + gdn_cols_per_workgroup - 1) / gdn_cols_per_workgroup),
@@ -6303,7 +6424,7 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
             static_cast<uint32_t>(constants.n_seqs),
         },
         /* .workgroup_size = */ {
-            provider.export_info.workgroup_size[0] ? provider.export_info.workgroup_size[0] : 128,
+            provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : 128,
             1,
             1,
         },
@@ -6312,11 +6433,11 @@ static ggml_status ggml_backend_pyre_dispatch_gated_delta_net(
 
     if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
             context->stream,
-            provider.executable,
-            provider.export_ordinal,
+            provider->executable,
+            provider->export_ordinal,
             &config,
-            &constants,
-            sizeof(constants),
+            dispatch_constants,
+            dispatch_constants_size,
             bindings,
             8,
             PYRE_DISPATCH_FLAG_NONE))) {
@@ -11191,11 +11312,16 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                     ggml_backend_pyre_trace_provider(
                         context->device_context,
                         "claim GATED_DELTA_NET_STATE_UPDATE provider=pure_hip_f32%s S_v=%" PRId64
-                        " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 " dst=%s\n",
+                        " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64
+                        " q_heads=%" PRId64 " k_heads=%" PRId64 " rq3=%" PRId64 " rk3=%" PRId64
+                        " g_ne0=%" PRId64 " dst=%s\n",
                         node->src[2]->ne[0] == 128 &&
                             context->device_context->gated_delta_net_s128_cluster8_provider.kind ==
                                 ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster8" : "",
                         node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3],
+                        node->src[0]->ne[1], node->src[1]->ne[1],
+                        node->src[2]->ne[3] / node->src[0]->ne[3], node->src[2]->ne[3] / node->src[1]->ne[3],
+                        node->src[3]->ne[0],
                         ggml_get_name(state_update));
                     if (ggml_backend_pyre_dispatch_gated_delta_net(context, node, state_update) != GGML_STATUS_SUCCESS) {
                         return GGML_STATUS_FAILED;
@@ -11206,11 +11332,16 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
                 ggml_backend_pyre_trace_provider(
                     context->device_context,
                     "claim GATED_DELTA_NET provider=pure_hip_f32%s S_v=%" PRId64
-                    " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64 "\n",
+                    " H=%" PRId64 " tokens=%" PRId64 " seqs=%" PRId64
+                    " q_heads=%" PRId64 " k_heads=%" PRId64 " rq3=%" PRId64 " rk3=%" PRId64
+                    " g_ne0=%" PRId64 "\n",
                     node->src[2]->ne[0] == 128 &&
                         context->device_context->gated_delta_net_s128_cluster8_provider.kind ==
                             ggml_backend_pyre_provider_kind::direct_executable ? "_s128_cluster8" : "",
-                    node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3]);
+                    node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3],
+                    node->src[0]->ne[1], node->src[1]->ne[1],
+                    node->src[2]->ne[3] / node->src[0]->ne[3], node->src[2]->ne[3] / node->src[1]->ne[3],
+                    node->src[3]->ne[0]);
                 if (ggml_backend_pyre_dispatch_gated_delta_net(context, node) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
                 }
