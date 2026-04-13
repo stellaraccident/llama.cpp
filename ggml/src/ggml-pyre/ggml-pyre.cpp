@@ -2122,7 +2122,9 @@ static bool ggml_backend_pyre_supports_add8_tensor(
     return tensor &&
            tensor->type == GGML_TYPE_F32 &&
            ggml_are_same_shape(tensor, shape) &&
-           ggml_is_contiguous(tensor);
+           tensor->ne[2] == 1 &&
+           tensor->ne[3] == 1 &&
+           tensor->nb[0] == sizeof(float);
 }
 
 static bool ggml_backend_pyre_try_collect_add8_chain(
@@ -3717,7 +3719,17 @@ struct ggml_backend_pyre_elementwise_constants {
 };
 
 struct ggml_backend_pyre_add8_constants {
-    int64_t n;
+    int64_t ncols;
+    int64_t nrows;
+    int64_t src0_nb1;
+    int64_t src1_nb1;
+    int64_t src2_nb1;
+    int64_t src3_nb1;
+    int64_t src4_nb1;
+    int64_t src5_nb1;
+    int64_t src6_nb1;
+    int64_t src7_nb1;
+    int64_t dst_nb1;
 };
 
 struct ggml_backend_pyre_mul_broadcast_constants {
@@ -4372,7 +4384,17 @@ static ggml_status ggml_backend_pyre_dispatch_add8_f32(
     }
 
     ggml_backend_pyre_add8_constants constants = {
-        /* .n = */ ggml_nelements(dst),
+        /* .ncols    = */ dst->ne[0],
+        /* .nrows    = */ ggml_nrows(dst),
+        /* .src0_nb1 = */ static_cast<int64_t>(sources[0]->nb[1]),
+        /* .src1_nb1 = */ static_cast<int64_t>(sources[1]->nb[1]),
+        /* .src2_nb1 = */ static_cast<int64_t>(sources[2]->nb[1]),
+        /* .src3_nb1 = */ static_cast<int64_t>(sources[3]->nb[1]),
+        /* .src4_nb1 = */ static_cast<int64_t>(sources[4]->nb[1]),
+        /* .src5_nb1 = */ static_cast<int64_t>(sources[5]->nb[1]),
+        /* .src6_nb1 = */ static_cast<int64_t>(sources[6]->nb[1]),
+        /* .src7_nb1 = */ static_cast<int64_t>(sources[7]->nb[1]),
+        /* .dst_nb1  = */ static_cast<int64_t>(dst->nb[1]),
     };
 
     const auto & provider = context->device_context->add8_provider;
@@ -4380,7 +4402,7 @@ static ggml_status ggml_backend_pyre_dispatch_add8_f32(
         provider.export_info.workgroup_size[0] : 256;
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
-            static_cast<uint32_t>((constants.n + workgroup_size - 1) / workgroup_size),
+            static_cast<uint32_t>(((constants.ncols * constants.nrows) + workgroup_size - 1) / workgroup_size),
             1,
             1,
         },
