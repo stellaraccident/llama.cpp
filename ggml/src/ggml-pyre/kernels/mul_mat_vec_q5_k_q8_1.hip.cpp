@@ -63,18 +63,10 @@ static __device__ __forceinline__ uint32_t pyre_q5_k_pack4(
         int group,
         int iqs) {
     const int qs_base = (group >> 1) * 32 + iqs * 4;
-    uint32_t qs =
-        static_cast<uint32_t>(block->qs[qs_base + 0]) |
-        (static_cast<uint32_t>(block->qs[qs_base + 1]) << 8) |
-        (static_cast<uint32_t>(block->qs[qs_base + 2]) << 16) |
-        (static_cast<uint32_t>(block->qs[qs_base + 3]) << 24);
+    uint32_t qs = *reinterpret_cast<const uint32_t *>(block->qs + qs_base);
     qs = (qs >> ((group & 1) * 4)) & 0x0F0F0F0Fu;
 
-    const uint32_t qh =
-        static_cast<uint32_t>(block->qh[iqs * 4 + 0]) |
-        (static_cast<uint32_t>(block->qh[iqs * 4 + 1]) << 8) |
-        (static_cast<uint32_t>(block->qh[iqs * 4 + 2]) << 16) |
-        (static_cast<uint32_t>(block->qh[iqs * 4 + 3]) << 24);
+    const uint32_t qh = *reinterpret_cast<const uint32_t *>(block->qh + iqs * 4);
     return qs | (((qh >> group) & 0x01010101u) << 4);
 }
 
@@ -138,7 +130,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32(
         long long k, long long rows, long long cols) {
     constexpr int BM = 128;
     constexpr int BN = 128;
-    constexpr int BK_STEP = 4;
+    constexpr int BK_STEP = 1;
     constexpr int BLOCK_SIZE = 256;
     constexpr int WARP = 64;
     constexpr int WM = 64;
