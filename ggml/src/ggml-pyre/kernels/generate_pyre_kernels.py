@@ -82,7 +82,15 @@ KERNELS = [
         "source": "add8_f32.hip.cpp",
         "format": "FPIH",
         "binding_count": 9,
-        "constants_size": 8,
+        "constants_size": 88,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "pyre_mul_sum8_f32",
+        "source": "mul_sum8_f32.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 56,
         "workgroup_size": (256, 1, 1),
     },
     {

@@ -185,6 +185,7 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider add_broadcast_provider;
     ggml_backend_pyre_op_provider add_add_broadcast_provider;
     ggml_backend_pyre_op_provider add8_provider;
+    ggml_backend_pyre_op_provider mul_sum8_provider;
     ggml_backend_pyre_op_provider mul_provider;
     ggml_backend_pyre_op_provider mul_broadcast_provider;
     ggml_backend_pyre_op_provider div_broadcast_provider;
@@ -1018,6 +1019,14 @@ static bool ggml_backend_pyre_load_add8_provider(
         device_context,
         ggml_backend_pyre_find_catalog_entry("pyre_add8_f32"),
         &device_context->add8_provider);
+}
+
+static bool ggml_backend_pyre_load_mul_sum8_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_mul_sum8_f32"),
+        &device_context->mul_sum8_provider);
 }
 
 static bool ggml_backend_pyre_load_mul_provider(
@@ -2192,6 +2201,87 @@ static bool ggml_backend_pyre_try_collect_add8_chain(
 
     *dst = current;
     return true;
+}
+
+static bool ggml_backend_pyre_supports_mul_sum8(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_tensor * mul,
+        const std::array<const ggml_tensor *, 8> & sources,
+        const ggml_tensor * dst) {
+    if (device_context->mul_sum8_provider.kind != ggml_backend_pyre_provider_kind::direct_executable ||
+        !mul ||
+        mul->op != GGML_OP_MUL ||
+        mul->type != GGML_TYPE_F32 ||
+        !mul->src[0] ||
+        !mul->src[1] ||
+        mul->src[0]->type != GGML_TYPE_F32 ||
+        mul->src[1]->type != GGML_TYPE_F32 ||
+        mul->ne[1] != 8 ||
+        mul->ne[3] != 1 ||
+        mul->nb[0] != sizeof(float) ||
+        mul->src[0]->ne[0] != mul->ne[0] ||
+        mul->src[0]->ne[1] != mul->ne[1] ||
+        mul->src[0]->ne[2] != mul->ne[2] ||
+        mul->src[0]->ne[3] != mul->ne[3] ||
+        mul->src[0]->nb[0] != sizeof(float) ||
+        mul->src[1]->ne[0] != 1 ||
+        mul->src[1]->ne[1] != mul->ne[1] ||
+        mul->src[1]->ne[2] != mul->ne[2] ||
+        mul->src[1]->ne[3] != 1 ||
+        mul->src[1]->nb[0] != sizeof(float) ||
+        !dst ||
+        dst->type != GGML_TYPE_F32 ||
+        dst->ne[0] != mul->ne[0] ||
+        dst->ne[1] != mul->ne[2] ||
+        dst->ne[2] != 1 ||
+        dst->ne[3] != 1 ||
+        dst->nb[0] != sizeof(float)) {
+        return false;
+    }
+
+    for (const ggml_tensor * src : sources) {
+        if (!src ||
+            ggml_backend_pyre_unwrap_reshape_view_src0(src) != mul ||
+            src->type != GGML_TYPE_F32 ||
+            src->ne[0] != dst->ne[0] ||
+            src->ne[1] != dst->ne[1] ||
+            src->ne[2] != 1 ||
+            src->ne[3] != 1 ||
+            src->nb[0] != sizeof(float)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_pyre_find_mul_sum8_fusion(
+        const ggml_backend_pyre_device_context * device_context,
+        const ggml_cgraph * cgraph,
+        int mul_idx,
+        std::array<const ggml_tensor *, 8> * sources,
+        const ggml_tensor ** dst,
+        int * add_start_idx) {
+    const ggml_tensor * mul = cgraph->nodes[mul_idx];
+    for (int i = mul_idx + 1; i < cgraph->n_nodes && i < mul_idx + 16; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (ggml_backend_pyre_is_reshape_view(node)) {
+            continue;
+        }
+        if (!node || node->op != GGML_OP_ADD) {
+            continue;
+        }
+        std::array<const ggml_tensor *, 8> candidate_sources = {};
+        const ggml_tensor * candidate_dst = nullptr;
+        if (ggml_backend_pyre_try_collect_add8_chain(
+                device_context, cgraph, i, &candidate_sources, &candidate_dst) &&
+            ggml_backend_pyre_supports_mul_sum8(device_context, mul, candidate_sources, candidate_dst)) {
+            *sources = candidate_sources;
+            *dst = candidate_dst;
+            *add_start_idx = i;
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool ggml_backend_pyre_supports_add_rms_norm_mul_broadcast(
@@ -3732,6 +3822,16 @@ struct ggml_backend_pyre_add8_constants {
     int64_t dst_nb1;
 };
 
+struct ggml_backend_pyre_mul_sum8_constants {
+    int64_t rows;
+    int64_t n_tokens;
+    int64_t src0_nb1;
+    int64_t src0_nb2;
+    int64_t scale_nb1;
+    int64_t scale_nb2;
+    int64_t dst_nb1;
+};
+
 struct ggml_backend_pyre_mul_broadcast_constants {
     int64_t ne0;
     int64_t nrows;
@@ -4469,6 +4569,65 @@ static ggml_status ggml_backend_pyre_dispatch_div_broadcast_f32(
     pyre_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>((n + workgroup_size - 1) / workgroup_size),
+            1,
+            1,
+        },
+        /* .workgroup_size = */ {
+            workgroup_size,
+            1,
+            1,
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    if (!GGML_PYRE_CHECK(pyre_stream_dispatch(
+            context->stream,
+            provider.executable,
+            provider.export_ordinal,
+            &config,
+            &constants,
+            sizeof(constants),
+            bindings,
+            3,
+            PYRE_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    context->dispatch_count++;
+    context->elementwise_count++;
+
+    return GGML_STATUS_SUCCESS;
+}
+
+static ggml_status ggml_backend_pyre_dispatch_mul_sum8_f32(
+        ggml_backend_pyre_context * context,
+        const ggml_tensor * mul,
+        const ggml_tensor * dst) {
+    const ggml_tensor * src0 = mul->src[0];
+    const ggml_tensor * scale = mul->src[1];
+    pyre_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_pyre_tensor_buffer_ref(src0, &bindings[0]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(scale, &bindings[1]) ||
+        !ggml_backend_pyre_tensor_buffer_ref(dst, &bindings[2])) {
+        GGML_LOG_ERROR("%s: MUL_SUM8 tensor is not backed by a PYRE buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_backend_pyre_mul_sum8_constants constants = {
+        /* .rows      = */ mul->ne[0],
+        /* .n_tokens  = */ mul->ne[2],
+        /* .src0_nb1  = */ static_cast<int64_t>(src0->nb[1]),
+        /* .src0_nb2  = */ static_cast<int64_t>(src0->nb[2]),
+        /* .scale_nb1 = */ static_cast<int64_t>(scale->nb[1]),
+        /* .scale_nb2 = */ static_cast<int64_t>(scale->nb[2]),
+        /* .dst_nb1   = */ static_cast<int64_t>(dst->nb[1]),
+    };
+
+    const auto & provider = context->device_context->mul_sum8_provider;
+    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+        provider.export_info.workgroup_size[0] : 256;
+    pyre_dispatch_config_t config = {
+        /* .workgroup_count = */ {
+            static_cast<uint32_t>(((constants.rows * constants.n_tokens) + workgroup_size - 1) / workgroup_size),
             1,
             1,
         },
@@ -10050,6 +10209,25 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
             i += 2;
             continue;
         }
+        if (node->op == GGML_OP_MUL &&
+            !context->device_context->policy.disable_fusion) {
+            std::array<const ggml_tensor *, 8> sources = {};
+            const ggml_tensor * sum8 = nullptr;
+            int add_start = -1;
+            if (ggml_backend_pyre_find_mul_sum8_fusion(
+                    context->device_context, cgraph, i, &sources, &sum8, &add_start)) {
+                ggml_backend_pyre_trace_provider(
+                    context->device_context,
+                    "claim MUL_SUM8 provider=pure_hip_f32 rows=%" PRId64 " ids=%" PRId64
+                    " tokens=%" PRId64 "\n",
+                    node->ne[0], node->ne[1], node->ne[2]);
+                if (ggml_backend_pyre_dispatch_mul_sum8_f32(context, node, sum8) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+                i = add_start + 6;
+                continue;
+            }
+        }
         if (node->op == GGML_OP_ADD &&
             !context->device_context->policy.disable_fusion &&
             context->device_context->policy.enable_multi_add_fusion) {
@@ -10971,6 +11149,7 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_add_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_add_add_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_add8_provider(device_context.get());
+            (void) ggml_backend_pyre_load_mul_sum8_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_provider(device_context.get());
             (void) ggml_backend_pyre_load_mul_broadcast_provider(device_context.get());
             (void) ggml_backend_pyre_load_div_broadcast_provider(device_context.get());
