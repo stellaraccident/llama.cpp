@@ -78,8 +78,8 @@
 #include "ggml-cann.h"
 #endif
 
-#ifdef GGML_USE_PYRE
-#include "ggml-pyre.h"
+#ifdef GGML_USE_HRX
+#include "ggml-hrx.h"
 #endif
 
 #ifdef GGML_USE_ZENDNN
@@ -162,8 +162,8 @@ struct ggml_backend_registry {
 #ifdef GGML_USE_RPC
         register_backend(ggml_backend_rpc_reg());
 #endif
-#ifdef GGML_USE_PYRE
-        register_backend(ggml_backend_pyre_reg());
+#ifdef GGML_USE_HRX
+        register_backend(ggml_backend_hrx_reg());
 #endif
 #ifdef GGML_USE_OPENVINO
         register_backend(ggml_backend_openvino_reg());
