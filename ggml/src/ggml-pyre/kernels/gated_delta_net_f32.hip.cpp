@@ -296,7 +296,7 @@ extern "C" __global__ void pyre_gated_delta_net_s128_cluster8_nokda_f32(
         const char * beta_base =
             reinterpret_cast<const char *>(beta) + seq * c.beta_nb3 + token * c.beta_nb2 + head * c.beta_nb1;
 
-        const float g_scalar = __builtin_expf(*reinterpret_cast<const float *>(g_base));
+        const float g_scalar = __expf(*reinterpret_cast<const float *>(g_base));
         float k_reg[rows_per_lane];
         for (unsigned int r = 0; r < rows_per_lane; ++r) {
             const unsigned int row = r * lanes_per_column + lane;

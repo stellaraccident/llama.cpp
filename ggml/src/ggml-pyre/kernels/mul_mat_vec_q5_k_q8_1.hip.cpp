@@ -223,7 +223,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32(
                             qsum += pyre_sudot4_q5_q8_1(
                                 static_cast<uint32_t>(cache_a[cr].qs[iqs]), cache_b.qs[iqs]);
                         }
-                        sum[(wsic * TM + cr) * TN + cc] +=
+                        sum[(wsic * TN + cc) * TM + cr] +=
                             cache_a[cr].d * cache_b.d * static_cast<float>(qsum) -
                             cache_a[cr].min * cache_b.s;
                     }
@@ -241,7 +241,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32(
             #pragma unroll
             for (int cc = 0; cc < TN; ++cc) {
                 const long long col = col_base + warp_c * WN + wsic * WSUBN + tiwc * TN + cc;
-                dst[col * rows + row] = sum[(wsic * TM + cr) * TN + cc];
+                dst[col * rows + row] = sum[(wsic * TN + cc) * TM + cr];
             }
         }
     }
