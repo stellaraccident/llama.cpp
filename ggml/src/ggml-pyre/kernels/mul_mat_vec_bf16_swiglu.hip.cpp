@@ -10,6 +10,104 @@ static __device__ __forceinline__ float pyre_bf16_swiglu_to_f32(uint16_t value) 
     return bits.f;
 }
 
+typedef short pyre_bf16_swiglu_wmma_vec16 __attribute__((ext_vector_type(16)));
+typedef float pyre_f32_swiglu_wmma_vec8 __attribute__((ext_vector_type(8)));
+
+static __device__ __forceinline__ uint16_t pyre_f32_to_bf16_swiglu_bits_rne(float value) {
+    union {
+        float f;
+        uint32_t u;
+    } bits = { value };
+    const uint32_t lsb = (bits.u >> 16) & 1u;
+    bits.u += 0x7fffu + lsb;
+    return static_cast<uint16_t>(bits.u >> 16);
+}
+
+static __device__ __forceinline__ uint16_t pyre_bf16_swiglu_wmma_swizzle_half(uint32_t packed, int idx) {
+    return static_cast<uint16_t>((packed >> (idx * 16)) & 0xffffu);
+}
+
+static __device__ __forceinline__ pyre_bf16_swiglu_wmma_vec16 pyre_duplicate_bf16_swiglu_wmma_input(
+        uint16_t x0, uint16_t x1, uint16_t x2, uint16_t x3,
+        uint16_t x4, uint16_t x5, uint16_t x6, uint16_t x7) {
+    constexpr int SWAP16_CTRL = (16 << 10) | 0x1f;
+    const uint32_t p0 = static_cast<uint32_t>(x0) | (static_cast<uint32_t>(x1) << 16);
+    const uint32_t p1 = static_cast<uint32_t>(x2) | (static_cast<uint32_t>(x3) << 16);
+    const uint32_t p2 = static_cast<uint32_t>(x4) | (static_cast<uint32_t>(x5) << 16);
+    const uint32_t p3 = static_cast<uint32_t>(x6) | (static_cast<uint32_t>(x7) << 16);
+    const uint32_t s0 = static_cast<uint32_t>(__builtin_amdgcn_ds_swizzle(static_cast<int32_t>(p0), SWAP16_CTRL));
+    const uint32_t s1 = static_cast<uint32_t>(__builtin_amdgcn_ds_swizzle(static_cast<int32_t>(p1), SWAP16_CTRL));
+    const uint32_t s2 = static_cast<uint32_t>(__builtin_amdgcn_ds_swizzle(static_cast<int32_t>(p2), SWAP16_CTRL));
+    const uint32_t s3 = static_cast<uint32_t>(__builtin_amdgcn_ds_swizzle(static_cast<int32_t>(p3), SWAP16_CTRL));
+
+    pyre_bf16_swiglu_wmma_vec16 result;
+    result[0] = static_cast<short>(x0);
+    result[1] = static_cast<short>(x1);
+    result[2] = static_cast<short>(x2);
+    result[3] = static_cast<short>(x3);
+    result[4] = static_cast<short>(x4);
+    result[5] = static_cast<short>(x5);
+    result[6] = static_cast<short>(x6);
+    result[7] = static_cast<short>(x7);
+    result[8] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s0, 0));
+    result[9] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s0, 1));
+    result[10] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s1, 0));
+    result[11] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s1, 1));
+    result[12] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s2, 0));
+    result[13] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s2, 1));
+    result[14] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s3, 0));
+    result[15] = static_cast<short>(pyre_bf16_swiglu_wmma_swizzle_half(s3, 1));
+    return result;
+}
+
+static __device__ __forceinline__ pyre_bf16_swiglu_wmma_vec16 pyre_load_bf16_swiglu_wmma_a_row_major(
+        const uint16_t * base, int ldm, unsigned int lane) {
+    const int row = static_cast<int>(lane & 15);
+    const int k_base = static_cast<int>(lane >> 4) * 8;
+    const uint16_t * ptr = base + row * ldm + k_base;
+    return pyre_duplicate_bf16_swiglu_wmma_input(
+        ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7]);
+}
+
+static __device__ __forceinline__ pyre_bf16_swiglu_wmma_vec16 pyre_load_bf16_swiglu_wmma_b_col_major(
+        const float * base, int ldm, unsigned int lane) {
+    const int col = static_cast<int>(lane & 15);
+    const int k_base = static_cast<int>(lane >> 4) * 8;
+    const float * ptr = base + col * ldm + k_base;
+    return pyre_duplicate_bf16_swiglu_wmma_input(
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[0]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[1]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[2]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[3]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[4]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[5]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[6]),
+        pyre_f32_to_bf16_swiglu_bits_rne(ptr[7]));
+}
+
+static __device__ __forceinline__ pyre_f32_swiglu_wmma_vec8 pyre_wmma_f32_16x16x16_bf16_swiglu(
+        pyre_bf16_swiglu_wmma_vec16 a,
+        pyre_bf16_swiglu_wmma_vec16 b,
+        pyre_f32_swiglu_wmma_vec8 c) {
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
+}
+
+static __device__ __forceinline__ void pyre_store_bf16_swiglu_wmma_acc_row_major(
+        float * dst,
+        int ldm,
+        pyre_f32_swiglu_wmma_vec8 gate_acc,
+        pyre_f32_swiglu_wmma_vec8 up_acc,
+        unsigned int lane) {
+    const int row_base = static_cast<int>(lane >> 4);
+    const int col = static_cast<int>(lane & 15);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const float gate = gate_acc[i];
+        const float silu_gate = gate / (1.0f + __expf(-gate));
+        dst[(row_base + i * 2) * ldm + col] = up_acc[i] * silu_gate;
+    }
+}
+
 template <int WG_SIZE>
 static __device__ __forceinline__ float pyre_reduce_bf16_swiglu(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
@@ -147,6 +245,38 @@ extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_f32(
         long long rows,
         long long cols) {
     pyre_mul_mat_vec_bf16_swiglu_f32_impl<256>(gate, up, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_wmma16x16_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 16;
+    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 16;
+    const unsigned int lane = __builtin_amdgcn_workitem_id_x() & 31u;
+    if (row0 + 15 >= rows || col0 + 15 >= cols) {
+        return;
+    }
+
+    pyre_f32_swiglu_wmma_vec8 gate_acc = {};
+    pyre_f32_swiglu_wmma_vec8 up_acc = {};
+    for (long long kb = 0; kb < k; kb += 16) {
+        const pyre_bf16_swiglu_wmma_vec16 gate_a =
+            pyre_load_bf16_swiglu_wmma_a_row_major(gate + row0 * k + kb, static_cast<int>(k), lane);
+        const pyre_bf16_swiglu_wmma_vec16 up_a =
+            pyre_load_bf16_swiglu_wmma_a_row_major(up + row0 * k + kb, static_cast<int>(k), lane);
+        const pyre_bf16_swiglu_wmma_vec16 b =
+            pyre_load_bf16_swiglu_wmma_b_col_major(src1 + col0 * k + kb, static_cast<int>(k), lane);
+        gate_acc = pyre_wmma_f32_16x16x16_bf16_swiglu(gate_a, b, gate_acc);
+        up_acc = pyre_wmma_f32_16x16x16_bf16_swiglu(up_a, b, up_acc);
+    }
+
+    pyre_store_bf16_swiglu_wmma_acc_row_major(
+        dst + col0 * rows + row0, static_cast<int>(rows), gate_acc, up_acc, lane);
 }
 
 extern "C" __global__ void pyre_mul_mat_vec_bf16_swiglu_wg128_f32(
