@@ -196,7 +196,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f3
         pyre_mul_mat_id_q4_k_grouped_constants c) {
     constexpr int BM = 64;
     constexpr int BN = 32;
-    constexpr int BK_STEP = 4;
+    constexpr int BK_STEP = 1;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = 64;
@@ -357,7 +357,7 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
         pyre_mul_mat_id_q4_k_swiglu_grouped_constants c) {
     constexpr int BM = 16;
     constexpr int BN = 32;
-    constexpr int BK_STEP = 4;
+    constexpr int BK_STEP = 1;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = 16;
