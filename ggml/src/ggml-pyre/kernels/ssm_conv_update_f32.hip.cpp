@@ -18,6 +18,25 @@ struct pyre_ssm_conv_update_constants {
     int pad;
 };
 
+static __device__ __forceinline__ float pyre_ssm_conv_update_load(
+        const float * conv_state,
+        const float * input,
+        const pyre_ssm_conv_update_constants & c,
+        long long channel,
+        long long seq,
+        long long logical_pos) {
+    if (logical_pos < c.conv_state_width) {
+        const char * state_base = reinterpret_cast<const char *>(conv_state) +
+            channel * c.state_nb1 + seq * c.state_nb2;
+        return *reinterpret_cast<const float *>(state_base + logical_pos * sizeof(float));
+    }
+
+    const long long input_token = logical_pos - c.conv_state_width;
+    const char * input_base = reinterpret_cast<const char *>(input) +
+        input_token * c.input_nb0 + channel * c.input_nb1;
+    return *reinterpret_cast<const float *>(input_base);
+}
+
 extern "C" __global__ void pyre_ssm_conv_update_f32(
         const float * conv_state,
         const float * input,
@@ -37,30 +56,33 @@ extern "C" __global__ void pyre_ssm_conv_update_f32(
     const long long token = t1 % c.n_tokens;
     const long long seq = t1 / c.n_tokens;
 
-    const char * state_base = reinterpret_cast<const char *>(conv_state) +
-        channel * c.state_nb1 + seq * c.state_nb2;
-    const char * input_base = reinterpret_cast<const char *>(input) +
-        token * c.input_nb0 + channel * c.input_nb1;
     const char * weight_base = reinterpret_cast<const char *>(weight) + channel * c.weight_nb1;
 
     float sum = 0.0f;
-    for (long long i = 0; i < c.d_conv; ++i) {
-        const float x = i < c.conv_state_width ?
-            *reinterpret_cast<const float *>(state_base + i * sizeof(float)) :
-            *reinterpret_cast<const float *>(input_base);
-        const float w = *reinterpret_cast<const float *>(weight_base + i * sizeof(float));
-        sum += x * w;
+    if (c.d_conv == 4) {
+        const float4 w = *reinterpret_cast<const float4 *>(weight_base);
+        const float x0 = pyre_ssm_conv_update_load(conv_state, input, c, channel, seq, token + 0);
+        const float x1 = pyre_ssm_conv_update_load(conv_state, input, c, channel, seq, token + 1);
+        const float x2 = pyre_ssm_conv_update_load(conv_state, input, c, channel, seq, token + 2);
+        const float x3 = pyre_ssm_conv_update_load(conv_state, input, c, channel, seq, token + 3);
+        sum = x0 * w.x + x1 * w.y + x2 * w.z + x3 * w.w;
+    } else {
+        for (long long i = 0; i < c.d_conv; ++i) {
+            const float x = pyre_ssm_conv_update_load(conv_state, input, c, channel, seq, token + i);
+            const float w = *reinterpret_cast<const float *>(weight_base + i * sizeof(float));
+            sum += x * w;
+        }
     }
 
     if (c.apply_silu) {
         sum = sum / (1.0f + __builtin_expf(-sum));
     }
 
-    for (long long i = 0; i < c.conv_state_width; ++i) {
-        const float x = i + 1 < c.conv_state_width ?
-            *reinterpret_cast<const float *>(state_base + (i + 1) * sizeof(float)) :
-            *reinterpret_cast<const float *>(input_base);
-        state_dst[channel * c.conv_state_width + i] = x;
+    if (token == 0) {
+        for (long long i = 0; i < c.conv_state_width; ++i) {
+            state_dst[channel * c.conv_state_width + i] =
+                pyre_ssm_conv_update_load(conv_state, input, c, channel, seq, c.n_tokens + i);
+        }
     }
 
     *reinterpret_cast<float *>(
