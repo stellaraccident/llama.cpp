@@ -101,14 +101,9 @@ extern "C" __global__ void pyre_quantize_q8_1_x4_f32(
     const long long linear_block = (z * c.ne1 + i1) * blocks_per_col + block;
     pyre_block_q8_1_x4_packed128 * out = dst + (linear_block >> 2);
 
-    if ((lane & 3) == 0) {
-        const unsigned int q0 = static_cast<unsigned char>(q);
-        const unsigned int q1 = static_cast<unsigned char>(__shfl(q, lane + 1));
-        const unsigned int q2 = static_cast<unsigned char>(__shfl(q, lane + 2));
-        const unsigned int q3 = static_cast<unsigned char>(__shfl(q, lane + 3));
-        out->qs[inner * 8 + (lane >> 2)] =
-            static_cast<int>(q0 | (q1 << 8) | (q2 << 16) | (q3 << 24));
-    }
+    // Store bytes directly so the x4 layout is independent of wave32/wave64
+    // shuffle lane numbering.
+    reinterpret_cast<int8_t *>(out->qs)[inner * 32 + lane] = static_cast<int8_t>(q);
     if (lane == 0) {
         out->ds[inner * 2 + 0] = __half_as_ushort(__float2half(d));
         out->ds[inner * 2 + 1] = __half_as_ushort(__float2half(sum * d));

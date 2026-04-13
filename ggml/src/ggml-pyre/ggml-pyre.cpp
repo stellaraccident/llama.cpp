@@ -72,6 +72,13 @@ enum class ggml_backend_pyre_q8_1_mmvq_policy {
     all,
 };
 
+enum class ggml_backend_pyre_topk_moe_variant {
+    auto_select,
+    baseline,
+    shared4,
+    wave32,
+};
+
 struct ggml_backend_pyre_provider_policy {
     ggml_backend_pyre_kernel_provider_mode kernel_provider = ggml_backend_pyre_kernel_provider_mode::pure_hip;
     bool trace_providers = false;
@@ -91,6 +98,8 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_rope_set_rows_fusion = false;
     bool disable_rms_norm_mul_rope_fusion = false;
     bool disable_topk_subgroup = false;
+    ggml_backend_pyre_topk_moe_variant topk_moe_variant =
+        ggml_backend_pyre_topk_moe_variant::auto_select;
     bool disable_fast_approx_prompt = false;
     bool disable_argsort = false;
     bool enable_prompt_argsort = false;
@@ -211,7 +220,8 @@ struct ggml_backend_pyre_device_context {
     ggml_backend_pyre_op_provider rms_norm_mul_rope_f32_provider;
     ggml_backend_pyre_op_provider rms_norm_mul_rope_set_rows_f32_f16_provider;
     ggml_backend_pyre_op_provider topk_moe_f32_provider;
-    ggml_backend_pyre_op_provider topk_moe_f32_subgroup_provider;
+    ggml_backend_pyre_op_provider topk_moe_f32_shared4_provider;
+    ggml_backend_pyre_op_provider topk_moe_f32_wave32_provider;
     ggml_backend_pyre_op_provider ssm_conv_provider;
     ggml_backend_pyre_op_provider ssm_conv_update_provider;
     ggml_backend_pyre_op_provider gated_delta_net_provider;
@@ -663,6 +673,35 @@ static ggml_backend_pyre_q8_1_mmvq_policy ggml_backend_pyre_q8_1_mmvq_policy_fro
     return ggml_backend_pyre_q8_1_mmvq_policy::auto_select;
 }
 
+static ggml_backend_pyre_topk_moe_variant ggml_backend_pyre_topk_moe_variant_from_env() {
+    const char * value = std::getenv("GGML_PYRE_TOPK_MOE_VARIANT");
+    if (!value || value[0] == '\0' || std::strcmp(value, "auto") == 0) {
+        return ggml_backend_pyre_topk_moe_variant::auto_select;
+    }
+    if (std::strcmp(value, "baseline") == 0 || std::strcmp(value, "shared1") == 0) {
+        return ggml_backend_pyre_topk_moe_variant::baseline;
+    }
+    if (std::strcmp(value, "shared4") == 0 || std::strcmp(value, "shared") == 0) {
+        return ggml_backend_pyre_topk_moe_variant::shared4;
+    }
+    if (std::strcmp(value, "wave32") == 0) {
+        return ggml_backend_pyre_topk_moe_variant::wave32;
+    }
+    GGML_LOG_WARN("%s: unknown GGML_PYRE_TOPK_MOE_VARIANT=%s, using auto\n", __func__, value);
+    return ggml_backend_pyre_topk_moe_variant::auto_select;
+}
+
+static const char * ggml_backend_pyre_topk_moe_variant_name(
+        ggml_backend_pyre_topk_moe_variant variant) {
+    switch (variant) {
+        case ggml_backend_pyre_topk_moe_variant::auto_select: return "auto";
+        case ggml_backend_pyre_topk_moe_variant::baseline: return "baseline";
+        case ggml_backend_pyre_topk_moe_variant::shared4: return "shared4";
+        case ggml_backend_pyre_topk_moe_variant::wave32: return "wave32";
+    }
+    return "unknown";
+}
+
 static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_env() {
     return {
         /* .kernel_provider     = */ ggml_backend_pyre_kernel_provider_mode_from_env(),
@@ -683,12 +722,12 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_rope_set_rows_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ROPE_SET_ROWS_FUSION"),
         /* .disable_rms_norm_mul_rope_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_RMS_NORM_MUL_ROPE_FUSION"),
         /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
+        /* .topk_moe_variant = */ ggml_backend_pyre_topk_moe_variant_from_env(),
         /* .disable_fast_approx_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_FAST_APPROX_PROMPT"),
         /* .disable_argsort = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ARGSORT"),
         /* .enable_prompt_argsort = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_ARGSORT") ||
             ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PROMPT_ARGSORT"),
-        /* .disable_topk_moe = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_TOPK_MOE") ||
-            ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_MOE"),
+        /* .disable_topk_moe = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_MOE"),
         /* .enable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ"),
         /* .disable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ"),
         /* .q8_1_mmvq_policy = */ ggml_backend_pyre_q8_1_mmvq_policy_from_env(),
@@ -1271,12 +1310,20 @@ static bool ggml_backend_pyre_load_topk_moe_f32_provider(
         &device_context->topk_moe_f32_provider);
 }
 
-static bool ggml_backend_pyre_load_topk_moe_f32_subgroup_provider(
+static bool ggml_backend_pyre_load_topk_moe_f32_shared4_provider(
         ggml_backend_pyre_device_context * device_context) {
     return ggml_backend_pyre_load_catalog_provider(
         device_context,
-        ggml_backend_pyre_find_catalog_entry("pyre_topk_moe_f32_subgroup"),
-        &device_context->topk_moe_f32_subgroup_provider);
+        ggml_backend_pyre_find_catalog_entry("pyre_topk_moe_f32_shared4"),
+        &device_context->topk_moe_f32_shared4_provider);
+}
+
+static bool ggml_backend_pyre_load_topk_moe_f32_wave32_provider(
+        ggml_backend_pyre_device_context * device_context) {
+    return ggml_backend_pyre_load_catalog_provider(
+        device_context,
+        ggml_backend_pyre_find_catalog_entry("pyre_topk_moe_f32_wave32"),
+        &device_context->topk_moe_f32_wave32_provider);
 }
 
 static bool ggml_backend_pyre_load_ssm_conv_provider(
@@ -2756,6 +2803,15 @@ static int64_t ggml_backend_pyre_topk_moe_row_stride(
     return static_cast<int64_t>(tensor->nb[2]);
 }
 
+static int64_t ggml_backend_pyre_topk_moe_k_stride(
+        const ggml_tensor * tensor,
+        int64_t n_expert_used) {
+    if (tensor->ne[0] == n_expert_used) {
+        return static_cast<int64_t>(tensor->nb[0]);
+    }
+    return static_cast<int64_t>(tensor->nb[1]);
+}
+
 static bool ggml_backend_pyre_supports_topk_moe_f32(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * soft_max,
@@ -3790,12 +3846,68 @@ struct ggml_backend_pyre_topk_moe_f32_constants {
     int64_t n_expert_used;
     int64_t logits_nb1;
     int64_t weights_nb1;
+    int64_t weights_nb_k;
     int64_t ids_nb1;
+    int64_t ids_nb_k;
     float scale;
     float clamp_min;
     float clamp_max;
     int32_t with_norm;
 };
+
+static const ggml_backend_pyre_op_provider & ggml_backend_pyre_select_topk_moe_f32_provider(
+        const ggml_backend_pyre_device_context * device_context,
+        int64_t n_rows,
+        const char ** provider_label) {
+    auto provider_available = [](const ggml_backend_pyre_op_provider & provider) {
+        return provider.kind == ggml_backend_pyre_provider_kind::direct_executable;
+    };
+    auto select_if_available = [&](const ggml_backend_pyre_op_provider & provider, const char * label)
+            -> const ggml_backend_pyre_op_provider * {
+        if (provider_available(provider)) {
+            *provider_label = label;
+            return &provider;
+        }
+        return nullptr;
+    };
+
+    *provider_label = "pure_hip_f32_shared1";
+    const auto & baseline = device_context->topk_moe_f32_provider;
+    if (device_context->policy.disable_topk_subgroup) {
+        return baseline;
+    }
+
+    switch (device_context->policy.topk_moe_variant) {
+        case ggml_backend_pyre_topk_moe_variant::baseline:
+            return baseline;
+        case ggml_backend_pyre_topk_moe_variant::shared4:
+            if (const auto * provider = select_if_available(
+                    device_context->topk_moe_f32_shared4_provider, "pure_hip_f32_shared4")) {
+                return *provider;
+            }
+            break;
+        case ggml_backend_pyre_topk_moe_variant::wave32:
+            if (const auto * provider = select_if_available(
+                    device_context->topk_moe_f32_wave32_provider, "pure_hip_f32_wave32")) {
+                return *provider;
+            }
+            break;
+        case ggml_backend_pyre_topk_moe_variant::auto_select:
+            if (n_rows == 1) {
+                if (const auto * provider = select_if_available(
+                        device_context->topk_moe_f32_wave32_provider, "pure_hip_f32_wave32")) {
+                    return *provider;
+                }
+            }
+            if (const auto * provider = select_if_available(
+                    device_context->topk_moe_f32_shared4_provider, "pure_hip_f32_shared4")) {
+                return *provider;
+            }
+            break;
+    }
+
+    return baseline;
+}
 
 struct ggml_backend_pyre_rope_f32_constants {
     int64_t ne00;
@@ -5293,7 +5405,11 @@ static ggml_status ggml_backend_pyre_dispatch_topk_moe_f32(
         /* .logits_nb1    = */ static_cast<int64_t>(logits->nb[1]),
         /* .weights_nb1   = */ ggml_backend_pyre_topk_moe_row_stride(
             weights, ggml_nelements(weights) / ggml_nrows(logits)),
+        /* .weights_nb_k  = */ ggml_backend_pyre_topk_moe_k_stride(
+            weights, ggml_nelements(weights) / ggml_nrows(logits)),
         /* .ids_nb1       = */ ggml_backend_pyre_topk_moe_row_stride(
+            ids, ggml_nelements(ids) / ggml_nrows(logits)),
+        /* .ids_nb_k      = */ ggml_backend_pyre_topk_moe_k_stride(
             ids, ggml_nelements(ids) / ggml_nrows(logits)),
         /* .scale         = */ scale,
         /* .clamp_min     = */ clamp_min,
@@ -5301,13 +5417,10 @@ static ggml_status ggml_backend_pyre_dispatch_topk_moe_f32(
         /* .with_norm     = */ clamp ? 1 : 0,
     };
 
-    const bool use_subgroup =
-        !context->device_context->policy.disable_topk_subgroup &&
-        context->device_context->topk_moe_f32_subgroup_provider.kind ==
-            ggml_backend_pyre_provider_kind::direct_executable;
-    const auto & provider = use_subgroup ?
-        context->device_context->topk_moe_f32_subgroup_provider :
-        context->device_context->topk_moe_f32_provider;
+    const char * provider_label = nullptr;
+    const auto & provider = ggml_backend_pyre_select_topk_moe_f32_provider(
+        context->device_context, constants.n_rows, &provider_label);
+    (void) provider_label;
     const uint32_t workgroup_size_x = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 64;
     const uint32_t workgroup_size_y = provider.export_info.workgroup_size[1] ?
@@ -9398,15 +9511,15 @@ static ggml_status ggml_backend_pyre_graph_compute(ggml_backend_t backend, ggml_
         ggml_backend_pyre_topk_moe_fusion fusion;
         if (!context->device_context->policy.disable_fusion &&
             ggml_backend_pyre_try_topk_moe_fusion(cgraph, i, context->device_context, &fusion)) {
-            const bool use_subgroup =
-                !context->device_context->policy.disable_topk_subgroup &&
-                context->device_context->topk_moe_f32_subgroup_provider.kind ==
-                    ggml_backend_pyre_provider_kind::direct_executable;
+            const char * provider_label = nullptr;
+            (void) ggml_backend_pyre_select_topk_moe_f32_provider(
+                context->device_context, ggml_nrows(fusion.soft_max->src[0]), &provider_label);
             ggml_backend_pyre_trace_provider(
                 context->device_context,
-                "claim TOPK_MOE_%s provider=%s experts=%" PRId64 " k=%" PRId64 " nrows=%" PRId64 "\n",
+                "claim TOPK_MOE_%s provider=%s variant=%s experts=%" PRId64 " k=%" PRId64 " nrows=%" PRId64 "\n",
                 fusion.clamp ? "EARLY_SOFTMAX_NORM" : "EARLY_SOFTMAX",
-                use_subgroup ? "pure_hip_f32_subgroup" : "pure_hip_f32",
+                provider_label,
+                ggml_backend_pyre_topk_moe_variant_name(context->device_context->policy.topk_moe_variant),
                 fusion.soft_max->src[0]->ne[0], ggml_nelements(fusion.weights), ggml_nrows(fusion.soft_max->src[0]));
             if (ggml_backend_pyre_dispatch_topk_moe_f32(
                     context, fusion.soft_max, fusion.weights, fusion.ids, fusion.clamp) != GGML_STATUS_SUCCESS) {
@@ -10652,7 +10765,8 @@ static std::unique_ptr<ggml_backend_pyre_reg_context> ggml_backend_pyre_create_r
             (void) ggml_backend_pyre_load_rms_norm_mul_rope_f32_provider(device_context.get());
             (void) ggml_backend_pyre_load_rms_norm_mul_rope_set_rows_f32_f16_provider(device_context.get());
             (void) ggml_backend_pyre_load_topk_moe_f32_provider(device_context.get());
-            (void) ggml_backend_pyre_load_topk_moe_f32_subgroup_provider(device_context.get());
+            (void) ggml_backend_pyre_load_topk_moe_f32_shared4_provider(device_context.get());
+            (void) ggml_backend_pyre_load_topk_moe_f32_wave32_provider(device_context.get());
             (void) ggml_backend_pyre_load_ssm_conv_provider(device_context.get());
             (void) ggml_backend_pyre_load_ssm_conv_update_provider(device_context.get());
             (void) ggml_backend_pyre_load_gated_delta_net_provider(device_context.get());

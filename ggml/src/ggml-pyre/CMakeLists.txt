@@ -64,11 +64,22 @@ if (Python3_Interpreter_FOUND AND GGML_PYRE_CLANGXX AND GGML_PYRE_ROCM_PATH AND 
                 "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_prefill_gfx11_direct_generic.inc"
                 "${CMAKE_CURRENT_SOURCE_DIR}/kernels/flash_attn_ext_f32_f16_prefill_gfx11_direct_gfx11.inc")
         endif()
+        if (GGML_PYRE_KERNEL_SOURCE_NAME MATCHES "^topk_moe_f32_")
+            list(APPEND GGML_PYRE_KERNEL_DEPS
+                "${CMAKE_CURRENT_SOURCE_DIR}/kernels/topk_moe_f32_common.hip.inc")
+        endif()
+        if (GGML_PYRE_KERNEL_SOURCE_NAME MATCHES "^topk_moe_f32_wave")
+            list(APPEND GGML_PYRE_KERNEL_DEPS
+                "${CMAKE_CURRENT_SOURCE_DIR}/kernels/topk_moe_f32_wave.inc")
+        endif()
         set(GGML_PYRE_KERNEL_COMPILE_FLAGS)
         if (GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "mul_mat_vec_q5_k_q8_1.hip.cpp" OR
             GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "mul_mat_vec_q6_k_q8_1.hip.cpp" OR
             GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "ssm_conv_f32.hip.cpp")
             list(APPEND GGML_PYRE_KERNEL_COMPILE_FLAGS -mwavefrontsize64)
+        endif()
+        if (GGML_PYRE_KERNEL_SOURCE_NAME STREQUAL "topk_moe_f32_wave32.hip.cpp")
+            list(APPEND GGML_PYRE_KERNEL_COMPILE_FLAGS -mno-wavefrontsize64)
         endif()
         add_custom_command(
             OUTPUT "${GGML_PYRE_HSACO_OUTPUT}"
