@@ -253,28 +253,25 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
 
             #pragma unroll
             for (int wsic = 0; wsic < WNITER; ++wsic) {
-                pyre_q8_1_mmqv_b_cache_q6 cache_b[TN];
                 #pragma unroll
                 for (int cc = 0; cc < TN; ++cc) {
-                    cache_b[cc] = buf_b[k_step * BN + warp_c * WN + wsic * WSUBN + tiwc * TN + cc];
-                }
-                #pragma unroll
-                for (int cr = 0; cr < TM; ++cr) {
+                    pyre_q8_1_mmqv_b_cache_q6 cache_b =
+                        buf_b[k_step * BN + warp_c * WN + wsic * WSUBN + tiwc * TN + cc];
                     #pragma unroll
-                    for (int cc = 0; cc < TN; ++cc) {
+                    for (int cr = 0; cr < TM; ++cr) {
                         int qsum0 = 0;
                         int qsum1 = 0;
                         #pragma unroll
                         for (int iqs = 0; iqs < 4; ++iqs) {
                             qsum0 += pyre_sdot4_q6_q8_1_qpack(
-                                cache_a[cr].qs[iqs], cache_b[cc].qs[iqs]);
+                                cache_a[cr].qs[iqs], cache_b.qs[iqs]);
                         }
                         #pragma unroll
                         for (int iqs = 4; iqs < 8; ++iqs) {
                             qsum1 += pyre_sdot4_q6_q8_1_qpack(
-                                cache_a[cr].qs[iqs], cache_b[cc].qs[iqs]);
+                                cache_a[cr].qs[iqs], cache_b.qs[iqs]);
                         }
-                        sum[(wsic * TM + cr) * TN + cc] += cache_b[cc].d *
+                        sum[(wsic * TM + cr) * TN + cc] += cache_b.d *
                             (cache_a[cr].d[0] * static_cast<float>(qsum0) +
                              cache_a[cr].d[1] * static_cast<float>(qsum1));
                     }
