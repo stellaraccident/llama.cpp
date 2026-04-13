@@ -436,7 +436,7 @@ extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_cols8_f32(
     }
 }
 
-extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_q8_1_x4_mmq64x64_wg256_f32(
+extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_q8_1_x4_mmq128x32_wg256_f32(
         const pyre_block_q8_0 * src0,
         const pyre_block_q8_1_x4_rhs_q8 * src1,
         const float * bias,
@@ -444,13 +444,13 @@ extern "C" __global__ void pyre_mul_mat_vec_q8_0_add_q8_1_x4_mmq64x64_wg256_f32(
         long long k,
         long long rows,
         long long cols) {
-    constexpr int BM = 64;
-    constexpr int BN = 64;
+    constexpr int BM = 128;
+    constexpr int BN = 32;
     constexpr int COLS_PER_THREAD = 16;
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
-    const int row_lane = static_cast<int>(tid & 63u);
-    const int col_lane = static_cast<int>(tid >> 6);
+    const int row_lane = static_cast<int>(tid & 127u);
+    const int col_lane = static_cast<int>(tid >> 7);
     const long long row = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM + row_lane;
     const long long col_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN +
         static_cast<long long>(col_lane * COLS_PER_THREAD);
