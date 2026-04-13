@@ -93,6 +93,7 @@ struct ggml_backend_pyre_provider_policy {
     bool disable_topk_subgroup = false;
     bool disable_fast_approx_prompt = false;
     bool disable_argsort = false;
+    bool enable_prompt_argsort = false;
     bool disable_topk_moe = false;
     bool enable_q8_1_mmvq = false;
     bool disable_q8_1_mmvq = false;
@@ -683,9 +684,11 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .disable_rms_norm_mul_rope_fusion = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_RMS_NORM_MUL_ROPE_FUSION"),
         /* .disable_topk_subgroup = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_SUBGROUP"),
         /* .disable_fast_approx_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_FAST_APPROX_PROMPT"),
-        /* .disable_argsort = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_ARGSORT") ||
-            ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ARGSORT"),
-        /* .disable_topk_moe = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_MOE"),
+        /* .disable_argsort = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_ARGSORT"),
+        /* .enable_prompt_argsort = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_ARGSORT") ||
+            ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PROMPT_ARGSORT"),
+        /* .disable_topk_moe = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_TOPK_MOE") ||
+            ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_TOPK_MOE"),
         /* .enable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q8_1_MMVQ"),
         /* .disable_q8_1_mmvq = */ ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q8_1_MMVQ"),
         /* .q8_1_mmvq_policy = */ ggml_backend_pyre_q8_1_mmvq_policy_from_env(),
@@ -696,16 +699,15 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q4_k_id_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_ROW4_PROMPT"),
         /* .enable_q4_k_id_row8_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_ID_ROW8_PROMPT"),
         /* .enable_q4_k_id_grouped_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_GROUPED_PROMPT"),
-        /* .enable_q4_k_id_q8_1_x4_mmq_prompt = */ ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_ENABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT") &&
+        /* .enable_q4_k_id_q8_1_x4_mmq_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_FAST_APPROX_PROMPT") &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT"),
         /* .enable_q4_k_swiglu_row2_prompt = */ ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_Q4_K_SWIGLU_ROW2_PROMPT"),
         /* .enable_q4_k_swiglu_row4_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_ROW4_PROMPT"),
         /* .enable_q4_k_swiglu_grouped_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT"),
         /* .enable_q4_k_swiglu_grouped_row2_route8_prompt = */ !ggml_backend_pyre_env_enabled(
             "GGML_PYRE_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT"),
-        /* .enable_q4_k_swiglu_q8_1_x4_mmq_prompt = */ ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_ENABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT") &&
+        /* .enable_q4_k_swiglu_q8_1_x4_mmq_prompt = */ !ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_DISABLE_FAST_APPROX_PROMPT") &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT"),
         /* .enable_q5_k_q8_1_mmq_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
@@ -2721,7 +2723,9 @@ static bool ggml_backend_pyre_supports_argsort_f32(
         const ggml_tensor * op) {
     const ggml_tensor * src0 = op->src[0];
     const int64_t ncols = src0 ? src0->ne[0] : 0;
+    const int64_t nrows = src0 ? ggml_nrows(src0) : 0;
     return !device_context->policy.disable_argsort &&
+           (nrows == 1 || device_context->policy.enable_prompt_argsort) &&
            device_context->argsort_f32_provider.kind ==
                ggml_backend_pyre_provider_kind::direct_executable &&
            src0 &&
@@ -2735,6 +2739,23 @@ static bool ggml_backend_pyre_supports_argsort_f32(
            ggml_is_contiguous(op);
 }
 
+static bool ggml_backend_pyre_supports_topk_moe_output_layout(
+        const ggml_tensor * tensor,
+        int64_t n_expert_used) {
+    return tensor &&
+           (tensor->ne[0] == n_expert_used ||
+            (tensor->ne[0] == 1 && tensor->ne[1] == n_expert_used));
+}
+
+static int64_t ggml_backend_pyre_topk_moe_row_stride(
+        const ggml_tensor * tensor,
+        int64_t n_expert_used) {
+    if (tensor->ne[0] == n_expert_used) {
+        return static_cast<int64_t>(tensor->nb[1]);
+    }
+    return static_cast<int64_t>(tensor->nb[2]);
+}
+
 static bool ggml_backend_pyre_supports_topk_moe_f32(
         const ggml_backend_pyre_device_context * device_context,
         const ggml_tensor * soft_max,
@@ -2742,6 +2763,8 @@ static bool ggml_backend_pyre_supports_topk_moe_f32(
         const ggml_tensor * ids) {
     const int64_t n_logit_rows =
         (soft_max && soft_max->src[0]) ? ggml_nrows(soft_max->src[0]) : 0;
+    const int64_t n_expert_used =
+        n_logit_rows > 0 ? ggml_nelements(weights) / n_logit_rows : 0;
     if (device_context->policy.disable_topk_moe ||
         device_context->topk_moe_f32_provider.kind !=
             ggml_backend_pyre_provider_kind::direct_executable ||
@@ -2759,11 +2782,12 @@ static bool ggml_backend_pyre_supports_topk_moe_f32(
         n_logit_rows <= 0 ||
         (n_logit_rows != 1 &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PROMPT_TOPK_MOE")) ||
-        ggml_nrows(weights) != n_logit_rows ||
-        ggml_nrows(ids) != n_logit_rows ||
+        ggml_nelements(weights) % n_logit_rows != 0 ||
         ggml_nelements(weights) != ggml_nelements(ids) ||
-        ggml_nelements(weights) / n_logit_rows <= 0 ||
-        ggml_nelements(weights) / n_logit_rows > 32 ||
+        n_expert_used <= 0 ||
+        n_expert_used > 32 ||
+        !ggml_backend_pyre_supports_topk_moe_output_layout(weights, n_expert_used) ||
+        !ggml_backend_pyre_supports_topk_moe_output_layout(ids, n_expert_used) ||
         !ggml_is_contiguous(soft_max->src[0]) ||
         weights->nb[0] != sizeof(float) ||
         ids->nb[0] != sizeof(int32_t)) {
@@ -5267,8 +5291,10 @@ static ggml_status ggml_backend_pyre_dispatch_topk_moe_f32(
         /* .n_rows        = */ ggml_nrows(logits),
         /* .n_expert_used = */ ggml_nelements(weights) / ggml_nrows(logits),
         /* .logits_nb1    = */ static_cast<int64_t>(logits->nb[1]),
-        /* .weights_nb1   = */ static_cast<int64_t>(weights->nb[1]),
-        /* .ids_nb1       = */ static_cast<int64_t>(ids->nb[1]),
+        /* .weights_nb1   = */ ggml_backend_pyre_topk_moe_row_stride(
+            weights, ggml_nelements(weights) / ggml_nrows(logits)),
+        /* .ids_nb1       = */ ggml_backend_pyre_topk_moe_row_stride(
+            ids, ggml_nelements(ids) / ggml_nrows(logits)),
         /* .scale         = */ scale,
         /* .clamp_min     = */ clamp_min,
         /* .clamp_max     = */ clamp_max,
@@ -9124,7 +9150,8 @@ static bool ggml_backend_pyre_try_topk_moe_fusion(
     }
 
     const ggml_tensor * argsort = next(idx);
-    if (!argsort || argsort->op != GGML_OP_ARGSORT || argsort->src[0] != fusion->soft_max ||
+    if (!argsort || argsort->op != GGML_OP_ARGSORT ||
+        (argsort->src[0] != fusion->soft_max && argsort->src[0] != probs) ||
         ggml_get_op_params_i32(argsort, 0) != GGML_SORT_ORDER_DESC) {
         return false;
     }
