@@ -220,13 +220,13 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f3
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
-    const uint32_t route_base = static_cast<uint32_t>(__builtin_amdgcn_workgroup_id_y()) * BN;
+    const uint32_t route_base0 = static_cast<uint32_t>(__builtin_amdgcn_workgroup_id_y()) * BN;
     const long long expert = static_cast<long long>(__builtin_amdgcn_workgroup_id_z());
     if (expert >= c.n_experts) {
         return;
     }
     const uint32_t count = counts[expert];
-    if (route_base >= count || row_base >= c.rows) {
+    if (route_base0 >= count || row_base >= c.rows) {
         return;
     }
 
@@ -235,109 +235,112 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f3
     const int tiwc = tiw / (WSUBM / TM);
     const uint32_t * expert_routes = routes + expert * c.route_capacity;
     const long long q8_blocks_per_col = c.k / 32;
+    const uint32_t route_tile_span = static_cast<uint32_t>(((c.n_tokens + BN - 1) / BN) * BN);
 
     __shared__ pyre_q4_k_moe_a_cache buf_a[BM * BK_STEP];
     __shared__ pyre_q8_1_moe_b_cache buf_b[BN * BK_STEP];
 
-    float sum[WNITER * TM * TN] = {};
+    for (uint32_t route_base = route_base0; route_base < count; route_base += route_tile_span) {
+        float sum[WNITER * TM * TN] = {};
 
-    for (long long kb_base = 0; kb_base < q8_blocks_per_col; kb_base += BK_STEP) {
-        const int loadr_a = static_cast<int>(tid % (32 / LOAD_VEC_A));
-        const int loadc_a = static_cast<int>(tid / (32 / LOAD_VEC_A));
-        const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
-        const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
-        #pragma unroll
-        for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-            pyre_q4_k_moe_a_pending pending_a[LOADS_A];
-            pyre_q8_1_moe_b_pending pending_b[LOADS_B];
+        for (long long kb_base = 0; kb_base < q8_blocks_per_col; kb_base += BK_STEP) {
+            const int loadr_a = static_cast<int>(tid % (32 / LOAD_VEC_A));
+            const int loadc_a = static_cast<int>(tid / (32 / LOAD_VEC_A));
+            const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
+            const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
             #pragma unroll
-            for (int load_i = 0; load_i < LOADS_A; ++load_i) {
-                const int r = loadc_a + load_i * LOAD_STRIDE_A;
-                pending_a[load_i] = pyre_q4_k_moe_mmq_fetch_a(
-                    src0,
-                    row_base + r,
-                    kb_base + k_step,
-                    loadr_a,
-                    c.rows,
-                    c.src0_nb1,
-                    c.src0_nb2,
-                    expert);
-            }
-            #pragma unroll
-            for (int load_i = 0; load_i < LOADS_B; ++load_i) {
-                const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                pending_b[load_i] = pyre_q8_1_moe_mmq_fetch_b(
-                    src1,
-                    expert_routes,
-                    count,
-                    route_base + col,
-                    kb_base + k_step,
-                    loadr_b,
-                    q8_blocks_per_col);
-            }
-            #pragma unroll
-            for (int load_i = 0; load_i < LOADS_A; ++load_i) {
-                const int r = loadc_a + load_i * LOAD_STRIDE_A;
-                pyre_q4_k_moe_mmq_commit_a(buf_a, k_step * BM + r, pending_a[load_i], loadr_a);
-            }
-            #pragma unroll
-            for (int load_i = 0; load_i < LOADS_B; ++load_i) {
-                const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                pyre_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
-            }
-        }
-        __syncthreads();
-
-        #pragma unroll
-        for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-            pyre_q4_k_moe_a_cache cache_a[TM];
-            #pragma unroll
-            for (int cr = 0; cr < TM; ++cr) {
-                cache_a[cr] = buf_a[k_step * BM + tiwr * TM + cr];
-            }
-            #pragma unroll
-            for (int wsic = 0; wsic < WNITER; ++wsic) {
-                pyre_q8_1_moe_b_cache cache_b[TN];
+            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
+                pyre_q4_k_moe_a_pending pending_a[LOADS_A];
+                pyre_q8_1_moe_b_pending pending_b[LOADS_B];
                 #pragma unroll
-                for (int cc = 0; cc < TN; ++cc) {
-                    cache_b[cc] = buf_b[k_step * BN + wsic * WSUBN + tiwc * TN + cc];
+                for (int load_i = 0; load_i < LOADS_A; ++load_i) {
+                    const int r = loadc_a + load_i * LOAD_STRIDE_A;
+                    pending_a[load_i] = pyre_q4_k_moe_mmq_fetch_a(
+                        src0,
+                        row_base + r,
+                        kb_base + k_step,
+                        loadr_a,
+                        c.rows,
+                        c.src0_nb1,
+                        c.src0_nb2,
+                        expert);
                 }
                 #pragma unroll
+                for (int load_i = 0; load_i < LOADS_B; ++load_i) {
+                    const int col = loadc_b + load_i * LOAD_STRIDE_B;
+                    pending_b[load_i] = pyre_q8_1_moe_mmq_fetch_b(
+                        src1,
+                        expert_routes,
+                        count,
+                        route_base + col,
+                        kb_base + k_step,
+                        loadr_b,
+                        q8_blocks_per_col);
+                }
+                #pragma unroll
+                for (int load_i = 0; load_i < LOADS_A; ++load_i) {
+                    const int r = loadc_a + load_i * LOAD_STRIDE_A;
+                    pyre_q4_k_moe_mmq_commit_a(buf_a, k_step * BM + r, pending_a[load_i], loadr_a);
+                }
+                #pragma unroll
+                for (int load_i = 0; load_i < LOADS_B; ++load_i) {
+                    const int col = loadc_b + load_i * LOAD_STRIDE_B;
+                    pyre_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
+                }
+            }
+            __syncthreads();
+
+            #pragma unroll
+            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
+                pyre_q4_k_moe_a_cache cache_a[TM];
+                #pragma unroll
                 for (int cr = 0; cr < TM; ++cr) {
+                    cache_a[cr] = buf_a[k_step * BM + tiwr * TM + cr];
+                }
+                #pragma unroll
+                for (int wsic = 0; wsic < WNITER; ++wsic) {
+                    pyre_q8_1_moe_b_cache cache_b[TN];
                     #pragma unroll
                     for (int cc = 0; cc < TN; ++cc) {
-                        int qsum = 0;
+                        cache_b[cc] = buf_b[k_step * BN + wsic * WSUBN + tiwc * TN + cc];
+                    }
+                    #pragma unroll
+                    for (int cr = 0; cr < TM; ++cr) {
                         #pragma unroll
-                        for (int iqs = 0; iqs < 8; ++iqs) {
-                            qsum += pyre_udot4_q4_q8_1_moe_mmq(
-                                static_cast<uint32_t>(cache_a[cr].qs[iqs]), cache_b[cc].qs[iqs]);
+                        for (int cc = 0; cc < TN; ++cc) {
+                            int qsum = 0;
+                            #pragma unroll
+                            for (int iqs = 0; iqs < 8; ++iqs) {
+                                qsum += pyre_udot4_q4_q8_1_moe_mmq(
+                                    static_cast<uint32_t>(cache_a[cr].qs[iqs]), cache_b[cc].qs[iqs]);
+                            }
+                            sum[(wsic * TM + cr) * TN + cc] +=
+                                cache_a[cr].d * cache_b[cc].d * static_cast<float>(qsum) -
+                                cache_a[cr].min * cache_b[cc].s;
                         }
-                        sum[(wsic * TM + cr) * TN + cc] +=
-                            cache_a[cr].d * cache_b[cc].d * static_cast<float>(qsum) -
-                            cache_a[cr].min * cache_b[cc].s;
                     }
                 }
             }
+            __syncthreads();
         }
-        __syncthreads();
-    }
 
-    #pragma unroll
-    for (int wsic = 0; wsic < WNITER; ++wsic) {
         #pragma unroll
-        for (int cr = 0; cr < TM; ++cr) {
-            const long long row = row_base + tiwr * TM + cr;
+        for (int wsic = 0; wsic < WNITER; ++wsic) {
             #pragma unroll
-            for (int cc = 0; cc < TN; ++cc) {
-                const int col = wsic * WSUBN + tiwc * TN + cc;
-                const uint32_t route_index = route_base + static_cast<uint32_t>(col);
-                if (row < c.rows && route_index < count) {
-                    const uint32_t route = buf_b[col].route;
-                    const long long id = static_cast<long long>(route % static_cast<uint32_t>(c.n_ids));
-                    const long long token = static_cast<long long>(route / static_cast<uint32_t>(c.n_ids));
-                    char * dst_base = reinterpret_cast<char *>(dst) + id * c.dst_nb1 + token * c.dst_nb2;
-                    *reinterpret_cast<float *>(dst_base + row * sizeof(float)) =
-                        sum[(wsic * TM + cr) * TN + cc];
+            for (int cr = 0; cr < TM; ++cr) {
+                const long long row = row_base + tiwr * TM + cr;
+                #pragma unroll
+                for (int cc = 0; cc < TN; ++cc) {
+                    const int col = wsic * WSUBN + tiwc * TN + cc;
+                    const uint32_t route_index = route_base + static_cast<uint32_t>(col);
+                    if (row < c.rows && route_index < count) {
+                        const uint32_t route = buf_b[col].route;
+                        const long long id = static_cast<long long>(route % static_cast<uint32_t>(c.n_ids));
+                        const long long token = static_cast<long long>(route / static_cast<uint32_t>(c.n_ids));
+                        char * dst_base = reinterpret_cast<char *>(dst) + id * c.dst_nb1 + token * c.dst_nb2;
+                        *reinterpret_cast<float *>(dst_base + row * sizeof(float)) =
+                            sum[(wsic * TM + cr) * TN + cc];
+                    }
                 }
             }
         }
@@ -353,12 +356,12 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
         float * dst,
         pyre_mul_mat_id_q4_k_swiglu_grouped_constants c) {
     constexpr int BM = 32;
-    constexpr int BN = 64;
+    constexpr int BN = 32;
     constexpr int BK_STEP = 4;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = 32;
-    constexpr int WN = 64;
+    constexpr int WN = 32;
     constexpr int WMITER = 1;
     constexpr int TM = 2;
     constexpr int TN = 2;
@@ -372,19 +375,19 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
     constexpr int LOADS_A = BM / LOAD_STRIDE_A;
     constexpr int LOADS_B = BN / LOAD_STRIDE_B;
 
-    static_assert(WNITER == 8, "unexpected Q4 MoE SWIGLU MMQ tile shape");
+    static_assert(WNITER == 4, "unexpected Q4 MoE SWIGLU MMQ tile shape");
     static_assert(WSUBM == 32 && WSUBN == 8, "unexpected Q4 MoE SWIGLU MMQ subtile shape");
-    static_assert(LOADS_A == 4 && LOADS_B == 2, "unexpected Q4 MoE SWIGLU MMQ load shape");
+    static_assert(LOADS_A == 4 && LOADS_B == 1, "unexpected Q4 MoE SWIGLU MMQ load shape");
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
-    const uint32_t route_base = static_cast<uint32_t>(__builtin_amdgcn_workgroup_id_y()) * BN;
+    const uint32_t route_base0 = static_cast<uint32_t>(__builtin_amdgcn_workgroup_id_y()) * BN;
     const long long expert = static_cast<long long>(__builtin_amdgcn_workgroup_id_z());
     if (expert >= c.n_experts) {
         return;
     }
     const uint32_t count = counts[expert];
-    if (route_base >= count || row_base >= c.rows) {
+    if (route_base0 >= count || row_base >= c.rows) {
         return;
     }
 
@@ -393,132 +396,135 @@ extern "C" __global__ void pyre_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_
     const int tiwc = tiw / (WSUBM / TM);
     const uint32_t * expert_routes = routes + expert * c.route_capacity;
     const long long q8_blocks_per_col = c.k / 32;
+    const uint32_t route_tile_span = static_cast<uint32_t>(((c.n_tokens + BN - 1) / BN) * BN);
 
     __shared__ pyre_q4_k_moe_a_cache gate_a[BM * BK_STEP];
     __shared__ pyre_q4_k_moe_a_cache up_a[BM * BK_STEP];
     __shared__ pyre_q8_1_moe_b_cache buf_b[BN * BK_STEP];
 
-    float gate_sum[WNITER * TM * TN] = {};
-    float up_sum[WNITER * TM * TN] = {};
+    for (uint32_t route_base = route_base0; route_base < count; route_base += route_tile_span) {
+        float gate_sum[WNITER * TM * TN] = {};
+        float up_sum[WNITER * TM * TN] = {};
 
-    for (long long kb_base = 0; kb_base < q8_blocks_per_col; kb_base += BK_STEP) {
-        const int loadr_a = static_cast<int>(tid % (32 / LOAD_VEC_A));
-        const int loadc_a = static_cast<int>(tid / (32 / LOAD_VEC_A));
-        const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
-        const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
-        #pragma unroll
-        for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-            pyre_q4_k_moe_a_pending pending_gate[LOADS_A];
-            pyre_q4_k_moe_a_pending pending_up[LOADS_A];
-            pyre_q8_1_moe_b_pending pending_b[LOADS_B];
+        for (long long kb_base = 0; kb_base < q8_blocks_per_col; kb_base += BK_STEP) {
+            const int loadr_a = static_cast<int>(tid % (32 / LOAD_VEC_A));
+            const int loadc_a = static_cast<int>(tid / (32 / LOAD_VEC_A));
+            const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
+            const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
             #pragma unroll
-            for (int load_i = 0; load_i < LOADS_A; ++load_i) {
-                const int r = loadc_a + load_i * LOAD_STRIDE_A;
-                pending_gate[load_i] = pyre_q4_k_moe_mmq_fetch_a(
-                    gate,
-                    row_base + r,
-                    kb_base + k_step,
-                    loadr_a,
-                    c.rows,
-                    c.gate_nb1,
-                    c.gate_nb2,
-                    expert);
-                pending_up[load_i] = pyre_q4_k_moe_mmq_fetch_a(
-                    up,
-                    row_base + r,
-                    kb_base + k_step,
-                    loadr_a,
-                    c.rows,
-                    c.up_nb1,
-                    c.up_nb2,
-                    expert);
-            }
-            #pragma unroll
-            for (int load_i = 0; load_i < LOADS_B; ++load_i) {
-                const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                pending_b[load_i] = pyre_q8_1_moe_mmq_fetch_b(
-                    src1,
-                    expert_routes,
-                    count,
-                    route_base + col,
-                    kb_base + k_step,
-                    loadr_b,
-                    q8_blocks_per_col);
-            }
-            #pragma unroll
-            for (int load_i = 0; load_i < LOADS_A; ++load_i) {
-                const int r = loadc_a + load_i * LOAD_STRIDE_A;
-                pyre_q4_k_moe_mmq_commit_a(gate_a, k_step * BM + r, pending_gate[load_i], loadr_a);
-                pyre_q4_k_moe_mmq_commit_a(up_a, k_step * BM + r, pending_up[load_i], loadr_a);
-            }
-            #pragma unroll
-            for (int load_i = 0; load_i < LOADS_B; ++load_i) {
-                const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                pyre_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
-            }
-        }
-        __syncthreads();
-
-        #pragma unroll
-        for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-            pyre_q4_k_moe_a_cache gate_cache[TM];
-            pyre_q4_k_moe_a_cache up_cache[TM];
-            #pragma unroll
-            for (int cr = 0; cr < TM; ++cr) {
-                gate_cache[cr] = gate_a[k_step * BM + tiwr * TM + cr];
-                up_cache[cr] = up_a[k_step * BM + tiwr * TM + cr];
-            }
-            #pragma unroll
-            for (int wsic = 0; wsic < WNITER; ++wsic) {
-                pyre_q8_1_moe_b_cache cache_b[TN];
+            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
+                pyre_q4_k_moe_a_pending pending_gate[LOADS_A];
+                pyre_q4_k_moe_a_pending pending_up[LOADS_A];
+                pyre_q8_1_moe_b_pending pending_b[LOADS_B];
                 #pragma unroll
-                for (int cc = 0; cc < TN; ++cc) {
-                    cache_b[cc] = buf_b[k_step * BN + wsic * WSUBN + tiwc * TN + cc];
+                for (int load_i = 0; load_i < LOADS_A; ++load_i) {
+                    const int r = loadc_a + load_i * LOAD_STRIDE_A;
+                    pending_gate[load_i] = pyre_q4_k_moe_mmq_fetch_a(
+                        gate,
+                        row_base + r,
+                        kb_base + k_step,
+                        loadr_a,
+                        c.rows,
+                        c.gate_nb1,
+                        c.gate_nb2,
+                        expert);
+                    pending_up[load_i] = pyre_q4_k_moe_mmq_fetch_a(
+                        up,
+                        row_base + r,
+                        kb_base + k_step,
+                        loadr_a,
+                        c.rows,
+                        c.up_nb1,
+                        c.up_nb2,
+                        expert);
                 }
                 #pragma unroll
+                for (int load_i = 0; load_i < LOADS_B; ++load_i) {
+                    const int col = loadc_b + load_i * LOAD_STRIDE_B;
+                    pending_b[load_i] = pyre_q8_1_moe_mmq_fetch_b(
+                        src1,
+                        expert_routes,
+                        count,
+                        route_base + col,
+                        kb_base + k_step,
+                        loadr_b,
+                        q8_blocks_per_col);
+                }
+                #pragma unroll
+                for (int load_i = 0; load_i < LOADS_A; ++load_i) {
+                    const int r = loadc_a + load_i * LOAD_STRIDE_A;
+                    pyre_q4_k_moe_mmq_commit_a(gate_a, k_step * BM + r, pending_gate[load_i], loadr_a);
+                    pyre_q4_k_moe_mmq_commit_a(up_a, k_step * BM + r, pending_up[load_i], loadr_a);
+                }
+                #pragma unroll
+                for (int load_i = 0; load_i < LOADS_B; ++load_i) {
+                    const int col = loadc_b + load_i * LOAD_STRIDE_B;
+                    pyre_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
+                }
+            }
+            __syncthreads();
+
+            #pragma unroll
+            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
+                pyre_q4_k_moe_a_cache gate_cache[TM];
+                pyre_q4_k_moe_a_cache up_cache[TM];
+                #pragma unroll
                 for (int cr = 0; cr < TM; ++cr) {
+                    gate_cache[cr] = gate_a[k_step * BM + tiwr * TM + cr];
+                    up_cache[cr] = up_a[k_step * BM + tiwr * TM + cr];
+                }
+                #pragma unroll
+                for (int wsic = 0; wsic < WNITER; ++wsic) {
+                    pyre_q8_1_moe_b_cache cache_b[TN];
                     #pragma unroll
                     for (int cc = 0; cc < TN; ++cc) {
-                        int gate_qsum = 0;
-                        int up_qsum = 0;
+                        cache_b[cc] = buf_b[k_step * BN + wsic * WSUBN + tiwc * TN + cc];
+                    }
+                    #pragma unroll
+                    for (int cr = 0; cr < TM; ++cr) {
                         #pragma unroll
-                        for (int iqs = 0; iqs < 8; ++iqs) {
-                            gate_qsum += pyre_udot4_q4_q8_1_moe_mmq(
-                                static_cast<uint32_t>(gate_cache[cr].qs[iqs]), cache_b[cc].qs[iqs]);
-                            up_qsum += pyre_udot4_q4_q8_1_moe_mmq(
-                                static_cast<uint32_t>(up_cache[cr].qs[iqs]), cache_b[cc].qs[iqs]);
+                        for (int cc = 0; cc < TN; ++cc) {
+                            int gate_qsum = 0;
+                            int up_qsum = 0;
+                            #pragma unroll
+                            for (int iqs = 0; iqs < 8; ++iqs) {
+                                gate_qsum += pyre_udot4_q4_q8_1_moe_mmq(
+                                    static_cast<uint32_t>(gate_cache[cr].qs[iqs]), cache_b[cc].qs[iqs]);
+                                up_qsum += pyre_udot4_q4_q8_1_moe_mmq(
+                                    static_cast<uint32_t>(up_cache[cr].qs[iqs]), cache_b[cc].qs[iqs]);
+                            }
+                            gate_sum[(wsic * TM + cr) * TN + cc] +=
+                                gate_cache[cr].d * cache_b[cc].d * static_cast<float>(gate_qsum) -
+                                gate_cache[cr].min * cache_b[cc].s;
+                            up_sum[(wsic * TM + cr) * TN + cc] +=
+                                up_cache[cr].d * cache_b[cc].d * static_cast<float>(up_qsum) -
+                                up_cache[cr].min * cache_b[cc].s;
                         }
-                        gate_sum[(wsic * TM + cr) * TN + cc] +=
-                            gate_cache[cr].d * cache_b[cc].d * static_cast<float>(gate_qsum) -
-                            gate_cache[cr].min * cache_b[cc].s;
-                        up_sum[(wsic * TM + cr) * TN + cc] +=
-                            up_cache[cr].d * cache_b[cc].d * static_cast<float>(up_qsum) -
-                            up_cache[cr].min * cache_b[cc].s;
                     }
                 }
             }
+            __syncthreads();
         }
-        __syncthreads();
-    }
 
-    #pragma unroll
-    for (int wsic = 0; wsic < WNITER; ++wsic) {
         #pragma unroll
-        for (int cr = 0; cr < TM; ++cr) {
-            const long long row = row_base + tiwr * TM + cr;
+        for (int wsic = 0; wsic < WNITER; ++wsic) {
             #pragma unroll
-            for (int cc = 0; cc < TN; ++cc) {
-                const int col = wsic * WSUBN + tiwc * TN + cc;
-                const uint32_t route_index = route_base + static_cast<uint32_t>(col);
-                if (row < c.rows && route_index < count) {
-                    const uint32_t route = buf_b[col].route;
-                    const long long id = static_cast<long long>(route % static_cast<uint32_t>(c.n_ids));
-                    const long long token = static_cast<long long>(route / static_cast<uint32_t>(c.n_ids));
-                    const int sum_idx = (wsic * TM + cr) * TN + cc;
-                    const float gate_value = gate_sum[sum_idx];
-                    const float silu_gate = gate_value / (1.0f + __expf(-gate_value));
-                    char * dst_base = reinterpret_cast<char *>(dst) + id * c.dst_nb1 + token * c.dst_nb2;
-                    *reinterpret_cast<float *>(dst_base + row * sizeof(float)) = up_sum[sum_idx] * silu_gate;
+            for (int cr = 0; cr < TM; ++cr) {
+                const long long row = row_base + tiwr * TM + cr;
+                #pragma unroll
+                for (int cc = 0; cc < TN; ++cc) {
+                    const int col = wsic * WSUBN + tiwc * TN + cc;
+                    const uint32_t route_index = route_base + static_cast<uint32_t>(col);
+                    if (row < c.rows && route_index < count) {
+                        const uint32_t route = buf_b[col].route;
+                        const long long id = static_cast<long long>(route % static_cast<uint32_t>(c.n_ids));
+                        const long long token = static_cast<long long>(route / static_cast<uint32_t>(c.n_ids));
+                        const int sum_idx = (wsic * TM + cr) * TN + cc;
+                        const float gate_value = gate_sum[sum_idx];
+                        const float silu_gate = gate_value / (1.0f + __expf(-gate_value));
+                        char * dst_base = reinterpret_cast<char *>(dst) + id * c.dst_nb1 + token * c.dst_nb2;
+                        *reinterpret_cast<float *>(dst_base + row * sizeof(float)) = up_sum[sum_idx] * silu_gate;
+                    }
                 }
             }
         }

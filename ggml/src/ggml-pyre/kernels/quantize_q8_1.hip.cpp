@@ -101,9 +101,20 @@ extern "C" __global__ void pyre_quantize_q8_1_x4_f32(
     const long long linear_block = (z * c.ne1 + i1) * blocks_per_col + block;
     pyre_block_q8_1_x4_packed128 * out = dst + (linear_block >> 2);
 
-    // Store bytes directly so the x4 layout is independent of wave32/wave64
-    // shuffle lane numbering.
-    reinterpret_cast<int8_t *>(out->qs)[inner * 32 + lane] = static_cast<int8_t>(q);
+    // All source lanes must execute the permutes; doing this inside the store
+    // lane predicate leaves the neighboring bytes undefined.
+    const int wave_lane_base = (tid & (warpSize - 1)) & ~31;
+    const unsigned int q1 = static_cast<unsigned char>(
+        __builtin_amdgcn_ds_bpermute((wave_lane_base + lane + 1) << 2, q));
+    const unsigned int q2 = static_cast<unsigned char>(
+        __builtin_amdgcn_ds_bpermute((wave_lane_base + lane + 2) << 2, q));
+    const unsigned int q3 = static_cast<unsigned char>(
+        __builtin_amdgcn_ds_bpermute((wave_lane_base + lane + 3) << 2, q));
+    if ((lane & 3) == 0) {
+        const unsigned int q0 = static_cast<unsigned char>(q);
+        out->qs[inner * 8 + (lane >> 2)] =
+            static_cast<int>(q0 | (q1 << 8) | (q2 << 16) | (q3 << 24));
+    }
     if (lane == 0) {
         out->ds[inner * 2 + 0] = __half_as_ushort(__float2half(d));
         out->ds[inner * 2 + 1] = __half_as_ushort(__float2half(sum * d));

@@ -751,8 +751,8 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
         /* .enable_q5_k_q8_1_mmq_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_MMQ_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ32_PROMPT"),
-        /* .enable_q5_k_q8_1_x4_mmql128_prompt = */ ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQL128_PROMPT") &&
+        /* .enable_q5_k_q8_1_x4_mmql128_prompt = */ !ggml_backend_pyre_env_enabled(
+            "GGML_PYRE_DISABLE_FAST_APPROX_PROMPT") &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q5_K_Q8_1_X4_MMQL128_PROMPT"),
         /* .enable_q5_k_q8_1_x4_mmq64_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ64_PROMPT"),
@@ -8380,7 +8380,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k(
                         (grouped_constants.rows + 3) / 4),
                 static_cast<uint32_t>(
                     use_q8_1_x4_mmq ?
-                        (grouped_constants.route_capacity + 63) / 64 :
+                        (grouped_constants.n_tokens + 63) / 64 :
                         grouped_constants.n_experts),
                 static_cast<uint32_t>(use_q8_1_x4_mmq ? grouped_constants.n_experts : 1),
             },
@@ -8704,7 +8704,7 @@ static ggml_status ggml_backend_pyre_dispatch_mul_mat_id_q4_k_swiglu(
                         (grouped_constants.rows + 3) / 4),
                 static_cast<uint32_t>(
                     use_q8_1_x4_mmq ?
-                        (grouped_constants.route_capacity + 63) / 64 :
+                        (grouped_constants.n_tokens + 31) / 32 :
                         grouped_constants.n_experts),
                 static_cast<uint32_t>(use_q8_1_x4_mmq ? grouped_constants.n_experts : 1),
             },
