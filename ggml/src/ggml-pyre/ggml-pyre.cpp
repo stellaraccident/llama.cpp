@@ -717,8 +717,7 @@ static ggml_backend_pyre_provider_policy ggml_backend_pyre_provider_policy_from_
             "GGML_PYRE_ENABLE_Q5_K_Q8_1_X4_MMQ64_PROMPT"),
         /* .enable_q6_k_rows2_cols8_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_ROWS2_COLS8_PROMPT") &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_COLS16_PROMPT"),
-        /* .enable_q6_k_q8_1_x4_mmql128_prompt = */ ggml_backend_pyre_env_enabled(
-            "GGML_PYRE_ENABLE_Q6_K_Q8_1_X4_MMQL128_PROMPT") &&
+        /* .enable_q6_k_q8_1_x4_mmql128_prompt = */ !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_FAST_APPROX_PROMPT") &&
             !ggml_backend_pyre_env_enabled("GGML_PYRE_DISABLE_Q6_K_Q8_1_X4_MMQL128_PROMPT"),
         /* .enable_q6_k_q8_1_x4_mmq32_prompt = */ ggml_backend_pyre_env_enabled(
             "GGML_PYRE_ENABLE_Q6_K_Q8_1_X4_MMQ32_PROMPT"),
@@ -2741,6 +2740,8 @@ static bool ggml_backend_pyre_supports_topk_moe_f32(
         const ggml_tensor * soft_max,
         const ggml_tensor * weights,
         const ggml_tensor * ids) {
+    const int64_t n_logit_rows =
+        (soft_max && soft_max->src[0]) ? ggml_nrows(soft_max->src[0]) : 0;
     if (device_context->policy.disable_topk_moe ||
         device_context->topk_moe_f32_provider.kind !=
             ggml_backend_pyre_provider_kind::direct_executable ||
@@ -2755,9 +2756,14 @@ static bool ggml_backend_pyre_supports_topk_moe_f32(
         soft_max->src[0]->ne[0] <= 0 ||
         soft_max->src[0]->ne[0] > 256 ||
         (soft_max->src[0]->ne[0] & (soft_max->src[0]->ne[0] - 1)) != 0 ||
-        ggml_nrows(soft_max->src[0]) != 1 ||
-        ggml_nelements(weights) > 32 ||
+        n_logit_rows <= 0 ||
+        (n_logit_rows != 1 &&
+            !ggml_backend_pyre_env_enabled("GGML_PYRE_ENABLE_PROMPT_TOPK_MOE")) ||
+        ggml_nrows(weights) != n_logit_rows ||
+        ggml_nrows(ids) != n_logit_rows ||
         ggml_nelements(weights) != ggml_nelements(ids) ||
+        ggml_nelements(weights) / n_logit_rows <= 0 ||
+        ggml_nelements(weights) / n_logit_rows > 32 ||
         !ggml_is_contiguous(soft_max->src[0]) ||
         weights->nb[0] != sizeof(float) ||
         ids->nb[0] != sizeof(int32_t)) {
