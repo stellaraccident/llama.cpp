@@ -374,6 +374,63 @@ static void run_q6_k_prompt_matvec_case(ggml_backend_t backend, ggml_backend_dev
         1.0e-4f, "q6_prompt_cols512_output");
 }
 
+static void run_q6_k_decode_shape_case(
+        ggml_backend_t backend,
+        ggml_backend_dev_t dev,
+        int64_t k,
+        int64_t rows,
+        const char * label) {
+    constexpr int64_t cols = 1;
+    const int64_t blocks_per_row = k / QK_K;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * lhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_Q6_K, k, rows);
+    ggml_tensor * rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, k, cols);
+    ggml_tensor * dst = ggml_mul_mat(ctx.get(), lhs, rhs);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, dst));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, dst);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> lhs_f32(static_cast<size_t>(rows * k));
+    std::vector<float> rhs_f32(static_cast<size_t>(cols * k));
+    std::vector<float> lhs_reference(lhs_f32.size());
+    for (size_t i = 0; i < lhs_f32.size(); ++i) {
+        lhs_f32[i] = static_cast<float>(static_cast<int>(i % 67) - 33) / 34.0f;
+    }
+    for (size_t i = 0; i < rhs_f32.size(); ++i) {
+        rhs_f32[i] = static_cast<float>(static_cast<int>(i % 71) - 35) / 36.0f;
+    }
+
+    std::vector<block_q6_K> lhs_q6(static_cast<size_t>(rows * blocks_per_row));
+    for (int64_t row = 0; row < rows; ++row) {
+        quantize_row_q6_K_ref(
+            lhs_f32.data() + row * k,
+            lhs_q6.data() + row * blocks_per_row,
+            k);
+        dequantize_row_q6_K(
+            lhs_q6.data() + row * blocks_per_row,
+            lhs_reference.data() + row * k,
+            k);
+    }
+
+    ggml_backend_tensor_set(lhs, lhs_q6.data(), 0, lhs_q6.size() * sizeof(block_q6_K));
+    ggml_backend_tensor_set(rhs, rhs_f32.data(), 0, rhs_f32.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> output(static_cast<size_t>(rows * cols), -1.0f);
+    ggml_backend_tensor_get(dst, output.data(), 0, output.size() * sizeof(float));
+    expect_near_rel(output, reference_mul_mat(lhs_reference, rhs_f32, k, rows, cols), 3.0e-4f, 2.0e-5f, label);
+}
+
+static void run_q6_k_decode_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_q6_k_decode_shape_case(backend, dev, 2048, 33, "q6_decode_k2048_rows33_output");
+    run_q6_k_decode_shape_case(backend, dev, 4096, 17, "q6_decode_k4096_rows17_output");
+}
+
 static void run_q5_k_prompt_matvec_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t k = QK_K;
     constexpr int64_t rows = 4;
@@ -1911,6 +1968,10 @@ int main() {
     }
     if (test_filter != nullptr && std::strcmp(test_filter, "f32_batched_decode") == 0) {
         run_f32_batched_decode_case(backend.get(), dev);
+        return 0;
+    }
+    if (test_filter != nullptr && std::strcmp(test_filter, "q6_decode") == 0) {
+        run_q6_k_decode_case(backend.get(), dev);
         return 0;
     }
     if (test_filter != nullptr && std::strcmp(test_filter, "q4_id_mul_decode") == 0) {

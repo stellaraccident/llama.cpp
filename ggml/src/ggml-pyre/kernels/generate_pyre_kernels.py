@@ -1174,6 +1174,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "pyre_mul_mat_vec_q6_k_rows2_cols1_wg32_f32",
+        "source": "mul_mat_vec_q6_k.hip.cpp",
+        "format": "FPIH",
+        "binding_count": 3,
+        "constants_size": 24,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
         "name": "pyre_mul_mat_vec_q6_k_rows2_cols8_wg128_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
         "format": "FPIH",

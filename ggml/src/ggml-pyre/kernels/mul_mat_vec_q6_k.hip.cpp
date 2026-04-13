@@ -178,6 +178,70 @@ static __device__ __forceinline__ void pyre_q6_k_dot4_cols8_acc(
     }
 }
 
+static __device__ __forceinline__ uint32_t pyre_load_u32(const uint8_t * base) {
+    return static_cast<uint32_t>(base[0]) |
+        (static_cast<uint32_t>(base[1]) << 8) |
+        (static_cast<uint32_t>(base[2]) << 16) |
+        (static_cast<uint32_t>(base[3]) << 24);
+}
+
+static __device__ __forceinline__ float pyre_q6_k_dot16(
+        const pyre_block_q6_K * block,
+        const float * src,
+        int itid) {
+    const int v_im = itid >> 3;
+    const int v_in = itid & 7;
+    const int l0 = 4 * v_in;
+    const int is = v_in >> 2;
+
+    const int ql_offset = 64 * v_im + l0;
+    const int qh_offset = 32 * v_im + l0;
+    const int s_offset = 8 * v_im + is;
+    const int y_offset = 128 * v_im + l0;
+
+    const uint32_t ql0 = pyre_load_u32(block->ql + ql_offset);
+    const uint32_t ql32 = pyre_load_u32(block->ql + ql_offset + 32);
+    const uint32_t qh = pyre_load_u32(block->qh + qh_offset);
+
+    const uint32_t q0 = (ql0 & 0x0F0F0F0Fu) | ((qh & 0x03030303u) << 4);
+    const uint32_t q1 = (ql32 & 0x0F0F0F0Fu) | ((qh & 0x0C0C0C0Cu) << 2);
+    const uint32_t q2 = ((ql0 >> 4) & 0x0F0F0F0Fu) | (qh & 0x30303030u);
+    const uint32_t q3 = ((ql32 >> 4) & 0x0F0F0F0Fu) | ((qh & 0xC0C0C0C0u) >> 2);
+
+    const float4 by0 = *reinterpret_cast<const float4 *>(src + y_offset);
+    const float4 by32 = *reinterpret_cast<const float4 *>(src + y_offset + 32);
+    const float4 by64 = *reinterpret_cast<const float4 *>(src + y_offset + 64);
+    const float4 by96 = *reinterpret_cast<const float4 *>(src + y_offset + 96);
+
+    const float sx =
+        (static_cast<float>((q0 >> 0) & 0xFFu) - 32.0f) * by0.x +
+        (static_cast<float>((q0 >> 8) & 0xFFu) - 32.0f) * by0.y +
+        (static_cast<float>((q0 >> 16) & 0xFFu) - 32.0f) * by0.z +
+        (static_cast<float>((q0 >> 24) & 0xFFu) - 32.0f) * by0.w;
+    const float sy =
+        (static_cast<float>((q1 >> 0) & 0xFFu) - 32.0f) * by32.x +
+        (static_cast<float>((q1 >> 8) & 0xFFu) - 32.0f) * by32.y +
+        (static_cast<float>((q1 >> 16) & 0xFFu) - 32.0f) * by32.z +
+        (static_cast<float>((q1 >> 24) & 0xFFu) - 32.0f) * by32.w;
+    const float sz =
+        (static_cast<float>((q2 >> 0) & 0xFFu) - 32.0f) * by64.x +
+        (static_cast<float>((q2 >> 8) & 0xFFu) - 32.0f) * by64.y +
+        (static_cast<float>((q2 >> 16) & 0xFFu) - 32.0f) * by64.z +
+        (static_cast<float>((q2 >> 24) & 0xFFu) - 32.0f) * by64.w;
+    const float sw =
+        (static_cast<float>((q3 >> 0) & 0xFFu) - 32.0f) * by96.x +
+        (static_cast<float>((q3 >> 8) & 0xFFu) - 32.0f) * by96.y +
+        (static_cast<float>((q3 >> 16) & 0xFFu) - 32.0f) * by96.z +
+        (static_cast<float>((q3 >> 24) & 0xFFu) - 32.0f) * by96.w;
+
+    const float d = __half2float(__ushort_as_half(block->d));
+    return d * (
+        sx * static_cast<float>(block->scales[s_offset]) +
+        sy * static_cast<float>(block->scales[s_offset + 2]) +
+        sz * static_cast<float>(block->scales[s_offset + 4]) +
+        sw * static_cast<float>(block->scales[s_offset + 6]));
+}
+
 template <int WG_SIZE>
 static __device__ __forceinline__ void pyre_mul_mat_vec_q6_k_f32_impl(
         const pyre_block_q6_K * src0, const float * src1, float * dst,
@@ -235,6 +299,47 @@ extern "C" __global__ void pyre_mul_mat_vec_q6_k_wg64_f32(
         const pyre_block_q6_K * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
     pyre_mul_mat_vec_q6_k_f32_impl<64>(src0, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void pyre_mul_mat_vec_q6_k_rows2_cols1_wg32_f32(
+        const pyre_block_q6_K * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long col = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 >= rows || col >= cols) {
+        return;
+    }
+
+    const long long blocks_per_row = k / 256;
+    const pyre_block_q6_K * row0_blocks = src0 + row0 * blocks_per_row;
+    const pyre_block_q6_K * row1_blocks = row0_blocks + blocks_per_row;
+    const float * src1_col = src1 + col * k;
+
+    const int itid = tid & 15;
+    const int block_slot = tid >> 4;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 2) {
+        const float * src_block = src1_col + block_idx * 256;
+        sum0 += pyre_q6_k_dot16(row0_blocks + block_idx, src_block, itid);
+        if (row0 + 1 < rows) {
+            sum1 += pyre_q6_k_dot16(row1_blocks + block_idx, src_block, itid);
+        }
+    }
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+    }
+
+    if (tid == 0) {
+        dst[col * rows + row0] = sum0;
+        if (row0 + 1 < rows) {
+            dst[col * rows + row0 + 1] = sum1;
+        }
+    }
 }
 
 extern "C" __global__ void pyre_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
