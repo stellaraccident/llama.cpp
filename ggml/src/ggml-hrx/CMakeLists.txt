@@ -92,6 +92,7 @@ if (Python3_Interpreter_FOUND AND GGML_HRX_CLANGXX AND GGML_HRX_ROCM_PATH AND GG
             COMMAND "${GGML_HRX_CLANGXX}"
                 -x hip
                 --offload-device-only
+                --no-gpu-bundle-output
                 "--offload-arch=${GGML_HRX_AMDGPU_TARGET}"
                 "--rocm-path=${GGML_HRX_ROCM_PATH}"
                 -O2

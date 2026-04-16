@@ -66,8 +66,8 @@ struct hrx_rms_norm_mul_rope_set_rows_constants {
     float attn_factor;
     float _pad1;
     long long set_rows_ne1;
-    long long set_rows_ne11;
-    long long set_rows_ne12;
+    int set_rows_ne11;
+    int set_rows_ne12;
     long long idx_nb0;
     long long idx_nb1;
     long long idx_nb2;

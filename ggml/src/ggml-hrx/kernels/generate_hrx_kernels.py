@@ -8,7 +8,7 @@ KERNELS = [
     {
         "name": "hrx_rms_norm_f32",
         "source": "rms_norm.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 88,
         "workgroup_size": (512, 1, 1),
@@ -16,7 +16,7 @@ KERNELS = [
     {
         "name": "hrx_rms_norm_mul_f32",
         "source": "rms_norm_mul_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 144,
         "workgroup_size": (512, 1, 1),
@@ -24,7 +24,7 @@ KERNELS = [
     {
         "name": "hrx_rms_norm_mul_wg128_f32",
         "source": "rms_norm_mul_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 144,
         "workgroup_size": (128, 1, 1),
@@ -32,7 +32,7 @@ KERNELS = [
     {
         "name": "hrx_rms_norm_mul_rope_f32",
         "source": "rms_norm_mul_rope_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 184,
         "workgroup_size": (512, 1, 1),
@@ -40,15 +40,15 @@ KERNELS = [
     {
         "name": "hrx_rms_norm_mul_rope_set_rows_f32_f16",
         "source": "rms_norm_mul_rope_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
-        "constants_size": 256,
+        "constants_size": 248,
         "workgroup_size": (512, 1, 1),
     },
     {
         "name": "hrx_add_rms_norm_mul_f32_broadcast",
         "source": "add_rms_norm_mul_f32_broadcast.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 200,
         "workgroup_size": (512, 1, 1),
@@ -56,7 +56,7 @@ KERNELS = [
     {
         "name": "hrx_add_f32",
         "source": "add_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -64,7 +64,7 @@ KERNELS = [
     {
         "name": "hrx_add_f32_broadcast",
         "source": "add_f32_broadcast.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 112,
         "workgroup_size": (256, 1, 1),
@@ -72,7 +72,7 @@ KERNELS = [
     {
         "name": "hrx_add_add_f32_broadcast",
         "source": "add_add_f32_broadcast.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 144,
         "workgroup_size": (256, 1, 1),
@@ -80,7 +80,7 @@ KERNELS = [
     {
         "name": "hrx_add8_f32",
         "source": "add8_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 9,
         "constants_size": 88,
         "workgroup_size": (256, 1, 1),
@@ -88,7 +88,7 @@ KERNELS = [
     {
         "name": "hrx_mul_sum8_f32",
         "source": "mul_sum8_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 56,
         "workgroup_size": (256, 1, 1),
@@ -96,7 +96,7 @@ KERNELS = [
     {
         "name": "hrx_mul_add_add_f32_broadcast",
         "source": "mul_add_add_f32_broadcast.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 176,
         "workgroup_size": (256, 1, 1),
@@ -104,7 +104,7 @@ KERNELS = [
     {
         "name": "hrx_mul_f32",
         "source": "mul_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -112,7 +112,7 @@ KERNELS = [
     {
         "name": "hrx_mul_f32_broadcast",
         "source": "mul_f32_broadcast.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 112,
         "workgroup_size": (256, 1, 1),
@@ -120,7 +120,7 @@ KERNELS = [
     {
         "name": "hrx_div_f32_broadcast",
         "source": "div_f32_broadcast.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 112,
         "workgroup_size": (256, 1, 1),
@@ -128,7 +128,7 @@ KERNELS = [
     {
         "name": "hrx_scale_f32",
         "source": "scale_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 16,
         "workgroup_size": (256, 1, 1),
@@ -136,7 +136,7 @@ KERNELS = [
     {
         "name": "hrx_set_rows_f32_f32",
         "source": "set_rows_f32_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -144,7 +144,7 @@ KERNELS = [
     {
         "name": "hrx_set_rows_f32_f16",
         "source": "set_rows_f32_f16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -152,7 +152,7 @@ KERNELS = [
     {
         "name": "hrx_set_rows_f32_q8_0",
         "source": "set_rows_f32_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -160,7 +160,7 @@ KERNELS = [
     {
         "name": "hrx_set_rows_f32_q4_0",
         "source": "set_rows_f32_q4_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -168,7 +168,7 @@ KERNELS = [
     {
         "name": "hrx_silu_f32",
         "source": "unary_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -176,7 +176,7 @@ KERNELS = [
     {
         "name": "hrx_sigmoid_f32",
         "source": "unary_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -184,7 +184,7 @@ KERNELS = [
     {
         "name": "hrx_sigmoid_mul_f32_strided",
         "source": "sigmoid_mul_f32_strided.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 80,
         "workgroup_size": (256, 1, 1),
@@ -192,7 +192,7 @@ KERNELS = [
     {
         "name": "hrx_softplus_f32",
         "source": "unary_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -200,7 +200,7 @@ KERNELS = [
     {
         "name": "hrx_swiglu_f32",
         "source": "unary_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -208,7 +208,7 @@ KERNELS = [
     {
         "name": "hrx_sum_rows_f32",
         "source": "row_reduce_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 88,
         "workgroup_size": (256, 1, 1),
@@ -216,7 +216,7 @@ KERNELS = [
     {
         "name": "hrx_l2_norm_f32",
         "source": "row_reduce_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 88,
         "workgroup_size": (256, 1, 1),
@@ -224,7 +224,7 @@ KERNELS = [
     {
         "name": "hrx_l2_norm_wg128_f32",
         "source": "row_reduce_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 88,
         "workgroup_size": (128, 1, 1),
@@ -232,7 +232,7 @@ KERNELS = [
     {
         "name": "hrx_clamp_f32",
         "source": "clamp_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 16,
         "workgroup_size": (256, 1, 1),
@@ -240,7 +240,7 @@ KERNELS = [
     {
         "name": "hrx_get_rows_f32",
         "source": "get_rows_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 104,
         "workgroup_size": (256, 1, 1),
@@ -248,7 +248,7 @@ KERNELS = [
     {
         "name": "hrx_get_rows_f32_nr1",
         "source": "get_rows_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 104,
         "workgroup_size": (256, 1, 1),
@@ -256,7 +256,7 @@ KERNELS = [
     {
         "name": "hrx_get_rows_q5_k_f32",
         "source": "get_rows_q5_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 104,
         "workgroup_size": (256, 1, 1),
@@ -264,7 +264,7 @@ KERNELS = [
     {
         "name": "hrx_concat_f32",
         "source": "concat_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 72,
         "workgroup_size": (256, 1, 1),
@@ -272,7 +272,7 @@ KERNELS = [
     {
         "name": "hrx_copy_strided_f32",
         "source": "copy_strided_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 64,
         "workgroup_size": (256, 1, 1),
@@ -280,7 +280,7 @@ KERNELS = [
     {
         "name": "hrx_copy_f32_f16",
         "source": "copy_f32_f16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -288,7 +288,7 @@ KERNELS = [
     {
         "name": "hrx_soft_max_f32",
         "source": "soft_max_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 88,
         "workgroup_size": (256, 1, 1),
@@ -296,7 +296,7 @@ KERNELS = [
     {
         "name": "hrx_soft_max_f32_mask",
         "source": "soft_max_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 88,
         "workgroup_size": (32, 16, 1),
@@ -304,7 +304,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_f16_decode",
         "source": "flash_attn_ext_f32_f16_decode.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -312,7 +312,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_f16_prefill_tile8",
         "source": "flash_attn_ext_f32_f16_prefill_tile8.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -320,7 +320,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_f16_prefill_wmma16",
         "source": "flash_attn_ext_f32_f16_prefill_wmma16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -328,7 +328,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_f16_prefill_gfx11_direct",
         "source": "flash_attn_ext_f32_f16_prefill_gfx11_direct.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -336,7 +336,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_bf16_decode",
         "source": "flash_attn_ext_f32_bf16_decode.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -344,7 +344,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_f32_decode",
         "source": "flash_attn_ext_f32_f32_decode.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -352,7 +352,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_q8_0_decode",
         "source": "flash_attn_ext_f32_q8_0_decode.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -360,7 +360,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_q4_0_decode",
         "source": "flash_attn_ext_f32_q4_0_decode.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -368,7 +368,7 @@ KERNELS = [
     {
         "name": "hrx_flash_attn_ext_f32_q8_0_q4_0_decode",
         "source": "flash_attn_ext_f32_q8_0_q4_0_decode.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -376,7 +376,7 @@ KERNELS = [
     {
         "name": "hrx_argsort_f32_i32",
         "source": "argsort_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -384,7 +384,7 @@ KERNELS = [
     {
         "name": "hrx_rope_f32",
         "source": "rope_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 120,
         "workgroup_size": (256, 1, 1),
@@ -392,7 +392,7 @@ KERNELS = [
     {
         "name": "hrx_rope_set_rows_f32_f16",
         "source": "rope_set_rows_f32_f16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 192,
         "workgroup_size": (256, 1, 1),
@@ -400,7 +400,7 @@ KERNELS = [
     {
         "name": "hrx_topk_moe_f32",
         "source": "topk_moe_f32_shared.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 80,
         "workgroup_size": (64, 1, 1),
@@ -408,7 +408,7 @@ KERNELS = [
     {
         "name": "hrx_topk_moe_f32_shared4",
         "source": "topk_moe_f32_shared.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 80,
         "workgroup_size": (64, 4, 1),
@@ -416,7 +416,7 @@ KERNELS = [
     {
         "name": "hrx_topk_moe_f32_wave32",
         "source": "topk_moe_f32_wave32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 80,
         "workgroup_size": (32, 4, 1),
@@ -424,7 +424,7 @@ KERNELS = [
     {
         "name": "hrx_ssm_conv_f32",
         "source": "ssm_conv_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 88,
         "workgroup_size": (32, 16, 1),
@@ -432,7 +432,7 @@ KERNELS = [
     {
         "name": "hrx_ssm_conv_update_f32",
         "source": "ssm_conv_update_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 104,
         "workgroup_size": (256, 1, 1),
@@ -440,7 +440,7 @@ KERNELS = [
     {
         "name": "hrx_gated_delta_net_f32",
         "source": "gated_delta_net_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 8,
         "constants_size": 208,
         "workgroup_size": (256, 1, 1),
@@ -448,7 +448,7 @@ KERNELS = [
     {
         "name": "hrx_gated_delta_net_s128_cluster8_f32",
         "source": "gated_delta_net_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 8,
         "constants_size": 208,
         "workgroup_size": (64, 1, 1),
@@ -456,7 +456,7 @@ KERNELS = [
     {
         "name": "hrx_gated_delta_net_s128_cluster8_nokda_f32",
         "source": "gated_delta_net_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 8,
         "constants_size": 208,
         "workgroup_size": (64, 1, 1),
@@ -464,7 +464,7 @@ KERNELS = [
     {
         "name": "hrx_gated_delta_net_s128_cluster8_nokda_nomod_f32",
         "source": "gated_delta_net_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 8,
         "constants_size": 176,
         "workgroup_size": (64, 1, 1),
@@ -472,7 +472,7 @@ KERNELS = [
     {
         "name": "hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_f32",
         "source": "gated_delta_net_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 8,
         "constants_size": 16,
         "workgroup_size": (32, 1, 1),
@@ -480,7 +480,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f16_f32",
         "source": "mul_mat_vec_f16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -488,7 +488,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f16_batched_f32",
         "source": "mul_mat_vec_f16_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -496,7 +496,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f16_batched_cols1_f32",
         "source": "mul_mat_vec_f16_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -504,7 +504,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f16_batched_cols4_f32",
         "source": "mul_mat_vec_f16_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -512,7 +512,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f16_batched_cols8_f32",
         "source": "mul_mat_vec_f16_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -520,7 +520,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f16_batched_cols16_f32",
         "source": "mul_mat_vec_f16_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -528,7 +528,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -536,7 +536,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_wg128_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -544,7 +544,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_wg64_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -552,7 +552,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_cols1_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -560,7 +560,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_rows2_cols1_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -568,7 +568,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_rows2_cols1_wg32_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (32, 1, 1),
@@ -576,7 +576,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_rows4_k512_cols1_lds_wg256_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -584,7 +584,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_rows4_k2048_cols1_lds_wg256_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -592,7 +592,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_cols4_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -600,7 +600,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_cols8_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -608,7 +608,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_cols16_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -616,7 +616,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_cols32_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -624,7 +624,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_rows2_cols16_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (32, 1, 1),
@@ -632,7 +632,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_wmma16x16_f32",
         "source": "mul_mat_vec_bf16.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (32, 1, 1),
@@ -640,7 +640,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -648,7 +648,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_wg128_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -656,7 +656,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_wg64_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -664,7 +664,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_wmma16x16_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (32, 1, 1),
@@ -672,7 +672,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_cols1_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -680,7 +680,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_rows2_cols1_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -688,7 +688,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_rows4_k2048_cols1_lds_wg256_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -696,7 +696,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_cols4_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -704,7 +704,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_cols8_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -712,7 +712,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_cols16_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -720,7 +720,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_swiglu_rows2_cols8_f32",
         "source": "mul_mat_vec_bf16_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (32, 1, 1),
@@ -728,7 +728,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_bf16_set_rows_f16",
         "source": "mul_mat_vec_bf16_set_rows.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 40,
         "workgroup_size": (256, 1, 1),
@@ -736,7 +736,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_f32",
         "source": "mul_mat_vec_f32.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -744,7 +744,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_batched_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -752,7 +752,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_batched_cols1_ne2_1_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -760,7 +760,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_batched_cols1_ne2_1_k2048_wg32_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (32, 1, 1),
@@ -768,7 +768,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_batched_cols8_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -776,7 +776,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_batched_cols16_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -784,7 +784,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_f32_batched_rows2_cols8_f32",
         "source": "mul_mat_vec_f32_batched.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 128,
         "workgroup_size": (256, 1, 1),
@@ -792,7 +792,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 104,
         "workgroup_size": (256, 1, 1),
@@ -800,7 +800,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_wg128_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 104,
         "workgroup_size": (128, 1, 1),
@@ -808,7 +808,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_wg64_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 104,
         "workgroup_size": (64, 1, 1),
@@ -816,7 +816,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_row4_wg64_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 104,
         "workgroup_size": (64, 1, 1),
@@ -824,7 +824,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_row8_wg64_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 104,
         "workgroup_size": (64, 1, 1),
@@ -832,7 +832,7 @@ KERNELS = [
     {
         "name": "hrx_clear_u32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 1,
         "constants_size": 8,
         "workgroup_size": (256, 1, 1),
@@ -840,7 +840,7 @@ KERNELS = [
     {
         "name": "hrx_compact_moe_routes_i32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 48,
         "workgroup_size": (256, 1, 1),
@@ -848,7 +848,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_grouped_row4_wg64_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 96,
         "workgroup_size": (64, 1, 1),
@@ -856,7 +856,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_grouped_row2_route8_wg64_f32",
         "source": "mul_mat_id_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 96,
         "workgroup_size": (64, 1, 1),
@@ -864,7 +864,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32",
         "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 96,
         "workgroup_size": (64, 1, 1),
@@ -872,7 +872,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_q8_1_f32",
         "source": "mul_mat_id_q4_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 96,
         "workgroup_size": (256, 1, 1),
@@ -880,7 +880,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (256, 1, 1),
@@ -888,7 +888,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_wg128_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (128, 1, 1),
@@ -896,7 +896,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_wg64_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -904,7 +904,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_packed_wg64_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -912,7 +912,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_rows2_x16_wg32_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (32, 1, 1),
@@ -920,7 +920,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_rows2_x16_wg16_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (16, 1, 1),
@@ -928,7 +928,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_packed_2row_wg64_f32",
         "source": "mul_mat_id_q4_k_mul.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -936,7 +936,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (256, 1, 1),
@@ -944,7 +944,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_wg128_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (128, 1, 1),
@@ -952,7 +952,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (64, 1, 1),
@@ -960,7 +960,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_row2_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (64, 1, 1),
@@ -968,7 +968,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_row4_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (64, 1, 1),
@@ -976,7 +976,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_row4_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -984,7 +984,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -992,7 +992,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -1000,7 +1000,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32",
         "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 6,
         "constants_size": 112,
         "workgroup_size": (64, 1, 1),
@@ -1008,7 +1008,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (64, 1, 1),
@@ -1016,7 +1016,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_swiglu_rows2_x16_wg32_f32",
         "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 120,
         "workgroup_size": (32, 1, 1),
@@ -1024,7 +1024,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_id_q4_k_mul_q8_1_f32",
         "source": "mul_mat_id_q4_k_mul_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 5,
         "constants_size": 104,
         "workgroup_size": (256, 1, 1),
@@ -1032,7 +1032,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q4_k_f32",
         "source": "mul_mat_vec_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1040,7 +1040,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q4_k_wg128_f32",
         "source": "mul_mat_vec_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1048,7 +1048,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q4_k_wg64_f32",
         "source": "mul_mat_vec_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -1056,7 +1056,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q4_k_packed_wg64_f32",
         "source": "mul_mat_vec_q4_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -1064,7 +1064,7 @@ KERNELS = [
     {
         "name": "hrx_quantize_q8_1_f32",
         "source": "quantize_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 56,
         "workgroup_size": (32, 1, 1),
@@ -1072,7 +1072,7 @@ KERNELS = [
     {
         "name": "hrx_quantize_q8_1_x4_f32",
         "source": "quantize_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 2,
         "constants_size": 56,
         "workgroup_size": (128, 1, 1),
@@ -1080,7 +1080,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q4_k_q8_1_f32",
         "source": "mul_mat_vec_q4_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1088,7 +1088,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_f32",
         "source": "mul_mat_vec_q5_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1096,7 +1096,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_wg128_f32",
         "source": "mul_mat_vec_q5_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1104,7 +1104,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_wg64_f32",
         "source": "mul_mat_vec_q5_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -1112,7 +1112,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_q8_1_f32",
         "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1120,7 +1120,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_f32",
         "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1128,7 +1128,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_f32",
         "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1136,7 +1136,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32",
         "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1144,7 +1144,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32",
         "source": "mul_mat_vec_q5_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1152,7 +1152,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1160,7 +1160,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_wg128_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1168,7 +1168,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_wg64_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
@@ -1176,7 +1176,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_rows2_cols1_wg32_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (32, 1, 1),
@@ -1184,7 +1184,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32",
         "source": "mul_mat_vec_q6_k.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1192,7 +1192,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_q8_1_f32",
         "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1200,7 +1200,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32",
         "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1208,7 +1208,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_f32",
         "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1216,7 +1216,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1224,7 +1224,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_cols8_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1232,7 +1232,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_add_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1240,7 +1240,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_add_cols8_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1248,7 +1248,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_add_rows4_cols4_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (128, 1, 1),
@@ -1256,7 +1256,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_q8_1_x4_mmq128x32_wg256_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 3,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1264,7 +1264,7 @@ KERNELS = [
     {
         "name": "hrx_mul_mat_vec_q8_0_add_q8_1_x4_mmq128x32_wg256_f32",
         "source": "mul_mat_vec_q8_0.hip.cpp",
-        "format": "FPIH",
+        "format": None,
         "binding_count": 4,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
@@ -1305,11 +1305,15 @@ def write_catalog(output, entries, message):
         f.write("static const ggml_hrx_kernel_entry k_hrx_kernel_catalog[] = {\n")
         for entry in entries:
             wx, wy, wz = entry["workgroup_size"]
+            executable_format = entry["format"]
+            executable_format_c = (
+                "nullptr" if not executable_format else f'"{executable_format}"'
+            )
             f.write("    {\n")
             f.write(f'        "{entry["name"]}",\n')
             f.write(f"        {entry['data_symbol']},\n")
             f.write(f"        sizeof({entry['data_symbol']}),\n")
-            f.write(f'        "{entry["format"]}",\n')
+            f.write(f"        {executable_format_c},\n")
             f.write(f"        {entry['binding_count']},\n")
             f.write(f"        {entry['constants_size']},\n")
             f.write(f"        {{ {wx}, {wy}, {wz} }},\n")

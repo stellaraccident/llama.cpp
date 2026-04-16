@@ -3543,8 +3543,8 @@ struct ggml_backend_hrx_rms_norm_mul_rope_set_rows_constants {
     float attn_factor;
     float _pad1;
     int64_t set_rows_ne1;
-    int64_t set_rows_ne11;
-    int64_t set_rows_ne12;
+    int32_t set_rows_ne11;
+    int32_t set_rows_ne12;
     int64_t idx_nb0;
     int64_t idx_nb1;
     int64_t idx_nb2;
@@ -3866,8 +3866,8 @@ static ggml_status ggml_backend_hrx_dispatch_rms_norm_mul_rope_set_rows_f32_f16(
         /* .attn_factor       = */ attn_factor,
         /* ._pad1             = */ 0.0f,
         /* .set_rows_ne1      = */ set_rows->ne[1],
-        /* .set_rows_ne11     = */ idxs->ne[1],
-        /* .set_rows_ne12     = */ idxs->ne[2],
+        /* .set_rows_ne11     = */ static_cast<int32_t>(idxs->ne[1]),
+        /* .set_rows_ne12     = */ static_cast<int32_t>(idxs->ne[2]),
         /* .idx_nb0           = */ static_cast<int64_t>(idxs->nb[0]),
         /* .idx_nb1           = */ static_cast<int64_t>(idxs->nb[1]),
         /* .idx_nb2           = */ static_cast<int64_t>(idxs->nb[2]),
