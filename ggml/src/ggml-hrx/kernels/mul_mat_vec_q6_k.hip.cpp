@@ -342,6 +342,64 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols1_wg32_f32(
     }
 }
 
+template <int WG_SIZE>
+static __device__ __forceinline__ void hrx_mul_mat_vec_q6_k_rowsx_cols1_impl(
+        const hrx_block_q6_K * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    constexpr int rows_per_workgroup = WG_SIZE / 16;
+    const long long row0 =
+        static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * rows_per_workgroup +
+        static_cast<long long>(__builtin_amdgcn_workitem_id_x() >> 5) * 2;
+    const long long col = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & 31;
+    if (row0 >= rows || col >= cols) {
+        return;
+    }
+
+    const long long blocks_per_row = k / 256;
+    const hrx_block_q6_K * row0_blocks = src0 + row0 * blocks_per_row;
+    const hrx_block_q6_K * row1_blocks = row0_blocks + blocks_per_row;
+    const float * src1_col = src1 + col * k;
+
+    const int itid = lane & 15;
+    const int block_slot = lane >> 4;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 2) {
+        const float * src_block = src1_col + block_idx * 256;
+        sum0 += hrx_q6_k_dot16(row0_blocks + block_idx, src_block, itid);
+        if (row0 + 1 < rows) {
+            sum1 += hrx_q6_k_dot16(row1_blocks + block_idx, src_block, itid);
+        }
+    }
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+    }
+
+    if (lane == 0) {
+        dst[col * rows + row0] = sum0;
+        if (row0 + 1 < rows) {
+            dst[col * rows + row0 + 1] = sum1;
+        }
+    }
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows4_cols1_wg64_f32(
+        const hrx_block_q6_K * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    hrx_mul_mat_vec_q6_k_rowsx_cols1_impl<64>(src0, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows8_cols1_wg128_f32(
+        const hrx_block_q6_K * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    hrx_mul_mat_vec_q6_k_rowsx_cols1_impl<128>(src0, src1, dst, k, rows, cols);
+}
+
 extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
         const hrx_block_q6_K * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {

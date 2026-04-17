@@ -102,6 +102,22 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "hrx_sigmoid_mul_add_add_f32_broadcast",
+        "source": "mul_add_add_f32_broadcast.hip.cpp",
+        "format": None,
+        "binding_count": 5,
+        "constants_size": 176,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "hrx_add_softplus_mul_f32_broadcast",
+        "source": "add_softplus_mul_f32_broadcast.hip.cpp",
+        "format": None,
+        "binding_count": 4,
+        "constants_size": 144,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "hrx_mul_f32",
         "source": "mul_f32.hip.cpp",
         "format": None,
@@ -230,6 +246,14 @@ KERNELS = [
         "workgroup_size": (128, 1, 1),
     },
     {
+        "name": "hrx_l2_norm_pair_wg128_f32",
+        "source": "row_reduce_f32.hip.cpp",
+        "format": None,
+        "binding_count": 4,
+        "constants_size": 176,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
         "name": "hrx_clamp_f32",
         "source": "clamp_f32.hip.cpp",
         "format": None,
@@ -251,6 +275,14 @@ KERNELS = [
         "format": None,
         "binding_count": 3,
         "constants_size": 104,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "hrx_scale_get_rows_f32_nr1",
+        "source": "get_rows_f32.hip.cpp",
+        "format": None,
+        "binding_count": 3,
+        "constants_size": 112,
         "workgroup_size": (256, 1, 1),
     },
     {
@@ -471,6 +503,14 @@ KERNELS = [
     },
     {
         "name": "hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_f32",
+        "source": "gated_delta_net_f32.hip.cpp",
+        "format": None,
+        "binding_count": 8,
+        "constants_size": 16,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
+        "name": "hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_beta_sigmoid_f32",
         "source": "gated_delta_net_f32.hip.cpp",
         "format": None,
         "binding_count": 8,

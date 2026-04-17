@@ -17,6 +17,24 @@ struct hrx_get_rows_f32_constants {
     long long ne11;
 };
 
+struct hrx_scale_get_rows_f32_constants {
+    long long nc;
+    long long nr;
+    long long src0_nb1;
+    long long src0_nb2;
+    long long src0_nb3;
+    long long idx_nb0;
+    long long idx_nb1;
+    long long idx_nb2;
+    long long dst_nb1;
+    long long dst_nb2;
+    long long dst_nb3;
+    long long ne10;
+    long long ne11;
+    float scale;
+    float bias;
+};
+
 extern "C" __global__ void hrx_get_rows_f32(
         const float * src0, const int * idx, float * dst,
         hrx_get_rows_f32_constants c) {
@@ -60,4 +78,33 @@ extern "C" __global__ void hrx_get_rows_f32_nr1(
 
     const char * src_row = reinterpret_cast<const char *>(src0) + static_cast<long long>(row_index) * c.src0_nb1;
     dst[col] = *reinterpret_cast<const float *>(src_row + col * sizeof(float));
+}
+
+extern "C" __global__ void hrx_scale_get_rows_f32_nr1(
+        const float * src0, const int * idx, float * dst,
+        hrx_scale_get_rows_f32_constants c) {
+    const long long col = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 256 +
+        __builtin_amdgcn_workitem_id_x();
+    if (col >= c.nc) {
+        return;
+    }
+    (void) c.nr;
+    (void) c.src0_nb2;
+    (void) c.src0_nb3;
+    (void) c.idx_nb0;
+    (void) c.idx_nb1;
+    (void) c.idx_nb2;
+    (void) c.dst_nb1;
+    (void) c.dst_nb2;
+    (void) c.dst_nb3;
+    (void) c.ne10;
+    (void) c.ne11;
+
+    const int row_index = *reinterpret_cast<const int *>(reinterpret_cast<const char *>(idx));
+    if (row_index < 0) {
+        return;
+    }
+
+    const char * src_row = reinterpret_cast<const char *>(src0) + static_cast<long long>(row_index) * c.src0_nb1;
+    dst[col] = *reinterpret_cast<const float *>(src_row + col * sizeof(float)) * c.scale + c.bias;
 }

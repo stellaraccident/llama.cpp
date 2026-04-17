@@ -67,6 +67,10 @@ struct hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_constants {
 
 static_assert(sizeof(hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_constants) == 16);
 
+static __device__ __forceinline__ float hrx_sigmoid_f32(float x) {
+    return 1.0f / (1.0f + __expf(-x));
+}
+
 extern "C" __global__ void hrx_gated_delta_net_f32(
         const float * q,
         const float * k,
@@ -521,6 +525,76 @@ extern "C" __global__ void hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_f32(
     }
     const float kv_col = hrx_reduce_cluster8_dpp(kv_partial);
     const float delta_col = (v_base[col] - kv_col) * beta[head];
+
+    float attn_partial = 0.0f;
+    #pragma unroll
+    for (unsigned int r = 0; r < rows_per_lane; ++r) {
+        s_shard[r] = g_scalar * s_shard[r] + k_reg[r] * delta_col;
+        attn_partial += s_shard[r] * q_reg[r];
+    }
+    const float attn_col = hrx_reduce_cluster8_dpp(attn_partial);
+
+    if (lane == 0) {
+        dst[head * S_v + col] = attn_col * c.scale;
+    }
+
+    #pragma unroll
+    for (unsigned int r = 0; r < rows_per_lane; ++r) {
+        state_out[r * lanes_per_column + lane] = s_shard[r];
+    }
+}
+
+extern "C" __global__ void hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_beta_sigmoid_f32(
+        const float * q,
+        const float * k,
+        const float * v,
+        const float * g,
+        const float * beta,
+        const float * state_in,
+        float * dst,
+        float * state_dst,
+        hrx_gated_delta_net_s128_h32_qk16_tok1_nokda_constants c) {
+    constexpr unsigned int S_v = 128;
+    constexpr unsigned int H = 32;
+    constexpr unsigned int qk_heads = 16;
+    constexpr unsigned int lanes_per_column = 8;
+    constexpr unsigned int columns_per_workgroup = 4;
+    constexpr unsigned int rows_per_lane = S_v / lanes_per_column;
+    constexpr unsigned int state_head_stride = S_v * S_v;
+
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (lanes_per_column - 1);
+    const unsigned int col_group = tid / lanes_per_column;
+    const unsigned int col = __builtin_amdgcn_workgroup_id_x() * columns_per_workgroup + col_group;
+    const unsigned int head = __builtin_amdgcn_workgroup_id_y();
+    const unsigned int qk_head = head & (qk_heads - 1);
+
+    const float * q_base = q + qk_head * S_v;
+    const float * k_base = k + qk_head * S_v;
+    const float * v_base = v + head * S_v;
+    const float * state_col = state_in + head * state_head_stride + col * S_v;
+    float * state_out = state_dst + c.state_dst_offset + head * state_head_stride + col * S_v;
+
+    float s_shard[rows_per_lane];
+    float k_reg[rows_per_lane];
+    float q_reg[rows_per_lane];
+    #pragma unroll
+    for (unsigned int r = 0; r < rows_per_lane; ++r) {
+        const unsigned int row = r * lanes_per_column + lane;
+        s_shard[r] = state_col[row];
+        k_reg[r] = k_base[row];
+        q_reg[r] = q_base[row];
+    }
+
+    const float g_scalar = __expf(g[head]);
+
+    float kv_partial = 0.0f;
+    #pragma unroll
+    for (unsigned int r = 0; r < rows_per_lane; ++r) {
+        kv_partial += g_scalar * s_shard[r] * k_reg[r];
+    }
+    const float kv_col = hrx_reduce_cluster8_dpp(kv_partial);
+    const float delta_col = (v_base[col] - kv_col) * hrx_sigmoid_f32(beta[head]);
 
     float attn_partial = 0.0f;
     #pragma unroll
