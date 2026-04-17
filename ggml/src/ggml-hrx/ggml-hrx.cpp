@@ -3761,8 +3761,10 @@ static bool ggml_backend_hrx_supports_argsort_f32(
     const ggml_tensor * src0 = op->src[0];
     const int64_t ncols = src0 ? src0->ne[0] : 0;
     const int64_t nrows = src0 ? ggml_nrows(src0) : 0;
+    const bool qwen_decode_router_shape = ncols == 256 && nrows <= 64;
     return !device_context->policy.disable_argsort &&
-           (nrows == 1 || device_context->policy.enable_prompt_argsort) &&
+           (nrows == 1 || device_context->policy.enable_prompt_argsort ||
+            qwen_decode_router_shape) &&
            device_context->argsort_f32_provider.kind ==
                ggml_backend_hrx_provider_kind::direct_executable &&
            src0 &&
@@ -3774,6 +3776,54 @@ static bool ggml_backend_hrx_supports_argsort_f32(
            ggml_are_same_shape(src0, op) &&
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(op);
+}
+
+static const char * ggml_backend_hrx_argsort_f32_unsupported_reason(
+        const ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * op) {
+    if (device_context->policy.disable_argsort) {
+        return "disabled";
+    }
+    if (device_context->argsort_f32_provider.kind !=
+            ggml_backend_hrx_provider_kind::direct_executable) {
+        return "provider_unavailable";
+    }
+    const ggml_tensor * src0 = op ? op->src[0] : nullptr;
+    if (!src0) {
+        return "missing_src0";
+    }
+    const int64_t ncols = src0->ne[0];
+    const int64_t nrows = ggml_nrows(src0);
+    const bool qwen_decode_router_shape = ncols == 256 && nrows <= 64;
+    if (src0->type != GGML_TYPE_F32) {
+        return "src_not_f32";
+    }
+    if (!op || op->type != GGML_TYPE_I32) {
+        return "dst_not_i32";
+    }
+    if (ncols <= 0) {
+        return "ncols_nonpositive";
+    }
+    if (ncols > 256) {
+        return "ncols_gt_256";
+    }
+    if ((ncols & (ncols - 1)) != 0) {
+        return "ncols_not_power_of_two";
+    }
+    if (nrows != 1 && !device_context->policy.enable_prompt_argsort &&
+            !qwen_decode_router_shape) {
+        return "prompt_argsort_disabled";
+    }
+    if (!ggml_are_same_shape(src0, op)) {
+        return "shape_mismatch";
+    }
+    if (!ggml_is_contiguous(src0)) {
+        return "src_not_contiguous";
+    }
+    if (!ggml_is_contiguous(op)) {
+        return "dst_not_contiguous";
+    }
+    return "unknown";
 }
 
 static bool ggml_backend_hrx_supports_topk_moe_output_layout(
@@ -12666,7 +12716,10 @@ static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_c
                 break;
             case GGML_OP_ARGSORT:
                 if (!ggml_backend_hrx_supports_argsort_f32(context->device_context, node)) {
-                    GGML_LOG_ERROR("%s: ARGSORT shape/type/layout is unsupported\n", __func__);
+                    GGML_LOG_ERROR(
+                        "%s: ARGSORT shape/type/layout is unsupported: %s\n",
+                        __func__,
+                        ggml_backend_hrx_argsort_f32_unsupported_reason(context->device_context, node));
                     return GGML_STATUS_FAILED;
                 }
                 ggml_backend_hrx_trace_provider(
@@ -13176,6 +13229,18 @@ static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const gg
             ggml_backend_hrx_trace_tensor(context, "  src2", op->src[2]);
             ggml_backend_hrx_trace_tensor(context, "  src3", op->src[3]);
             ggml_backend_hrx_trace_tensor(context, "  src4", op->src[4]);
+            ggml_backend_hrx_trace_tensor(context, "  dst", op);
+        } else if (op->op == GGML_OP_ARGSORT &&
+                   context->fallback_trace_count < GGML_HRX_TRACE_FALLBACK_LIMIT) {
+            context->fallback_trace_count++;
+            const ggml_tensor * src0 = op->src[0];
+            ggml_backend_hrx_trace_provider(
+                context,
+                "fallback ARGSORT reason=%s ncols=%" PRId64 " nrows=%" PRId64 "\n",
+                ggml_backend_hrx_argsort_f32_unsupported_reason(context, op),
+                src0 ? src0->ne[0] : int64_t{0},
+                src0 ? ggml_nrows(src0) : int64_t{0});
+            ggml_backend_hrx_trace_tensor(context, "  src0", op->src[0]);
             ggml_backend_hrx_trace_tensor(context, "  dst", op);
         } else if (context->fallback_trace_count < GGML_HRX_TRACE_FALLBACK_LIMIT) {
             context->fallback_trace_count++;

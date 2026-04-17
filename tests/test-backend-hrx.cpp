@@ -1861,6 +1861,52 @@ static void run_router_ops_case(ggml_backend_t backend, ggml_backend_dev_t dev) 
     expect_eq_i32(sorted_output, expected_sorted, "router_argsort_output");
 }
 
+static void run_argsort_qwen_router_shape_case(ggml_backend_t backend, ggml_backend_dev_t dev, int64_t rows) {
+    constexpr int64_t cols = 256;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * input = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, cols, rows);
+    ggml_tensor * sorted = ggml_argsort(ctx.get(), input, GGML_SORT_ORDER_DESC);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, sorted));
+
+    ggml_cgraph * graph = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(graph, sorted);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> input_data(static_cast<size_t>(cols * rows), 0.0f);
+    std::vector<int32_t> expected_sorted(static_cast<size_t>(cols * rows), 0);
+    for (int64_t row = 0; row < rows; ++row) {
+        for (int64_t col = 0; col < cols; ++col) {
+            const int64_t permuted = (col * 73 + row * 19 + 11) & 255;
+            input_data[static_cast<size_t>(row * cols + col)] =
+                static_cast<float>(permuted) + static_cast<float>(row) * 0.001f;
+            expected_sorted[static_cast<size_t>(row * cols + col)] = static_cast<int32_t>(col);
+        }
+        std::sort(
+            expected_sorted.begin() + row * cols,
+            expected_sorted.begin() + (row + 1) * cols,
+            [&](int32_t lhs, int32_t rhs) {
+                return input_data[static_cast<size_t>(row * cols + lhs)] >
+                    input_data[static_cast<size_t>(row * cols + rhs)];
+            });
+    }
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<int32_t> sorted_output(expected_sorted.size(), -1);
+    ggml_backend_tensor_get(sorted, sorted_output.data(), 0, sorted_output.size() * sizeof(int32_t));
+    expect_eq_i32(sorted_output, expected_sorted, "argsort_qwen_router_shape_output");
+}
+
+static void run_argsort_qwen_router_shapes_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_argsort_qwen_router_shape_case(backend, dev, 8);
+    run_argsort_qwen_router_shape_case(backend, dev, 16);
+    run_argsort_qwen_router_shape_case(backend, dev, 64);
+}
+
 static void run_large_masked_soft_max_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     constexpr int64_t cols = 2048;
     constexpr int64_t rows1 = 2;
@@ -2120,6 +2166,11 @@ int main() {
         run_gated_delta_net_s128_decode_case(backend.get(), dev);
         run_gated_delta_net_s128_decode_gqa_case(backend.get(), dev);
         run_gated_delta_net_s128_decode_gqa_sigmoid_case(backend.get(), dev);
+        return 0;
+    }
+    if (test_filter != nullptr && std::strcmp(test_filter, "argsort") == 0) {
+        run_router_ops_case(backend.get(), dev);
+        run_argsort_qwen_router_shapes_case(backend.get(), dev);
         return 0;
     }
 
@@ -2405,6 +2456,7 @@ int main() {
     run_sigmoid_mul_strided_fusion_case(backend.get(), dev);
     run_singleton_stride_concat_case(backend.get(), dev);
     run_router_ops_case(backend.get(), dev);
+    run_argsort_qwen_router_shapes_case(backend.get(), dev);
     run_large_masked_soft_max_case(backend.get(), dev);
     run_imrope_case(backend.get(), dev);
     run_gated_delta_net_case(backend.get(), dev);
