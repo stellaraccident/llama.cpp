@@ -275,6 +275,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider topk_moe_f32_wave32_provider;
     ggml_backend_hrx_op_provider ssm_conv_provider;
     ggml_backend_hrx_op_provider ssm_conv_update_provider;
+    ggml_backend_hrx_op_provider ssm_conv_update_gather_provider;
     ggml_backend_hrx_op_provider gated_delta_net_provider;
     ggml_backend_hrx_op_provider gated_delta_net_s128_cluster8_provider;
     ggml_backend_hrx_op_provider gated_delta_net_s128_cluster8_nokda_provider;
@@ -1470,6 +1471,12 @@ static const ggml_tensor * ggml_backend_hrx_unwrap_reshape_view_src0(const ggml_
     return op;
 }
 
+static bool ggml_backend_hrx_same_data_span(const ggml_tensor * a, const ggml_tensor * b) {
+    return a && b && a->data && b->data &&
+           a->data == b->data &&
+           ggml_nbytes(a) == ggml_nbytes(b);
+}
+
 static const ggml_hrx_kernel_entry * ggml_backend_hrx_find_catalog_entry(const char * name) {
     size_t entry_count = 0;
     const ggml_hrx_kernel_entry * entries = ggml_hrx_kernel_catalog_entries(&entry_count);
@@ -1974,10 +1981,15 @@ static bool ggml_backend_hrx_load_ssm_conv_provider(
 
 static bool ggml_backend_hrx_load_ssm_conv_update_provider(
         ggml_backend_hrx_device_context * device_context) {
-    return ggml_backend_hrx_load_catalog_provider(
+    bool ok = ggml_backend_hrx_load_catalog_provider(
         device_context,
         ggml_backend_hrx_find_catalog_entry("hrx_ssm_conv_update_f32"),
         &device_context->ssm_conv_update_provider);
+    ok = ggml_backend_hrx_load_catalog_provider(
+        device_context,
+        ggml_backend_hrx_find_catalog_entry("hrx_ssm_conv_update_gather_f32"),
+        &device_context->ssm_conv_update_gather_provider) && ok;
+    return ok;
 }
 
 static bool ggml_backend_hrx_load_gated_delta_net_provider(
@@ -5203,6 +5215,27 @@ struct ggml_backend_hrx_ssm_conv_update_constants {
     int32_t pad;
 };
 
+struct ggml_backend_hrx_ssm_conv_update_gather_constants {
+    int64_t d_conv;
+    int64_t conv_state_width;
+    int64_t d_inner;
+    int64_t n_tokens;
+    int64_t n_seqs;
+    int64_t state_nb1;
+    int64_t state_nb2;
+    int64_t input_nb0;
+    int64_t input_nb1;
+    int64_t weight_nb1;
+    int64_t dst_nb1;
+    int64_t dst_nb2;
+    int64_t gather_state_flat_offset;
+    int64_t gather_src_nb1;
+    float gather_scale;
+    float gather_bias;
+    int32_t apply_silu;
+    int32_t pad;
+};
+
 struct ggml_backend_hrx_gated_delta_net_constants {
     int64_t S_v;
     int64_t H;
@@ -7339,24 +7372,55 @@ static ggml_status ggml_backend_hrx_dispatch_ssm_conv_update(
         ggml_backend_hrx_context * context,
         const ggml_tensor * concat,
         const ggml_tensor * state_update,
+        const ggml_tensor * deferred_state_scale,
         const ggml_tensor * ssm,
         const ggml_tensor * fused_dst,
         bool apply_silu) {
     const ggml_tensor * conv_state = concat->src[0];
+    const ggml_tensor * state_binding = conv_state;
+    const ggml_tensor * state_idx_binding = concat->src[1];
+    const ggml_tensor * unwrapped_state = ggml_backend_hrx_unwrap_reshape_view_src0(conv_state);
+    const ggml_tensor * state_get_rows = unwrapped_state && unwrapped_state->op == GGML_OP_GET_ROWS ?
+        unwrapped_state : nullptr;
+    const ggml_tensor * state_scale = deferred_state_scale;
+    const bool gather_state =
+        state_get_rows &&
+        state_get_rows->src[1] &&
+        ggml_nelements(state_get_rows->src[1]) == 1 &&
+        state_scale &&
+        state_scale->op == GGML_OP_SCALE &&
+        state_scale->src[0] &&
+        state_scale->src[0]->type == GGML_TYPE_F32 &&
+        state_get_rows->src[1]->type == GGML_TYPE_I32;
+    float gather_scale = 1.0f;
+    float gather_bias = 0.0f;
+    int64_t gather_state_flat_offset = 0;
+    int64_t gather_src_nb1 = 0;
+    if (gather_state) {
+        const uint8_t * conv_state_data = reinterpret_cast<const uint8_t *>(conv_state->data);
+        const uint8_t * get_rows_data = reinterpret_cast<const uint8_t *>(state_get_rows->data);
+        if (conv_state_data < get_rows_data) {
+            GGML_LOG_ERROR("%s: SSM_CONV_UPDATE gathered state view is before GET_ROWS base\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+        const size_t view_offset = static_cast<size_t>(conv_state_data - get_rows_data);
+        if ((view_offset % sizeof(float)) != 0) {
+            GGML_LOG_ERROR("%s: SSM_CONV_UPDATE gathered state view is not F32 aligned\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+        gather_state_flat_offset = static_cast<int64_t>(view_offset / sizeof(float));
+        gather_src_nb1 = static_cast<int64_t>(state_scale->src[0]->nb[1]);
+        const uint8_t * op_params = reinterpret_cast<const uint8_t *>(state_scale->op_params);
+        std::memcpy(&gather_scale, op_params, sizeof(float));
+        std::memcpy(&gather_bias, op_params + sizeof(float), sizeof(float));
+        state_binding = state_scale->src[0];
+        state_idx_binding = state_get_rows->src[1];
+    }
     const ggml_tensor * input = concat->src[1];
     const ggml_tensor * weight = ssm->src[1];
     const ggml_tensor * out = fused_dst ? fused_dst : ssm;
-    hrx_buffer_ref_t bindings[5] = {};
-    if (!ggml_backend_hrx_tensor_buffer_ref(conv_state, &bindings[0]) ||
-        !ggml_backend_hrx_tensor_buffer_ref(input, &bindings[1]) ||
-        !ggml_backend_hrx_tensor_buffer_ref(weight, &bindings[2]) ||
-        !ggml_backend_hrx_tensor_buffer_ref(state_update, &bindings[3]) ||
-        !ggml_backend_hrx_tensor_buffer_ref(out, &bindings[4])) {
-        GGML_LOG_ERROR("%s: SSM_CONV_UPDATE tensor is not backed by a HRX buffer\n", __func__);
-        return GGML_STATUS_FAILED;
-    }
 
-    ggml_backend_hrx_ssm_conv_update_constants constants = {
+    ggml_backend_hrx_ssm_conv_update_constants base_constants = {
         /* .d_conv           = */ weight->ne[0],
         /* .conv_state_width = */ conv_state->ne[0],
         /* .d_inner          = */ conv_state->ne[1],
@@ -7373,8 +7437,10 @@ static ggml_status ggml_backend_hrx_dispatch_ssm_conv_update(
         /* .pad              = */ 0,
     };
 
-    const auto & provider = context->device_context->ssm_conv_update_provider;
-    const int64_t total = constants.d_inner * constants.n_tokens * constants.n_seqs;
+    const auto & provider = gather_state ?
+        context->device_context->ssm_conv_update_gather_provider :
+        context->device_context->ssm_conv_update_provider;
+    const int64_t total = base_constants.d_inner * base_constants.n_tokens * base_constants.n_seqs;
     const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 256;
     hrx_dispatch_config_t config = {
@@ -7387,17 +7453,71 @@ static ggml_status ggml_backend_hrx_dispatch_ssm_conv_update(
         /* .subgroup_size = */ 0,
     };
 
-    if (!GGML_HRX_CHECK(hrx_stream_dispatch(
-            context->stream,
-            provider.executable,
-            provider.export_ordinal,
-            &config,
-            &constants,
-            sizeof(constants),
-            bindings,
-            5,
-            HRX_DISPATCH_FLAG_NONE))) {
-        return GGML_STATUS_FAILED;
+    if (gather_state) {
+        ggml_backend_hrx_ssm_conv_update_gather_constants constants = {
+            /* .d_conv           = */ base_constants.d_conv,
+            /* .conv_state_width = */ base_constants.conv_state_width,
+            /* .d_inner          = */ base_constants.d_inner,
+            /* .n_tokens         = */ base_constants.n_tokens,
+            /* .n_seqs           = */ base_constants.n_seqs,
+            /* .state_nb1        = */ base_constants.state_nb1,
+            /* .state_nb2        = */ base_constants.state_nb2,
+            /* .input_nb0        = */ base_constants.input_nb0,
+            /* .input_nb1        = */ base_constants.input_nb1,
+            /* .weight_nb1       = */ base_constants.weight_nb1,
+            /* .dst_nb1          = */ base_constants.dst_nb1,
+            /* .dst_nb2          = */ base_constants.dst_nb2,
+            /* .gather_state_flat_offset = */ gather_state_flat_offset,
+            /* .gather_src_nb1   = */ gather_src_nb1,
+            /* .gather_scale     = */ gather_scale,
+            /* .gather_bias      = */ gather_bias,
+            /* .apply_silu       = */ apply_silu ? 1 : 0,
+            /* .pad              = */ 0,
+        };
+        hrx_buffer_ref_t bindings[6] = {};
+        if (!ggml_backend_hrx_tensor_buffer_ref(state_binding, &bindings[0]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(state_idx_binding, &bindings[1]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(input, &bindings[2]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(weight, &bindings[3]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(state_update, &bindings[4]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(out, &bindings[5])) {
+            GGML_LOG_ERROR("%s: SSM_CONV_UPDATE gather tensor is not backed by a HRX buffer\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+        if (!GGML_HRX_CHECK(hrx_stream_dispatch(
+                context->stream,
+                provider.executable,
+                provider.export_ordinal,
+                &config,
+                &constants,
+                sizeof(constants),
+                bindings,
+                6,
+                HRX_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+    } else {
+        hrx_buffer_ref_t bindings[5] = {};
+        if (!ggml_backend_hrx_tensor_buffer_ref(conv_state, &bindings[0]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(input, &bindings[1]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(weight, &bindings[2]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(state_update, &bindings[3]) ||
+            !ggml_backend_hrx_tensor_buffer_ref(out, &bindings[4])) {
+            GGML_LOG_ERROR("%s: SSM_CONV_UPDATE tensor is not backed by a HRX buffer\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+        if (!GGML_HRX_CHECK(hrx_stream_dispatch(
+                context->stream,
+                provider.executable,
+                provider.export_ordinal,
+                &config,
+                &base_constants,
+                sizeof(base_constants),
+                bindings,
+                5,
+                HRX_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
     }
     context->dispatch_count++;
     context->concat_count++;
@@ -11759,13 +11879,41 @@ static const ggml_tensor * ggml_backend_hrx_find_gated_delta_net_state_update(
 
 struct ggml_backend_hrx_ssm_conv_update_fusion {
     const ggml_tensor * state_update = nullptr;
+    const ggml_tensor * state_scale = nullptr;
     const ggml_tensor * ssm = nullptr;
     const ggml_tensor * out = nullptr;
     int state_update_idx = -1;
+    int state_scale_idx = -1;
     int ssm_idx = -1;
     int out_idx = -1;
     bool apply_silu = false;
 };
+
+static const ggml_tensor * ggml_backend_hrx_find_alias_scale_before(
+        const ggml_cgraph * cgraph,
+        int end_idx,
+        const ggml_tensor * get_rows,
+        int * scale_idx_out) {
+    if (!get_rows || get_rows->op != GGML_OP_GET_ROWS || !get_rows->src[0]) {
+        return nullptr;
+    }
+
+    for (int i = end_idx - 1; i >= 0; --i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (node->op != GGML_OP_SCALE) {
+            continue;
+        }
+        if (!ggml_backend_hrx_same_data_span(node, get_rows->src[0])) {
+            continue;
+        }
+        if (scale_idx_out) {
+            *scale_idx_out = i;
+        }
+        return node;
+    }
+
+    return nullptr;
+}
 
 static bool ggml_backend_hrx_find_ssm_conv_update_fusion(
         const ggml_cgraph * cgraph,
@@ -11775,6 +11923,12 @@ static bool ggml_backend_hrx_find_ssm_conv_update_fusion(
     const ggml_tensor * concat = cgraph->nodes[concat_idx];
     if (concat->op != GGML_OP_CONCAT) {
         return false;
+    }
+
+    const ggml_tensor * state_get_rows = ggml_backend_hrx_unwrap_reshape_view_src0(concat->src[0]);
+    if (state_get_rows && state_get_rows->op == GGML_OP_GET_ROWS) {
+        fusion->state_scale = ggml_backend_hrx_find_alias_scale_before(
+            cgraph, concat_idx, state_get_rows, &fusion->state_scale_idx);
     }
 
     for (int i = concat_idx + 1; i < cgraph->n_nodes; ++i) {
@@ -11863,6 +12017,51 @@ static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_c
                 fused_nodes.end(),
                 node) != fused_nodes.end()) {
             continue;
+        }
+        if (node->op == GGML_OP_SCALE &&
+            !context->device_context->policy.disable_fusion &&
+            ggml_backend_hrx_env_enabled("GGML_HRX_ENABLE_SSM_STATE_GATHER_FUSION") &&
+            context->device_context->ssm_conv_update_gather_provider.kind ==
+                ggml_backend_hrx_provider_kind::direct_executable) {
+            const ggml_tensor * get_rows = nullptr;
+            int get_rows_idx = -1;
+            const int search_end = std::min(cgraph->n_nodes, i + 64);
+            for (int candidate_idx = i + 1; candidate_idx < search_end; ++candidate_idx) {
+                const ggml_tensor * candidate = cgraph->nodes[candidate_idx];
+                if (candidate->op != GGML_OP_GET_ROWS) {
+                    continue;
+                }
+                if (ggml_backend_hrx_same_data_span(node, candidate->src[0])) {
+                    get_rows = candidate;
+                    get_rows_idx = candidate_idx;
+                    break;
+                }
+            }
+            for (int concat_idx = get_rows_idx + 1; get_rows && concat_idx < cgraph->n_nodes; ++concat_idx) {
+                const ggml_tensor * maybe_concat = cgraph->nodes[concat_idx];
+                if (maybe_concat->op != GGML_OP_CONCAT ||
+                    ggml_backend_hrx_unwrap_reshape_view_src0(maybe_concat->src[0]) != get_rows) {
+                    continue;
+                }
+                ggml_backend_hrx_ssm_conv_update_fusion ssm_update;
+                if (!ggml_backend_hrx_find_ssm_conv_update_fusion(
+                        cgraph, concat_idx, context->device_context, &ssm_update)) {
+                    continue;
+                }
+                if (ssm_update.state_scale != node) {
+                    continue;
+                }
+                ggml_backend_hrx_trace_provider(
+                    context->device_context,
+                    "defer SCALE_GET_ROWS into SSM_CONV_UPDATE state=%s get_rows=%s\n",
+                    ggml_get_name(node), ggml_get_name(get_rows));
+                fused_nodes.push_back(node);
+                fused_nodes.push_back(get_rows);
+                break;
+            }
+            if (std::find(fused_nodes.begin(), fused_nodes.end(), node) != fused_nodes.end()) {
+                continue;
+            }
         }
         ggml_backend_hrx_topk_moe_fusion fusion;
         if (!context->device_context->policy.disable_fusion &&
@@ -12399,15 +12598,21 @@ static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_c
             ggml_backend_hrx_ssm_conv_update_fusion ssm_update = {};
             if (ggml_backend_hrx_find_ssm_conv_update_fusion(
                     cgraph, i, context->device_context, &ssm_update)) {
+                const bool use_deferred_state_scale =
+                    ssm_update.state_scale &&
+                    std::find(fused_nodes.begin(), fused_nodes.end(), ssm_update.state_scale) != fused_nodes.end();
                 ggml_backend_hrx_trace_provider(
                     context->device_context,
-                    "claim SSM_CONV_UPDATE%s provider=pure_hip_f32 d_conv=%" PRId64
+                    "claim SSM_CONV_UPDATE%s provider=pure_hip_f32%s d_conv=%" PRId64
                     " d_inner=%" PRId64 " n_tokens=%" PRId64 " n_seqs=%" PRId64 " state=%s\n",
                     ssm_update.apply_silu ? "_SILU" : "",
+                    use_deferred_state_scale ? "_gather_scale" : "",
                     ssm_update.ssm->src[1]->ne[0], node->src[0]->ne[1],
                     ssm_update.ssm->ne[1], ssm_update.ssm->ne[2], ggml_get_name(ssm_update.state_update));
                 if (ggml_backend_hrx_dispatch_ssm_conv_update(
-                        context, node, ssm_update.state_update, ssm_update.ssm,
+                        context, node, ssm_update.state_update,
+                        use_deferred_state_scale ? ssm_update.state_scale : nullptr,
+                        ssm_update.ssm,
                         ssm_update.apply_silu ? ssm_update.out : nullptr,
                         ssm_update.apply_silu) != GGML_STATUS_SUCCESS) {
                     return GGML_STATUS_FAILED;
@@ -12495,6 +12700,9 @@ static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_c
                 }
                 break;
             case GGML_OP_SCALE:
+                if (ggml_nelements(node) == 0) {
+                    break;
+                }
                 if (!context->device_context->policy.disable_fusion &&
                     ggml_backend_hrx_env_enabled("GGML_HRX_ENABLE_SCALE_GET_ROWS_FUSION") &&
                     i + 1 < cgraph->n_nodes &&
