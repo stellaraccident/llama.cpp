@@ -459,7 +459,18 @@ struct ggml_backend_hrx_context {
     uint64_t gated_delta_net_count = 0;
     uint64_t metadata_count = 0;
     uint64_t synchronize_count = 0;
+    uint64_t last_total_mul_mat_bytes = 0;
+    uint64_t feather_submitted_nodes = 0;
+    uint64_t feather_mul_mat_bytes = 0;
+    uint64_t feather_total_mul_mat_bytes = 0;
+    uint64_t feather_mul_mat_bytes_per_submit = 0;
+    uint64_t feather_submit_count = 0;
+    uint64_t feather_flush_count = 0;
+    const ggml_tensor * feather_last_node = nullptr;
 };
+
+static thread_local ggml_backend_hrx_context * g_hrx_active_graph_context = nullptr;
+static thread_local const ggml_tensor * g_hrx_active_graph_node = nullptr;
 
 static bool ggml_backend_hrx_log_status(hrx_status_t status, const char * expr, const char * file, int line) {
     if (hrx_status_is_ok(status)) {
@@ -521,6 +532,91 @@ static size_t ggml_backend_hrx_staging_arena_capacity() {
         "GGML_HRX_STAGING_ARENA_SIZE", GGML_HRX_STAGING_ARENA_DEFAULT_SIZE);
     const size_t capacity = static_cast<size_t>(std::max<uint64_t>(requested, GGML_HRX_ALIGNMENT));
     return ggml_backend_hrx_align_up(capacity, GGML_HRX_ALIGNMENT);
+}
+
+static bool ggml_backend_hrx_env_flag_enabled(const char * name) {
+    const char * value = std::getenv(name);
+    return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static uint64_t ggml_backend_hrx_feather_nodes_per_submit() {
+    return ggml_backend_hrx_u64_from_env("GGML_HRX_FEATHER_NODES_PER_SUBMIT", 100);
+}
+
+static uint64_t ggml_backend_hrx_feather_max_mul_mat_bytes_per_submit() {
+    return ggml_backend_hrx_u64_from_env("GGML_HRX_FEATHER_MAX_MUL_MAT_BYTES_PER_SUBMIT", 100ull * 1000ull * 1000ull);
+}
+
+static uint64_t ggml_backend_hrx_node_mul_mat_bytes(const ggml_tensor * node) {
+    if (!node || !node->src[0]) {
+        return 0;
+    }
+    if (node->op != GGML_OP_MUL_MAT && node->op != GGML_OP_MUL_MAT_ID) {
+        return 0;
+    }
+    return static_cast<uint64_t>(ggml_nbytes(node->src[0]));
+}
+
+static void ggml_backend_hrx_begin_feather_submits(ggml_backend_hrx_context * context) {
+    if (!context) {
+        return;
+    }
+    const uint64_t max_bytes = ggml_backend_hrx_feather_max_mul_mat_bytes_per_submit();
+    const uint64_t last_scaled = context->last_total_mul_mat_bytes / 40u;
+    context->feather_submitted_nodes = 0;
+    context->feather_mul_mat_bytes = 0;
+    context->feather_total_mul_mat_bytes = 0;
+    context->feather_mul_mat_bytes_per_submit = std::min(max_bytes, last_scaled);
+    context->feather_submit_count = 0;
+    context->feather_flush_count = 0;
+    context->feather_last_node = nullptr;
+}
+
+static hrx_status_t ggml_backend_hrx_maybe_feather_submit_after_dispatch(hrx_stream_t stream) {
+    ggml_backend_hrx_context * context = g_hrx_active_graph_context;
+    if (!context || stream != context->stream || ggml_backend_hrx_env_flag_enabled("GGML_HRX_DISABLE_FEATHER_SUBMIT")) {
+        return hrx_ok_status();
+    }
+
+    const ggml_tensor * node = g_hrx_active_graph_node;
+    if (node && node != context->feather_last_node) {
+        const uint64_t matmul_bytes = ggml_backend_hrx_node_mul_mat_bytes(node);
+        context->feather_last_node = node;
+        context->feather_submitted_nodes++;
+        context->feather_mul_mat_bytes += matmul_bytes;
+        context->feather_total_mul_mat_bytes += matmul_bytes;
+    }
+
+    const uint64_t nodes_per_submit = ggml_backend_hrx_feather_nodes_per_submit();
+    const bool node_threshold =
+        nodes_per_submit != 0 && context->feather_submitted_nodes >= nodes_per_submit;
+    const bool byte_threshold =
+        context->feather_mul_mat_bytes_per_submit != 0 &&
+        context->feather_mul_mat_bytes >= context->feather_mul_mat_bytes_per_submit;
+    if (!node_threshold && !byte_threshold) {
+        return hrx_ok_status();
+    }
+
+    ggml_backend_hrx_trace_lifetime(
+        "feather_submit begin nodes=%" PRIu64 " matmul_bytes=%" PRIu64
+        " matmul_threshold=%" PRIu64 " submit_count=%" PRIu64,
+        context->feather_submitted_nodes,
+        context->feather_mul_mat_bytes,
+        context->feather_mul_mat_bytes_per_submit,
+        context->feather_submit_count);
+    hrx_status_t status = hrx_stream_flush(stream);
+    if (!hrx_status_is_ok(status)) {
+        return status;
+    }
+
+    context->feather_submitted_nodes = 0;
+    context->feather_mul_mat_bytes = 0;
+    if (context->feather_submit_count < 3) {
+        context->feather_mul_mat_bytes_per_submit *= 2;
+    }
+    context->feather_submit_count++;
+    context->feather_flush_count++;
+    return hrx_ok_status();
 }
 
 static bool ggml_backend_hrx_dispatch_index_in_range(uint64_t index, const char * begin_name, const char * end_name) {
@@ -597,6 +693,12 @@ static hrx_status_t ggml_backend_hrx_stream_dispatch(
     }
     if (flush) {
         status = hrx_stream_flush(stream);
+        if (!hrx_status_is_ok(status)) {
+            return status;
+        }
+    }
+    if (!flush && !sync) {
+        status = ggml_backend_hrx_maybe_feather_submit_after_dispatch(stream);
         if (!hrx_status_is_ok(status)) {
             return status;
         }
@@ -12288,14 +12390,34 @@ struct ggml_backend_hrx_active_stream_guard {
     }
 };
 
+struct ggml_backend_hrx_active_graph_guard {
+    ggml_backend_hrx_context * previous_context = nullptr;
+    const ggml_tensor * previous_node = nullptr;
+
+    explicit ggml_backend_hrx_active_graph_guard(ggml_backend_hrx_context * context)
+        : previous_context(g_hrx_active_graph_context),
+          previous_node(g_hrx_active_graph_node) {
+        g_hrx_active_graph_context = context;
+        g_hrx_active_graph_node = nullptr;
+    }
+
+    ~ggml_backend_hrx_active_graph_guard() {
+        g_hrx_active_graph_context = previous_context;
+        g_hrx_active_graph_node = previous_node;
+    }
+};
+
 static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     ggml_backend_hrx_active_stream_guard active_stream_guard(context->device_context, context->stream);
+    ggml_backend_hrx_active_graph_guard active_graph_guard(context);
+    ggml_backend_hrx_begin_feather_submits(context);
     std::vector<const ggml_tensor *> deferred_mul_mat_set_rows;
     std::vector<const ggml_tensor *> fused_gated_delta_net_state_updates;
     std::vector<const ggml_tensor *> fused_nodes;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
+        g_hrx_active_graph_node = node;
         if (std::find(
                 fused_gated_delta_net_state_updates.begin(),
                 fused_gated_delta_net_state_updates.end(),
@@ -13527,6 +13649,12 @@ static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_c
         }
     }
 
+    context->last_total_mul_mat_bytes = context->feather_total_mul_mat_bytes;
+    ggml_backend_hrx_trace_lifetime(
+        "feather_submit graph complete total_mul_mat_bytes=%" PRIu64 " flushes=%" PRIu64,
+        context->last_total_mul_mat_bytes,
+        context->feather_flush_count);
+    g_hrx_active_graph_node = nullptr;
     ggml_backend_hrx_synchronize(backend);
     return GGML_STATUS_SUCCESS;
 }
