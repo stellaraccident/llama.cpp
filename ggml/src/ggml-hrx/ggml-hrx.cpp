@@ -636,6 +636,22 @@ static void ggml_backend_hrx_unregister_stream(ggml_backend_hrx_device_context *
     }
 }
 
+static hrx_stream_t ggml_backend_hrx_retain_timeline_stream(ggml_backend_hrx_device_context * device_context) {
+    if (!device_context) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(device_context->streams_mutex);
+    hrx_stream_t stream = device_context->active_stream;
+    if (!stream && !device_context->live_streams.empty()) {
+        stream = device_context->live_streams.front();
+    }
+    if (stream) {
+        hrx_stream_retain(stream);
+    }
+    return stream;
+}
+
 static bool ggml_backend_hrx_sync_active_stream(ggml_backend_hrx_device_context * device_context, const char * reason) {
     if (!device_context) {
         return true;
@@ -10970,6 +10986,125 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k_mul_q8_1(
     return GGML_STATUS_SUCCESS;
 }
 
+static bool ggml_backend_hrx_prepare_stream_signal(
+        hrx_stream_t stream,
+        hrx_semaphore_t * semaphore,
+        uint64_t * signal_value,
+        hrx_semaphore_list_t * wait_list,
+        hrx_semaphore_list_t * signal_list,
+        hrx_semaphore_t * wait_semaphores,
+        uint64_t * wait_values,
+        hrx_semaphore_t * signal_semaphores,
+        uint64_t * signal_values) {
+    hrx_timeline_point_t position = {};
+    if (!GGML_HRX_CHECK(hrx_stream_flush(stream)) ||
+        !GGML_HRX_CHECK(hrx_stream_get_timeline_position(stream, &position)) ||
+        !GGML_HRX_CHECK(hrx_stream_get_semaphore(stream, semaphore))) {
+        return false;
+    }
+
+    *signal_value = position.value + 1;
+    if (position.value > 0) {
+        wait_semaphores[0] = *semaphore;
+        wait_values[0] = position.value;
+        *wait_list = {
+            /* .semaphores = */ wait_semaphores,
+            /* .values     = */ wait_values,
+            /* .count      = */ 1,
+        };
+    } else {
+        *wait_list = {};
+    }
+
+    signal_semaphores[0] = *semaphore;
+    signal_values[0] = *signal_value;
+    *signal_list = {
+        /* .semaphores = */ signal_semaphores,
+        /* .values     = */ signal_values,
+        /* .count      = */ 1,
+    };
+    return true;
+}
+
+static bool ggml_backend_hrx_finish_stream_signal(hrx_stream_t stream, uint64_t signal_value) {
+    uint64_t advanced_value = 0;
+    if (!GGML_HRX_CHECK(hrx_stream_advance_timeline(stream, &advanced_value))) {
+        return false;
+    }
+    if (advanced_value != signal_value) {
+        GGML_LOG_ERROR("%s: stream timeline advanced to %" PRIu64 ", expected %" PRIu64 "\n",
+                __func__, advanced_value, signal_value);
+        return false;
+    }
+    return GGML_HRX_CHECK(hrx_stream_wait(stream));
+}
+
+static bool ggml_backend_hrx_queue_fill_stream_sync(
+        ggml_backend_hrx_device_context * device_context,
+        hrx_buffer_t buffer,
+        size_t offset,
+        size_t size,
+        const void * pattern,
+        size_t pattern_size) {
+    hrx_stream_t stream = ggml_backend_hrx_retain_timeline_stream(device_context);
+    if (!stream) {
+        GGML_LOG_ERROR("%s: no HRX stream registered for synchronous fill\n", __func__);
+        return false;
+    }
+
+    hrx_semaphore_t semaphore = nullptr;
+    uint64_t signal_value = 0;
+    hrx_semaphore_t wait_semaphores[1] = {};
+    uint64_t wait_values[1] = {};
+    hrx_semaphore_t signal_semaphores[1] = {};
+    uint64_t signal_values[1] = {};
+    hrx_semaphore_list_t wait_list = {};
+    hrx_semaphore_list_t signal_list = {};
+    bool ok = ggml_backend_hrx_prepare_stream_signal(
+        stream, &semaphore, &signal_value, &wait_list, &signal_list,
+        wait_semaphores, wait_values, signal_semaphores, signal_values);
+    ok = ok && GGML_HRX_CHECK(hrx_queue_fill(
+        device_context->device, 0,
+        wait_list.count ? &wait_list : nullptr,
+        &signal_list, buffer, offset, size, pattern, pattern_size));
+    ok = ok && ggml_backend_hrx_finish_stream_signal(stream, signal_value);
+    hrx_stream_release(stream);
+    return ok;
+}
+
+static bool ggml_backend_hrx_queue_copy_stream_sync(
+        ggml_backend_hrx_device_context * device_context,
+        hrx_buffer_t src,
+        size_t src_offset,
+        hrx_buffer_t dst,
+        size_t dst_offset,
+        size_t size) {
+    hrx_stream_t stream = ggml_backend_hrx_retain_timeline_stream(device_context);
+    if (!stream) {
+        GGML_LOG_ERROR("%s: no HRX stream registered for synchronous copy\n", __func__);
+        return false;
+    }
+
+    hrx_semaphore_t semaphore = nullptr;
+    uint64_t signal_value = 0;
+    hrx_semaphore_t wait_semaphores[1] = {};
+    uint64_t wait_values[1] = {};
+    hrx_semaphore_t signal_semaphores[1] = {};
+    uint64_t signal_values[1] = {};
+    hrx_semaphore_list_t wait_list = {};
+    hrx_semaphore_list_t signal_list = {};
+    bool ok = ggml_backend_hrx_prepare_stream_signal(
+        stream, &semaphore, &signal_value, &wait_list, &signal_list,
+        wait_semaphores, wait_values, signal_semaphores, signal_values);
+    ok = ok && GGML_HRX_CHECK(hrx_queue_copy(
+        device_context->device, 0,
+        wait_list.count ? &wait_list : nullptr,
+        &signal_list, src, src_offset, dst, dst_offset, size));
+    ok = ok && ggml_backend_hrx_finish_stream_signal(stream, signal_value);
+    hrx_stream_release(stream);
+    return ok;
+}
+
 // buffer type interface
 
 static const char * ggml_backend_hrx_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
@@ -11023,14 +11158,12 @@ static void ggml_backend_hrx_buffer_memset_tensor(
     if (!ggml_backend_hrx_sync_active_stream(context->device_context, "memset_tensor")) {
         return;
     }
-    if (!GGML_HRX_CHECK(hrx_queue_fill(
-            context->device_context->device, 0, nullptr, nullptr,
-            context->buffer, buffer_offset, size, &value, sizeof(value)))) {
+    const bool fill_ok = ggml_backend_hrx_queue_fill_stream_sync(
+            context->device_context, context->buffer, buffer_offset, size, &value, sizeof(value));
+    if (!fill_ok) {
         return;
     }
-    ggml_backend_hrx_trace_lifetime("memset_tensor queued tensor=%s", tensor->name);
-    const bool sync_ok = GGML_HRX_CHECK(hrx_device_synchronize(context->device_context->device));
-    ggml_backend_hrx_trace_lifetime("memset_tensor sync %s tensor=%s", sync_ok ? "ok" : "failed", tensor->name);
+    ggml_backend_hrx_trace_lifetime("memset_tensor complete tensor=%s", tensor->name);
 }
 
 static void ggml_backend_hrx_buffer_set_tensor(
@@ -11153,16 +11286,15 @@ static bool ggml_backend_hrx_buffer_cpy_tensor(
     if (!ggml_backend_hrx_sync_active_stream(dst_context->device_context, "copy_tensor")) {
         return false;
     }
-    if (!GGML_HRX_CHECK(hrx_queue_copy(
-            dst_context->device_context->device, 0, nullptr, nullptr,
+    const bool copy_ok = ggml_backend_hrx_queue_copy_stream_sync(
+            dst_context->device_context,
             src_context->buffer, src_offset,
-            dst_context->buffer, dst_offset, size))) {
+            dst_context->buffer, dst_offset, size);
+    if (!copy_ok) {
         return false;
     }
-    ggml_backend_hrx_trace_lifetime("copy_tensor queued src=%s dst=%s", src->name, dst->name);
-    const bool sync_ok = GGML_HRX_CHECK(hrx_device_synchronize(dst_context->device_context->device));
-    ggml_backend_hrx_trace_lifetime("copy_tensor sync %s src=%s dst=%s", sync_ok ? "ok" : "failed", src->name, dst->name);
-    return sync_ok;
+    ggml_backend_hrx_trace_lifetime("copy_tensor complete src=%s dst=%s", src->name, dst->name);
+    return true;
 }
 
 static void ggml_backend_hrx_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
@@ -11174,19 +11306,17 @@ static void ggml_backend_hrx_buffer_clear(ggml_backend_buffer_t buffer, uint8_t 
     if (!ggml_backend_hrx_sync_active_stream(context->device_context, "clear")) {
         return;
     }
-    if (!GGML_HRX_CHECK(hrx_queue_fill(
-            context->device_context->device, 0, nullptr, nullptr,
-            context->buffer, 0, buffer->size, &value, sizeof(value)))) {
+    const bool fill_ok = ggml_backend_hrx_queue_fill_stream_sync(
+            context->device_context, context->buffer, 0, buffer->size, &value, sizeof(value));
+    if (!fill_ok) {
         return;
     }
     ggml_backend_hrx_trace_lifetime(
-        "clear queued buffer=%p hrx_buffer=%p size=%zu value=%u",
+        "clear complete buffer=%p hrx_buffer=%p size=%zu value=%u",
         static_cast<void *>(buffer),
         static_cast<void *>(context->buffer),
         buffer->size,
         static_cast<unsigned int>(value));
-    const bool sync_ok = GGML_HRX_CHECK(hrx_device_synchronize(context->device_context->device));
-    ggml_backend_hrx_trace_lifetime("clear sync %s buffer=%p", sync_ok ? "ok" : "failed", static_cast<void *>(buffer));
 }
 
 static const ggml_backend_buffer_i ggml_backend_hrx_buffer_i = {
