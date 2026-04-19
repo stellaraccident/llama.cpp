@@ -3985,14 +3985,14 @@ int main() {
         {
             scoped_env_var disable_f16_cols16("GGML_HRX_DISABLE_F16_BATCHED_COLS16_PROMPT", "1");
             run_mul_mat_vec_batched_case(
-                backend.get(), dev, GGML_TYPE_F16, 256, 16, 512, 2, 1, 2, 1,
+                backend.get(), dev, GGML_TYPE_F16, 256, 16, 31, 2, 1, 2, 1,
                 2.0e-2f, "mul_mat_vec_f16_batched_cols8_prompt");
         }
         {
             scoped_env_var disable_f16_cols16("GGML_HRX_DISABLE_F16_BATCHED_COLS16_PROMPT", "1");
             scoped_env_var disable_f16_cols8("GGML_HRX_DISABLE_F16_BATCHED_COLS8_PROMPT", "1");
             run_mul_mat_vec_batched_case(
-                backend.get(), dev, GGML_TYPE_F16, 256, 16, 512, 2, 1, 2, 1,
+                backend.get(), dev, GGML_TYPE_F16, 256, 16, 31, 2, 1, 2, 1,
                 2.0e-2f, "mul_mat_vec_f16_batched_cols4_prompt");
         }
         run_mul_mat_vec_batched_case(

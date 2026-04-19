@@ -223,9 +223,10 @@ extern "C" __global__ void hrx_mul_mat_vec_f16_batched_cols4_f32(
         return;
     }
 
-    const long long col_group = outer % (c.cols / 4);
+    const long long col_groups = (c.cols + 3) / 4;
+    const long long col_group = outer % col_groups;
     const long long i11 = col_group * 4;
-    const long long t = outer / (c.cols / 4);
+    const long long t = outer / col_groups;
     const long long i12 = t % c.dst_ne2;
     const long long i13 = t / c.dst_ne2;
     if (i13 >= c.dst_ne3) {
@@ -244,24 +245,46 @@ extern "C" __global__ void hrx_mul_mat_vec_f16_batched_cols4_f32(
     float sum1 = 0.0f;
     float sum2 = 0.0f;
     float sum3 = 0.0f;
-    for (long long i = tid; i < c.k; i += 256) {
-        const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
-        const long long rhs = i * sizeof(float);
-        sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
-        sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
-        sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
-        sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
+    const long long rem = c.cols - i11;
+    if (i11 + 3 < c.cols) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+            sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
+            sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
+            sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
+        }
+    } else if (rem == 1) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+        }
+    } else {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            if (i11 + 0 < c.cols) { sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs); }
+            if (i11 + 1 < c.cols) { sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs); }
+            if (i11 + 2 < c.cols) { sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs); }
+            if (i11 + 3 < c.cols) { sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs); }
+        }
     }
 
-    hrx_reduce4_256(sum0, sum1, sum2, sum3, sumsh);
+    if (rem == 1) {
+        sum0 = hrx_reduce_256(sum0, sumsh);
+    } else {
+        hrx_reduce4_256(sum0, sum1, sum2, sum3, sumsh);
+    }
 
     if (tid == 0) {
         char * dst_row = reinterpret_cast<char *>(dst) +
             row * sizeof(float) + i11 * c.dst_nb1 + i12 * c.dst_nb2 + i13 * c.dst_nb3;
         *reinterpret_cast<float *>(dst_row) = sum0;
-        *reinterpret_cast<float *>(dst_row + c.dst_nb1) = sum1;
-        *reinterpret_cast<float *>(dst_row + 2 * c.dst_nb1) = sum2;
-        *reinterpret_cast<float *>(dst_row + 3 * c.dst_nb1) = sum3;
+        if (rem > 1) { *reinterpret_cast<float *>(dst_row + c.dst_nb1) = sum1; }
+        if (rem > 2) { *reinterpret_cast<float *>(dst_row + 2 * c.dst_nb1) = sum2; }
+        if (rem > 3) { *reinterpret_cast<float *>(dst_row + 3 * c.dst_nb1) = sum3; }
     }
 }
 
@@ -275,9 +298,10 @@ extern "C" __global__ void hrx_mul_mat_vec_f16_batched_cols8_f32(
         return;
     }
 
-    const long long col_group = outer % (c.cols / 8);
+    const long long col_groups = (c.cols + 7) / 8;
+    const long long col_group = outer % col_groups;
     const long long i11 = col_group * 8;
-    const long long t = outer / (c.cols / 8);
+    const long long t = outer / col_groups;
     const long long i12 = t % c.dst_ne2;
     const long long i13 = t / c.dst_ne2;
     if (i13 >= c.dst_ne3) {
@@ -300,32 +324,69 @@ extern "C" __global__ void hrx_mul_mat_vec_f16_batched_cols8_f32(
     float sum5 = 0.0f;
     float sum6 = 0.0f;
     float sum7 = 0.0f;
-    for (long long i = tid; i < c.k; i += 256) {
-        const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
-        const long long rhs = i * sizeof(float);
-        sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
-        sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
-        sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
-        sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
-        sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs);
-        sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs);
-        sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs);
-        sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs);
+    const long long rem = c.cols - i11;
+    if (i11 + 7 < c.cols) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+            sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
+            sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
+            sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
+            sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs);
+            sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs);
+            sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs);
+            sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs);
+        }
+    } else if (rem == 1) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+        }
+    } else if (rem <= 4) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+            if (rem > 1) { sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs); }
+            if (rem > 2) { sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs); }
+            if (rem > 3) { sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs); }
+        }
+    } else {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            if (i11 + 0 < c.cols) { sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs); }
+            if (i11 + 1 < c.cols) { sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs); }
+            if (i11 + 2 < c.cols) { sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs); }
+            if (i11 + 3 < c.cols) { sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs); }
+            if (i11 + 4 < c.cols) { sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs); }
+            if (i11 + 5 < c.cols) { sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs); }
+            if (i11 + 6 < c.cols) { sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs); }
+            if (i11 + 7 < c.cols) { sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs); }
+        }
     }
 
-    hrx_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh);
+    if (rem == 1) {
+        sum0 = hrx_reduce_256(sum0, sumsh);
+    } else if (rem <= 4) {
+        hrx_reduce4_256(sum0, sum1, sum2, sum3, sumsh);
+    } else {
+        hrx_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh);
+    }
 
     if (tid == 0) {
         char * dst_row = reinterpret_cast<char *>(dst) +
             row * sizeof(float) + i11 * c.dst_nb1 + i12 * c.dst_nb2 + i13 * c.dst_nb3;
         *reinterpret_cast<float *>(dst_row) = sum0;
-        *reinterpret_cast<float *>(dst_row + c.dst_nb1) = sum1;
-        *reinterpret_cast<float *>(dst_row + 2 * c.dst_nb1) = sum2;
-        *reinterpret_cast<float *>(dst_row + 3 * c.dst_nb1) = sum3;
-        *reinterpret_cast<float *>(dst_row + 4 * c.dst_nb1) = sum4;
-        *reinterpret_cast<float *>(dst_row + 5 * c.dst_nb1) = sum5;
-        *reinterpret_cast<float *>(dst_row + 6 * c.dst_nb1) = sum6;
-        *reinterpret_cast<float *>(dst_row + 7 * c.dst_nb1) = sum7;
+        if (rem > 1) { *reinterpret_cast<float *>(dst_row + c.dst_nb1) = sum1; }
+        if (rem > 2) { *reinterpret_cast<float *>(dst_row + 2 * c.dst_nb1) = sum2; }
+        if (rem > 3) { *reinterpret_cast<float *>(dst_row + 3 * c.dst_nb1) = sum3; }
+        if (rem > 4) { *reinterpret_cast<float *>(dst_row + 4 * c.dst_nb1) = sum4; }
+        if (rem > 5) { *reinterpret_cast<float *>(dst_row + 5 * c.dst_nb1) = sum5; }
+        if (rem > 6) { *reinterpret_cast<float *>(dst_row + 6 * c.dst_nb1) = sum6; }
+        if (rem > 7) { *reinterpret_cast<float *>(dst_row + 7 * c.dst_nb1) = sum7; }
     }
 }
 
@@ -374,29 +435,89 @@ extern "C" __global__ void hrx_mul_mat_vec_f16_batched_cols16_f32(
     float sum13 = 0.0f;
     float sum14 = 0.0f;
     float sum15 = 0.0f;
-    for (long long i = tid; i < c.k; i += 256) {
-        const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
-        const long long rhs = i * sizeof(float);
-        if (i11 + 0 < c.cols) { sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs); }
-        if (i11 + 1 < c.cols) { sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs); }
-        if (i11 + 2 < c.cols) { sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs); }
-        if (i11 + 3 < c.cols) { sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs); }
-        if (i11 + 4 < c.cols) { sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs); }
-        if (i11 + 5 < c.cols) { sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs); }
-        if (i11 + 6 < c.cols) { sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs); }
-        if (i11 + 7 < c.cols) { sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs); }
-        if (i11 + 8 < c.cols) { sum8 += a * *reinterpret_cast<const float *>(src1_col0 + 8 * c.src1_nb1 + rhs); }
-        if (i11 + 9 < c.cols) { sum9 += a * *reinterpret_cast<const float *>(src1_col0 + 9 * c.src1_nb1 + rhs); }
-        if (i11 + 10 < c.cols) { sum10 += a * *reinterpret_cast<const float *>(src1_col0 + 10 * c.src1_nb1 + rhs); }
-        if (i11 + 11 < c.cols) { sum11 += a * *reinterpret_cast<const float *>(src1_col0 + 11 * c.src1_nb1 + rhs); }
-        if (i11 + 12 < c.cols) { sum12 += a * *reinterpret_cast<const float *>(src1_col0 + 12 * c.src1_nb1 + rhs); }
-        if (i11 + 13 < c.cols) { sum13 += a * *reinterpret_cast<const float *>(src1_col0 + 13 * c.src1_nb1 + rhs); }
-        if (i11 + 14 < c.cols) { sum14 += a * *reinterpret_cast<const float *>(src1_col0 + 14 * c.src1_nb1 + rhs); }
-        if (i11 + 15 < c.cols) { sum15 += a * *reinterpret_cast<const float *>(src1_col0 + 15 * c.src1_nb1 + rhs); }
+    const long long rem = c.cols - i11;
+    if (i11 + 15 < c.cols) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+            sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
+            sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
+            sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
+            sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs);
+            sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs);
+            sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs);
+            sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs);
+            sum8 += a * *reinterpret_cast<const float *>(src1_col0 + 8 * c.src1_nb1 + rhs);
+            sum9 += a * *reinterpret_cast<const float *>(src1_col0 + 9 * c.src1_nb1 + rhs);
+            sum10 += a * *reinterpret_cast<const float *>(src1_col0 + 10 * c.src1_nb1 + rhs);
+            sum11 += a * *reinterpret_cast<const float *>(src1_col0 + 11 * c.src1_nb1 + rhs);
+            sum12 += a * *reinterpret_cast<const float *>(src1_col0 + 12 * c.src1_nb1 + rhs);
+            sum13 += a * *reinterpret_cast<const float *>(src1_col0 + 13 * c.src1_nb1 + rhs);
+            sum14 += a * *reinterpret_cast<const float *>(src1_col0 + 14 * c.src1_nb1 + rhs);
+            sum15 += a * *reinterpret_cast<const float *>(src1_col0 + 15 * c.src1_nb1 + rhs);
+        }
+    } else if (rem == 1) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+        }
+    } else if (rem <= 4) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+            if (rem > 1) { sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs); }
+            if (rem > 2) { sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs); }
+            if (rem > 3) { sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs); }
+        }
+    } else if (rem <= 8) {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs);
+            sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs);
+            sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs);
+            sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs);
+            sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs);
+            if (rem > 5) { sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs); }
+            if (rem > 6) { sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs); }
+            if (rem > 7) { sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs); }
+        }
+    } else {
+        for (long long i = tid; i < c.k; i += 256) {
+            const float a = __half2float(*reinterpret_cast<const __half *>(src0_row + i * sizeof(__half)));
+            const long long rhs = i * sizeof(float);
+            if (i11 + 0 < c.cols) { sum0 += a * *reinterpret_cast<const float *>(src1_col0 + rhs); }
+            if (i11 + 1 < c.cols) { sum1 += a * *reinterpret_cast<const float *>(src1_col0 + c.src1_nb1 + rhs); }
+            if (i11 + 2 < c.cols) { sum2 += a * *reinterpret_cast<const float *>(src1_col0 + 2 * c.src1_nb1 + rhs); }
+            if (i11 + 3 < c.cols) { sum3 += a * *reinterpret_cast<const float *>(src1_col0 + 3 * c.src1_nb1 + rhs); }
+            if (i11 + 4 < c.cols) { sum4 += a * *reinterpret_cast<const float *>(src1_col0 + 4 * c.src1_nb1 + rhs); }
+            if (i11 + 5 < c.cols) { sum5 += a * *reinterpret_cast<const float *>(src1_col0 + 5 * c.src1_nb1 + rhs); }
+            if (i11 + 6 < c.cols) { sum6 += a * *reinterpret_cast<const float *>(src1_col0 + 6 * c.src1_nb1 + rhs); }
+            if (i11 + 7 < c.cols) { sum7 += a * *reinterpret_cast<const float *>(src1_col0 + 7 * c.src1_nb1 + rhs); }
+            if (i11 + 8 < c.cols) { sum8 += a * *reinterpret_cast<const float *>(src1_col0 + 8 * c.src1_nb1 + rhs); }
+            if (i11 + 9 < c.cols) { sum9 += a * *reinterpret_cast<const float *>(src1_col0 + 9 * c.src1_nb1 + rhs); }
+            if (i11 + 10 < c.cols) { sum10 += a * *reinterpret_cast<const float *>(src1_col0 + 10 * c.src1_nb1 + rhs); }
+            if (i11 + 11 < c.cols) { sum11 += a * *reinterpret_cast<const float *>(src1_col0 + 11 * c.src1_nb1 + rhs); }
+            if (i11 + 12 < c.cols) { sum12 += a * *reinterpret_cast<const float *>(src1_col0 + 12 * c.src1_nb1 + rhs); }
+            if (i11 + 13 < c.cols) { sum13 += a * *reinterpret_cast<const float *>(src1_col0 + 13 * c.src1_nb1 + rhs); }
+            if (i11 + 14 < c.cols) { sum14 += a * *reinterpret_cast<const float *>(src1_col0 + 14 * c.src1_nb1 + rhs); }
+            if (i11 + 15 < c.cols) { sum15 += a * *reinterpret_cast<const float *>(src1_col0 + 15 * c.src1_nb1 + rhs); }
+        }
     }
 
-    hrx_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh0);
-    hrx_reduce8_256(sum8, sum9, sum10, sum11, sum12, sum13, sum14, sum15, sumsh1);
+    if (rem == 1) {
+        sum0 = hrx_reduce_256(sum0, sumsh0);
+    } else if (rem <= 4) {
+        hrx_reduce4_256(sum0, sum1, sum2, sum3, sumsh0);
+    } else if (rem <= 8) {
+        hrx_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh0);
+    } else {
+        hrx_reduce8_256(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh0);
+        hrx_reduce8_256(sum8, sum9, sum10, sum11, sum12, sum13, sum14, sum15, sumsh1);
+    }
 
     if (tid == 0) {
         char * dst_row = reinterpret_cast<char *>(dst) +

@@ -4023,12 +4023,12 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
             return &device_context->mul_mat_vec_f16_batched_cols16_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F16_BATCHED_COLS8_PROMPT") &&
-            src1->ne[1] >= 8 && (src1->ne[1] % 8) == 0 &&
+            src1->ne[1] >= 8 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f16_batched_cols8_provider)) {
             return &device_context->mul_mat_vec_f16_batched_cols8_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F16_BATCHED_COLS4_PROMPT") &&
-            src1->ne[1] >= 4 && (src1->ne[1] % 4) == 0 &&
+            src1->ne[1] >= 4 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f16_batched_cols4_provider)) {
             return &device_context->mul_mat_vec_f16_batched_cols4_provider;
         }
