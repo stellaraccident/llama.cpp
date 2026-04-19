@@ -4315,7 +4315,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQL128") &&
-                rows % 128 == 0 && cols >= 128 &&
+                rows % 128 == 0 && cols > 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_provider;
@@ -4326,7 +4326,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQ64") &&
-                rows % 64 == 0 && cols >= 64 &&
+                rows % 64 == 0 && cols > 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider;
@@ -4367,7 +4367,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_Q8_1_X4_MMQL128") &&
-                rows % 128 == 0 && cols >= 64 &&
+                rows % 128 == 0 && cols > 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_provider;

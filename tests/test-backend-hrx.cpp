@@ -3836,6 +3836,9 @@ int main() {
             run_mul_mat_vec_case(
                 backend.get(), dev, GGML_TYPE_Q5_K, ggml_blck_size(GGML_TYPE_Q5_K), 128, 129,
                 1.0e-1f, "mul_mat_vec_q5_k_q8_1_x4_mmql128_tail_cols");
+            run_mul_mat_vec_case(
+                backend.get(), dev, GGML_TYPE_Q5_K, ggml_blck_size(GGML_TYPE_Q5_K), 128, 33,
+                1.0e-1f, "mul_mat_vec_q5_k_q8_1_x4_mmql128_tail_cols33");
             {
                 scoped_env_var disable_q5_x4_mmql128("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQL128", "1");
                 scoped_env_var disable_q5_x4_mmq64("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQ64", "1");
@@ -3859,6 +3862,9 @@ int main() {
             run_mul_mat_vec_case(
                 backend.get(), dev, GGML_TYPE_Q6_K, ggml_blck_size(GGML_TYPE_Q6_K), 128, 65,
                 1.0e-1f, "mul_mat_vec_q6_k_q8_1_x4_mmql128_tail_cols");
+            run_mul_mat_vec_case(
+                backend.get(), dev, GGML_TYPE_Q6_K, ggml_blck_size(GGML_TYPE_Q6_K), 128, 33,
+                1.0e-1f, "mul_mat_vec_q6_k_q8_1_x4_mmql128_tail_cols33");
         }
         run_mul_mat_vec_case(
             backend.get(), dev, GGML_TYPE_Q5_K, ggml_blck_size(GGML_TYPE_Q5_K), 3, 1,
