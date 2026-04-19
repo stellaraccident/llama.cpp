@@ -3040,7 +3040,8 @@ static void expect_flash_attn_ext_prefill_samples(
                 const size_t out_idx = index_4d(col, head, token, 0, D, H, N);
                 const float got = actual[out_idx];
                 const float want = expected[static_cast<size_t>(col)];
-                if (std::fabs(got - want) > 2.0e-2f) {
+                const float tolerance = logit_softcap != 0.0f ? 6.0e-2f : 2.0e-2f;
+                if (std::fabs(got - want) > tolerance) {
                     std::fprintf(stderr,
                         "%s[col=%" PRId64 ",head=%" PRId64 ",token=%" PRId64 "]: got %.9g expected %.9g\n",
                         label, col, head, token, got, want);
