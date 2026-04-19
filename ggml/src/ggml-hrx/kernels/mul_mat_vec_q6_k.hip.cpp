@@ -124,7 +124,8 @@ static __device__ __forceinline__ void hrx_q6_k_dot4_cols8_acc(
         int group,
         int lane,
         float (&sum)[16],
-        int sum_offset) {
+        int sum_offset,
+        int valid_cols) {
     const int half = group >> 2;
     const int group_in_half = group & 3;
     const int ql_base = half * 64 + ((group_in_half & 1) ? 32 : 0) + lane;
@@ -151,7 +152,9 @@ static __device__ __forceinline__ void hrx_q6_k_dot4_cols8_acc(
         const float q = d * static_cast<float>((ql | (qh << 4)) - 32);
         #pragma unroll
         for (int col = 0; col < 8; ++col) {
-            sum[sum_offset + col] += q * src0[col * k + j];
+            if (col < valid_cols) {
+                sum[sum_offset + col] += q * src0[col * k + j];
+            }
         }
     }
 }
@@ -326,9 +329,10 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
     const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
     const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 8;
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
-    if (row0 + 1 >= rows || col0 + 7 >= cols) {
+    if (row0 + 1 >= rows || col0 >= cols) {
         return;
     }
+    const int valid_cols = static_cast<int>(cols - col0 < 8 ? cols - col0 : 8);
 
     __shared__ float sumsh[16 * (128 / 32)];
 
@@ -353,8 +357,8 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
         const float d1 = __half2float(__ushort_as_half(block1->d)) *
             static_cast<float>(hrx_q6_k_scale(block1, group, lane));
 
-        hrx_q6_k_dot4_cols8_acc(block0, src1_col0 + src_base, k, d0, group, lane, sum, 0);
-        hrx_q6_k_dot4_cols8_acc(block1, src1_col0 + src_base, k, d1, group, lane, sum, 8);
+        hrx_q6_k_dot4_cols8_acc(block0, src1_col0 + src_base, k, d0, group, lane, sum, 0, valid_cols);
+        hrx_q6_k_dot4_cols8_acc(block1, src1_col0 + src_base, k, d1, group, lane, sum, 8, valid_cols);
     }
 
     hrx_reduce_wg16<128>(sum, sumsh);
@@ -362,8 +366,10 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
     if (tid == 0) {
         #pragma unroll
         for (int col = 0; col < 8; ++col) {
-            dst[(col0 + col) * rows + row0] = sum[col];
-            dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
+            if (col < valid_cols) {
+                dst[(col0 + col) * rows + row0] = sum[col];
+                dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
+            }
         }
     }
 }

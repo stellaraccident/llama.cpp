@@ -12,6 +12,18 @@ struct hrx_block_q8_1_x4_rhs_q8 {
     int qs[32];
 };
 
+static __device__ __forceinline__ float4 hrx_load_float4_or_zero(const float * ptr, bool valid) {
+    float4 value;
+    value.x = 0.0f;
+    value.y = 0.0f;
+    value.z = 0.0f;
+    value.w = 0.0f;
+    if (valid) {
+        value = *reinterpret_cast<const float4 *>(ptr);
+    }
+    return value;
+}
+
 struct hrx_q8_0_mmqv_a_cache {
     int qs[8];
     float d;
@@ -253,7 +265,7 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_cols8_f32(
     const long long row = __builtin_amdgcn_workgroup_id_x();
     const long long col0 = __builtin_amdgcn_workgroup_id_y() * 8;
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
-    if (row >= rows || col0 + 7 >= cols) {
+    if (row >= rows || col0 >= cols) {
         return;
     }
 
@@ -279,14 +291,14 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_cols8_f32(
         const hrx_block_q8_0 * block = row_blocks + block_idx;
         const float d = __half2float(__ushort_as_half(block->d));
         const long long src_base = block_idx * 32 + in_block_base;
-        const float4 b0 = *reinterpret_cast<const float4 *>(src1_col0 + src_base);
-        const float4 b1 = *reinterpret_cast<const float4 *>(src1_col0 + k + src_base);
-        const float4 b2 = *reinterpret_cast<const float4 *>(src1_col0 + 2 * k + src_base);
-        const float4 b3 = *reinterpret_cast<const float4 *>(src1_col0 + 3 * k + src_base);
-        const float4 b4 = *reinterpret_cast<const float4 *>(src1_col0 + 4 * k + src_base);
-        const float4 b5 = *reinterpret_cast<const float4 *>(src1_col0 + 5 * k + src_base);
-        const float4 b6 = *reinterpret_cast<const float4 *>(src1_col0 + 6 * k + src_base);
-        const float4 b7 = *reinterpret_cast<const float4 *>(src1_col0 + 7 * k + src_base);
+        const float4 b0 = hrx_load_float4_or_zero(src1_col0 + src_base, col0 + 0 < cols);
+        const float4 b1 = hrx_load_float4_or_zero(src1_col0 + k + src_base, col0 + 1 < cols);
+        const float4 b2 = hrx_load_float4_or_zero(src1_col0 + 2 * k + src_base, col0 + 2 < cols);
+        const float4 b3 = hrx_load_float4_or_zero(src1_col0 + 3 * k + src_base, col0 + 3 < cols);
+        const float4 b4 = hrx_load_float4_or_zero(src1_col0 + 4 * k + src_base, col0 + 4 < cols);
+        const float4 b5 = hrx_load_float4_or_zero(src1_col0 + 5 * k + src_base, col0 + 5 < cols);
+        const float4 b6 = hrx_load_float4_or_zero(src1_col0 + 6 * k + src_base, col0 + 6 < cols);
+        const float4 b7 = hrx_load_float4_or_zero(src1_col0 + 7 * k + src_base, col0 + 7 < cols);
 #define HRX_Q8_0_COLS8_ACC(J, FIELD) \
         do { \
             const float value = d * static_cast<float>(block->qs[in_block_base + (J)]); \
@@ -311,13 +323,13 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_cols8_f32(
     if (tid == 0) {
         float * dst_col0 = dst + col0 * rows + row;
         dst_col0[0] = sum0;
-        dst_col0[rows] = sum1;
-        dst_col0[2 * rows] = sum2;
-        dst_col0[3 * rows] = sum3;
-        dst_col0[4 * rows] = sum4;
-        dst_col0[5 * rows] = sum5;
-        dst_col0[6 * rows] = sum6;
-        dst_col0[7 * rows] = sum7;
+        if (col0 + 1 < cols) { dst_col0[rows] = sum1; }
+        if (col0 + 2 < cols) { dst_col0[2 * rows] = sum2; }
+        if (col0 + 3 < cols) { dst_col0[3 * rows] = sum3; }
+        if (col0 + 4 < cols) { dst_col0[4 * rows] = sum4; }
+        if (col0 + 5 < cols) { dst_col0[5 * rows] = sum5; }
+        if (col0 + 6 < cols) { dst_col0[6 * rows] = sum6; }
+        if (col0 + 7 < cols) { dst_col0[7 * rows] = sum7; }
     }
 }
 
@@ -368,7 +380,7 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_add_cols8_f32(
     const long long row = __builtin_amdgcn_workgroup_id_x();
     const long long col0 = __builtin_amdgcn_workgroup_id_y() * 8;
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
-    if (row >= rows || col0 + 7 >= cols) {
+    if (row >= rows || col0 >= cols) {
         return;
     }
 
@@ -394,14 +406,14 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_add_cols8_f32(
         const hrx_block_q8_0 * block = row_blocks + block_idx;
         const float d = __half2float(__ushort_as_half(block->d));
         const long long src_base = block_idx * 32 + in_block_base;
-        const float4 b0 = *reinterpret_cast<const float4 *>(src1_col0 + src_base);
-        const float4 b1 = *reinterpret_cast<const float4 *>(src1_col0 + k + src_base);
-        const float4 b2 = *reinterpret_cast<const float4 *>(src1_col0 + 2 * k + src_base);
-        const float4 b3 = *reinterpret_cast<const float4 *>(src1_col0 + 3 * k + src_base);
-        const float4 b4 = *reinterpret_cast<const float4 *>(src1_col0 + 4 * k + src_base);
-        const float4 b5 = *reinterpret_cast<const float4 *>(src1_col0 + 5 * k + src_base);
-        const float4 b6 = *reinterpret_cast<const float4 *>(src1_col0 + 6 * k + src_base);
-        const float4 b7 = *reinterpret_cast<const float4 *>(src1_col0 + 7 * k + src_base);
+        const float4 b0 = hrx_load_float4_or_zero(src1_col0 + src_base, col0 + 0 < cols);
+        const float4 b1 = hrx_load_float4_or_zero(src1_col0 + k + src_base, col0 + 1 < cols);
+        const float4 b2 = hrx_load_float4_or_zero(src1_col0 + 2 * k + src_base, col0 + 2 < cols);
+        const float4 b3 = hrx_load_float4_or_zero(src1_col0 + 3 * k + src_base, col0 + 3 < cols);
+        const float4 b4 = hrx_load_float4_or_zero(src1_col0 + 4 * k + src_base, col0 + 4 < cols);
+        const float4 b5 = hrx_load_float4_or_zero(src1_col0 + 5 * k + src_base, col0 + 5 < cols);
+        const float4 b6 = hrx_load_float4_or_zero(src1_col0 + 6 * k + src_base, col0 + 6 < cols);
+        const float4 b7 = hrx_load_float4_or_zero(src1_col0 + 7 * k + src_base, col0 + 7 < cols);
 #define HRX_Q8_0_ADD_COLS8_ACC(J, FIELD) \
         do { \
             const float value = d * static_cast<float>(block->qs[in_block_base + (J)]); \
@@ -426,13 +438,13 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_add_cols8_f32(
     if (tid == 0) {
         const long long out_idx = col0 * rows + row;
         dst[out_idx] = sum0 + bias[out_idx];
-        dst[out_idx + rows] = sum1 + bias[out_idx + rows];
-        dst[out_idx + 2 * rows] = sum2 + bias[out_idx + 2 * rows];
-        dst[out_idx + 3 * rows] = sum3 + bias[out_idx + 3 * rows];
-        dst[out_idx + 4 * rows] = sum4 + bias[out_idx + 4 * rows];
-        dst[out_idx + 5 * rows] = sum5 + bias[out_idx + 5 * rows];
-        dst[out_idx + 6 * rows] = sum6 + bias[out_idx + 6 * rows];
-        dst[out_idx + 7 * rows] = sum7 + bias[out_idx + 7 * rows];
+        if (col0 + 1 < cols) { dst[out_idx + rows] = sum1 + bias[out_idx + rows]; }
+        if (col0 + 2 < cols) { dst[out_idx + 2 * rows] = sum2 + bias[out_idx + 2 * rows]; }
+        if (col0 + 3 < cols) { dst[out_idx + 3 * rows] = sum3 + bias[out_idx + 3 * rows]; }
+        if (col0 + 4 < cols) { dst[out_idx + 4 * rows] = sum4 + bias[out_idx + 4 * rows]; }
+        if (col0 + 5 < cols) { dst[out_idx + 5 * rows] = sum5 + bias[out_idx + 5 * rows]; }
+        if (col0 + 6 < cols) { dst[out_idx + 6 * rows] = sum6 + bias[out_idx + 6 * rows]; }
+        if (col0 + 7 < cols) { dst[out_idx + 7 * rows] = sum7 + bias[out_idx + 7 * rows]; }
     }
 }
 

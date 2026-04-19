@@ -4068,7 +4068,7 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
         const ggml_backend_hrx_device_context * device_context,
         int64_t cols) {
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_0_COLS8_PROMPT") &&
-        cols == 512 &&
+        cols >= 8 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_vec_q8_0_cols8_provider)) {
         return &device_context->mul_mat_vec_q8_0_cols8_provider;
     }
@@ -4105,7 +4105,7 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
                 return &device_context->mul_mat_vec_q6_k_rows2_cols1_wg32_provider;
             }
             if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_ROWS2_COLS8_PROMPT") &&
-                cols == 512 && (cols % 8) == 0 && (rows % 2) == 0 &&
+                cols >= 8 && (rows % 2) == 0 &&
                 ggml_backend_hrx_provider_available(device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider)) {
                 return &device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider;
             }
@@ -7347,7 +7347,7 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_vec_q8_0_add(
         !use_q8_1_x4_mmq128x32 &&
         !use_rows4_cols4 &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_0_COLS8_PROMPT") &&
-        constants.cols == 512 &&
+        constants.cols >= 8 &&
         ggml_backend_hrx_provider_available(context->device_context->mul_mat_vec_q8_0_add_cols8_provider);
 
     const auto & provider = use_q8_1_x4_mmq128x32 ?
