@@ -4846,7 +4846,8 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
         const ggml_tensor * op,
         const ggml_backend_hrx_op_provider & provider,
         const char * disable_knob,
-        bool require_no_bias_or_softcap) {
+        bool require_no_bias_or_softcap,
+        bool allow_variable_seq) {
     if (ggml_backend_hrx_approximate_kernels_disabled() ||
         ggml_backend_hrx_env_enabled(disable_knob) ||
         provider.kind != ggml_backend_hrx_provider_kind::hsaco) {
@@ -4858,6 +4859,10 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
     const ggml_tensor * v = op->src[2];
     const ggml_tensor * mask = op->src[3];
     const ggml_tensor * sinks = op->src[4];
+    if (!q || !k || !v || !mask) {
+        return false;
+    }
+
     float max_bias = 0.0f;
     float logit_softcap = 0.0f;
     std::memcpy(&max_bias, reinterpret_cast<const int32_t *>(op->op_params) + 1, sizeof(float));
@@ -4866,7 +4871,20 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
         return false;
     }
 
-    return q && k && v && mask &&
+    const bool sequence_shape =
+        allow_variable_seq ?
+            (q->ne[1] > 0 &&
+             k->ne[1] > 0 &&
+             k->ne[1] == v->ne[1] &&
+             mask->ne[0] >= k->ne[1] &&
+             mask->ne[1] >= q->ne[1]) :
+            (q->ne[1] == 512 &&
+             k->ne[1] == 512 &&
+             v->ne[1] == 512 &&
+             mask->ne[0] == 512 &&
+             mask->ne[1] >= 512);
+
+    return
            !sinks &&
            q->type == GGML_TYPE_F32 &&
            k->type == GGML_TYPE_F16 &&
@@ -4877,9 +4895,7 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
            k->ne[0] == 256 &&
            v->ne[0] == 256 &&
            op->ne[0] == 256 &&
-           q->ne[1] == 512 &&
-           k->ne[1] == 512 &&
-           v->ne[1] == 512 &&
+           sequence_shape &&
            q->ne[2] == 16 &&
            k->ne[2] == 2 &&
            v->ne[2] == 2 &&
@@ -4888,8 +4904,6 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
            q->ne[2] == op->ne[1] &&
            q->ne[1] == op->ne[2] &&
            q->ne[3] == op->ne[3] &&
-           mask->ne[0] == 512 &&
-           mask->ne[1] >= 512 &&
            mask->ne[2] == 1 &&
            mask->ne[3] == q->ne[3] &&
            q->nb[0] == sizeof(float) &&
@@ -4906,7 +4920,7 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_tile(
         const ggml_tensor * op) {
     return ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
         op, device_context->flash_attn_ext_f16_prefill_tile_provider,
-        "GGML_HRX_DISABLE_F16_PREFILL_FA_TILE", false);
+        "GGML_HRX_DISABLE_F16_PREFILL_FA_TILE", false, false);
 }
 
 static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_wmma(
@@ -4914,7 +4928,7 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_wmma(
         const ggml_tensor * op) {
     return ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
         op, device_context->flash_attn_ext_f16_prefill_wmma_provider,
-        "GGML_HRX_DISABLE_F16_PREFILL_FA_WMMA", true);
+        "GGML_HRX_DISABLE_F16_PREFILL_FA_WMMA", true, false);
 }
 
 static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_direct(
@@ -4922,7 +4936,7 @@ static bool ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_direct(
         const ggml_tensor * op) {
     return ggml_backend_hrx_supports_flash_attn_ext_f32_f16_prefill_common(
         op, device_context->flash_attn_ext_f16_prefill_direct_provider,
-        "GGML_HRX_DISABLE_F16_PREFILL_FA_DIRECT", true);
+        "GGML_HRX_DISABLE_F16_PREFILL_FA_DIRECT", true, true);
 }
 
 static bool ggml_backend_hrx_supports_flash_attn_ext_f32_decode(

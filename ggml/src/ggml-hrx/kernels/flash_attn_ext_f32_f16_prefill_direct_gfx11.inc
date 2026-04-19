@@ -177,6 +177,21 @@ static __device__ __forceinline__ hrx_gfx11_half16_vec hrx_load_wmma_b_col_major
         ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7]);
 }
 
+static __device__ __forceinline__ hrx_gfx11_half16_vec hrx_load_wmma_b_col_major_direct_guarded(
+        const _Float16 * base, int ldm, unsigned int lane, int valid_cols) {
+    const int col = static_cast<int>(lane & 15);
+    if (col >= valid_cols) {
+        const _Float16 zero = static_cast<_Float16>(0.0f);
+        return hrx_duplicate_wmma_input_direct(
+            zero, zero, zero, zero, zero, zero, zero, zero);
+    }
+
+    const int k_base = static_cast<int>(lane >> 4) * 8;
+    const _Float16 * ptr = base + col * ldm + k_base;
+    return hrx_duplicate_wmma_input_direct(
+        ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7]);
+}
+
 static __device__ __forceinline__ hrx_gfx11_half16_vec hrx_load_wmma_b_row_major_direct(
         const _Float16 * base, int ldm, unsigned int lane) {
     const int col = static_cast<int>(lane & 15);
@@ -193,6 +208,30 @@ static __device__ __forceinline__ hrx_gfx11_half16_vec hrx_load_wmma_b_row_major
     const uint32_t p3 =
         hrx_load_u16_direct(&base[(k_base + 6) * ldm + col]) |
         (hrx_load_u16_direct(&base[(k_base + 7) * ldm + col]) << 16);
+    return hrx_duplicate_wmma_packed_pairs_direct(p0, p1, p2, p3);
+}
+
+static __device__ __forceinline__ uint32_t hrx_load_u16_direct_or_zero(
+        const _Float16 * base, int offset, bool valid) {
+    return valid ? hrx_load_u16_direct(base + offset) : 0u;
+}
+
+static __device__ __forceinline__ hrx_gfx11_half16_vec hrx_load_wmma_b_row_major_direct_guarded(
+        const _Float16 * base, int ldm, unsigned int lane, int valid_rows) {
+    const int col = static_cast<int>(lane & 15);
+    const int k_base = static_cast<int>(lane >> 4) * 8;
+    const uint32_t p0 =
+        hrx_load_u16_direct_or_zero(base, (k_base + 0) * ldm + col, k_base + 0 < valid_rows) |
+        (hrx_load_u16_direct_or_zero(base, (k_base + 1) * ldm + col, k_base + 1 < valid_rows) << 16);
+    const uint32_t p1 =
+        hrx_load_u16_direct_or_zero(base, (k_base + 2) * ldm + col, k_base + 2 < valid_rows) |
+        (hrx_load_u16_direct_or_zero(base, (k_base + 3) * ldm + col, k_base + 3 < valid_rows) << 16);
+    const uint32_t p2 =
+        hrx_load_u16_direct_or_zero(base, (k_base + 4) * ldm + col, k_base + 4 < valid_rows) |
+        (hrx_load_u16_direct_or_zero(base, (k_base + 5) * ldm + col, k_base + 5 < valid_rows) << 16);
+    const uint32_t p3 =
+        hrx_load_u16_direct_or_zero(base, (k_base + 6) * ldm + col, k_base + 6 < valid_rows) |
+        (hrx_load_u16_direct_or_zero(base, (k_base + 7) * ldm + col, k_base + 7 < valid_rows) << 16);
     return hrx_duplicate_wmma_packed_pairs_direct(p0, p1, p2, p3);
 }
 
@@ -291,7 +330,7 @@ extern "C" __global__ __launch_bounds__(256) void hrx_flash_attn_ext_f32_f16_pre
     const unsigned int col_half = wave >> 2;
     const long long token_base = tile * BR;
 
-    if (head >= c.H || seq >= c.S || c.D != 256 || c.KV != 512) {
+    if (head >= c.H || seq >= c.S || c.D != 256 || c.KV <= 0) {
         return;
     }
 
@@ -321,17 +360,20 @@ extern "C" __global__ __launch_bounds__(256) void hrx_flash_attn_ext_f32_f16_pre
         m_frag[r] = -FLT_MAX * 0.5f;
     }
 
-    for (int jb = 0; jb < 512; jb += BC) {
+    for (long long jb = 0; jb < c.KV; jb += BC) {
         if (wave < 4) {
-            const int kb = jb + static_cast<int>(wave) * BK;
+            const long long kb = jb + static_cast<long long>(wave) * BK;
             hrx_gfx11_float8_vec acc = {};
+            const int valid_k_cols = static_cast<int>(c.KV - kb < BK ? c.KV - kb : BK);
 
             for (int db = 0; db < 256; db += BK) {
                 const _Float16 * k_block = reinterpret_cast<const _Float16 *>(
-                    k_head + static_cast<long long>(kb) * c.k_nb1 + db * static_cast<long long>(sizeof(__half)));
+                    k_head + (valid_k_cols > 0 ? kb : 0) * c.k_nb1 + db * static_cast<long long>(sizeof(__half)));
                 const hrx_gfx11_half16_vec a_frag = hrx_load_wmma_a_row_major_direct(&q_tile[0][db], 256, lane);
-                const hrx_gfx11_half16_vec b_frag =
-                    hrx_load_wmma_b_col_major_direct(k_block, static_cast<int>(c.k_nb1 / sizeof(__half)), lane);
+                const hrx_gfx11_half16_vec b_frag = valid_k_cols == BK ?
+                    hrx_load_wmma_b_col_major_direct(k_block, static_cast<int>(c.k_nb1 / sizeof(__half)), lane) :
+                    hrx_load_wmma_b_col_major_direct_guarded(
+                        k_block, static_cast<int>(c.k_nb1 / sizeof(__half)), lane, valid_k_cols);
                 acc = hrx_wmma_f32_16x16x16_f16_direct(a_frag, b_frag, acc);
             }
 
@@ -348,8 +390,9 @@ extern "C" __global__ __launch_bounds__(256) void hrx_flash_attn_ext_f32_f16_pre
             const char * mask_row = reinterpret_cast<const char *>(mask) + token * c.mask_nb1 + seq * c.mask_nb3;
             const int t_inner = static_cast<int>(col_half) * 32 + static_cast<int>(lane);
             const long long t = jb + t_inner;
-            float score = token < c.N ? matrix_tile[t_inner >> 4][r][t_inner & 15] : -65504.0f;
-            if (c.has_mask && token < c.N) {
+            const bool valid_score = token < c.N && t < c.KV;
+            float score = valid_score ? matrix_tile[t_inner >> 4][r][t_inner & 15] : -65504.0f;
+            if (c.has_mask && valid_score) {
                 const float mask_value =
                     hrx_load_f16_direct(reinterpret_cast<const __half *>(mask_row), t * c.mask_nb0);
                 if (mask_value <= -60000.0f) {
@@ -391,7 +434,7 @@ extern "C" __global__ __launch_bounds__(256) void hrx_flash_attn_ext_f32_f16_pre
             const long long token = token_base + r;
             const int t_inner = static_cast<int>(col_half) * 32 + static_cast<int>(lane);
             float prob = 0.0f;
-            if (token < c.N) {
+            if (token < c.N && jb + t_inner < c.KV) {
                 prob = __expf(score_cache[r_local] - m_frag[r_local]);
                 l_frag[r_local] += prob;
             }
@@ -410,16 +453,23 @@ extern "C" __global__ __launch_bounds__(256) void hrx_flash_attn_ext_f32_f16_pre
             __syncthreads();
 
             const hrx_gfx11_half16_vec a_frag = hrx_load_wmma_a_row_major_direct(&p_tile[0][0], BK, lane);
+            const int valid_v_rows = static_cast<int>(c.KV - (jb + tb) < BK ? c.KV - (jb + tb) : BK);
             const _Float16 * v_block0 = reinterpret_cast<const _Float16 *>(
-                v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block0 * static_cast<long long>(sizeof(__half)));
-            const hrx_gfx11_half16_vec b_frag0 =
-                hrx_load_wmma_b_row_major_direct(v_block0, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
+                v_head + (valid_v_rows > 0 ? static_cast<long long>(jb + tb) : 0) * c.v_nb1 +
+                d_block0 * static_cast<long long>(sizeof(__half)));
+            const hrx_gfx11_half16_vec b_frag0 = valid_v_rows == BK ?
+                hrx_load_wmma_b_row_major_direct(v_block0, static_cast<int>(c.v_nb1 / sizeof(__half)), lane) :
+                hrx_load_wmma_b_row_major_direct_guarded(
+                    v_block0, static_cast<int>(c.v_nb1 / sizeof(__half)), lane, valid_v_rows);
             out_acc0 = hrx_wmma_f16_16x16x16_f16_direct(a_frag, b_frag0, out_acc0);
 
             const _Float16 * v_block1 = reinterpret_cast<const _Float16 *>(
-                v_head + static_cast<long long>(jb + tb) * c.v_nb1 + d_block1 * static_cast<long long>(sizeof(__half)));
-            const hrx_gfx11_half16_vec b_frag1 =
-                hrx_load_wmma_b_row_major_direct(v_block1, static_cast<int>(c.v_nb1 / sizeof(__half)), lane);
+                v_head + (valid_v_rows > 0 ? static_cast<long long>(jb + tb) : 0) * c.v_nb1 +
+                d_block1 * static_cast<long long>(sizeof(__half)));
+            const hrx_gfx11_half16_vec b_frag1 = valid_v_rows == BK ?
+                hrx_load_wmma_b_row_major_direct(v_block1, static_cast<int>(c.v_nb1 / sizeof(__half)), lane) :
+                hrx_load_wmma_b_row_major_direct_guarded(
+                    v_block1, static_cast<int>(c.v_nb1 / sizeof(__half)), lane, valid_v_rows);
             out_acc1 = hrx_wmma_f16_16x16x16_f16_direct(a_frag, b_frag1, out_acc1);
             __syncthreads();
         }
