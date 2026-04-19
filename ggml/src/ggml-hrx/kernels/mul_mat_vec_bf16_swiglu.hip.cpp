@@ -73,9 +73,40 @@ static __device__ __forceinline__ hrx_bf16_swiglu_wmma_vec16 hrx_load_bf16_swigl
         ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7]);
 }
 
+static __device__ __forceinline__ hrx_bf16_swiglu_wmma_vec16 hrx_load_bf16_swiglu_wmma_a_row_major_guarded(
+        const uint16_t * base, int ldm, unsigned int lane, long long row0, long long rows) {
+    const int row = static_cast<int>(lane & 15);
+    if (row0 + row >= rows) {
+        return hrx_duplicate_bf16_swiglu_wmma_input(0, 0, 0, 0, 0, 0, 0, 0);
+    }
+    const int k_base = static_cast<int>(lane >> 4) * 8;
+    const uint16_t * ptr = base + row * ldm + k_base;
+    return hrx_duplicate_bf16_swiglu_wmma_input(
+        ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7]);
+}
+
 static __device__ __forceinline__ hrx_bf16_swiglu_wmma_vec16 hrx_load_bf16_swiglu_wmma_b_col_major(
         const float * base, int ldm, unsigned int lane) {
     const int col = static_cast<int>(lane & 15);
+    const int k_base = static_cast<int>(lane >> 4) * 8;
+    const float * ptr = base + col * ldm + k_base;
+    return hrx_duplicate_bf16_swiglu_wmma_input(
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[0]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[1]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[2]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[3]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[4]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[5]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[6]),
+        hrx_f32_to_bf16_swiglu_bits_rne(ptr[7]));
+}
+
+static __device__ __forceinline__ hrx_bf16_swiglu_wmma_vec16 hrx_load_bf16_swiglu_wmma_b_col_major_guarded(
+        const float * base, int ldm, unsigned int lane, long long col0, long long cols) {
+    const int col = static_cast<int>(lane & 15);
+    if (col0 + col >= cols) {
+        return hrx_duplicate_bf16_swiglu_wmma_input(0, 0, 0, 0, 0, 0, 0, 0);
+    }
     const int k_base = static_cast<int>(lane >> 4) * 8;
     const float * ptr = base + col * ldm + k_base;
     return hrx_duplicate_bf16_swiglu_wmma_input(
@@ -109,6 +140,32 @@ static __device__ __forceinline__ void hrx_store_bf16_swiglu_wmma_acc_row_major(
         const float gate = gate_acc[i];
         const float silu_gate = gate / (1.0f + __expf(-gate));
         dst[col * ldm + row_base + i * 2] = up_acc[i] * silu_gate;
+    }
+}
+
+static __device__ __forceinline__ void hrx_store_bf16_swiglu_wmma_acc_row_major_guarded(
+        float * dst,
+        int ldm,
+        hrx_f32_swiglu_wmma_vec8 gate_acc,
+        hrx_f32_swiglu_wmma_vec8 up_acc,
+        unsigned int lane,
+        long long row0,
+        long long rows,
+        long long col0,
+        long long cols) {
+    const int row_base = static_cast<int>(lane >> 4);
+    const int col = static_cast<int>(lane & 15);
+    if (col0 + col >= cols) {
+        return;
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const long long row = row0 + row_base + i * 2;
+        if (row < rows) {
+            const float gate_value = gate_acc[i];
+            const float silu_gate = gate_value / (1.0f + __expf(-gate_value));
+            dst[col * ldm + row_base + i * 2] = up_acc[i] * silu_gate;
+        }
     }
 }
 
@@ -265,25 +322,37 @@ extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_wmma16x16_f32(
     const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 16;
     const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 16;
     const unsigned int lane = __builtin_amdgcn_workitem_id_x() & 31u;
-    if (row0 + 15 >= rows || col0 + 15 >= cols) {
+    if (row0 >= rows || col0 >= cols) {
         return;
     }
 
+    const bool full_tile = row0 + 15 < rows && col0 + 15 < cols;
     hrx_f32_swiglu_wmma_vec8 gate_acc = {};
     hrx_f32_swiglu_wmma_vec8 up_acc = {};
     for (long long kb = 0; kb < k; kb += 16) {
-        const hrx_bf16_swiglu_wmma_vec16 gate_a =
-            hrx_load_bf16_swiglu_wmma_a_row_major(gate + row0 * k + kb, static_cast<int>(k), lane);
-        const hrx_bf16_swiglu_wmma_vec16 up_a =
-            hrx_load_bf16_swiglu_wmma_a_row_major(up + row0 * k + kb, static_cast<int>(k), lane);
-        const hrx_bf16_swiglu_wmma_vec16 b =
-            hrx_load_bf16_swiglu_wmma_b_col_major(src1 + col0 * k + kb, static_cast<int>(k), lane);
+        const hrx_bf16_swiglu_wmma_vec16 gate_a = full_tile ?
+            hrx_load_bf16_swiglu_wmma_a_row_major(gate + row0 * k + kb, static_cast<int>(k), lane) :
+            hrx_load_bf16_swiglu_wmma_a_row_major_guarded(
+                gate + row0 * k + kb, static_cast<int>(k), lane, row0, rows);
+        const hrx_bf16_swiglu_wmma_vec16 up_a = full_tile ?
+            hrx_load_bf16_swiglu_wmma_a_row_major(up + row0 * k + kb, static_cast<int>(k), lane) :
+            hrx_load_bf16_swiglu_wmma_a_row_major_guarded(
+                up + row0 * k + kb, static_cast<int>(k), lane, row0, rows);
+        const hrx_bf16_swiglu_wmma_vec16 b = full_tile ?
+            hrx_load_bf16_swiglu_wmma_b_col_major(src1 + col0 * k + kb, static_cast<int>(k), lane) :
+            hrx_load_bf16_swiglu_wmma_b_col_major_guarded(
+                src1 + col0 * k + kb, static_cast<int>(k), lane, col0, cols);
         gate_acc = hrx_wmma_f32_16x16x16_bf16_swiglu(gate_a, b, gate_acc);
         up_acc = hrx_wmma_f32_16x16x16_bf16_swiglu(up_a, b, up_acc);
     }
 
-    hrx_store_bf16_swiglu_wmma_acc_row_major(
-        dst + col0 * rows + row0, static_cast<int>(rows), gate_acc, up_acc, lane);
+    if (full_tile) {
+        hrx_store_bf16_swiglu_wmma_acc_row_major(
+            dst + col0 * rows + row0, static_cast<int>(rows), gate_acc, up_acc, lane);
+    } else {
+        hrx_store_bf16_swiglu_wmma_acc_row_major_guarded(
+            dst + col0 * rows + row0, static_cast<int>(rows), gate_acc, up_acc, lane, row0, rows, col0, cols);
+    }
 #else
     (void) gate;
     (void) up;

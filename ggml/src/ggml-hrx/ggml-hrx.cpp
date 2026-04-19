@@ -3912,29 +3912,33 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
     }
     if (!ggml_backend_hrx_approximate_kernels_disabled() &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_WMMA16_PROMPT") &&
-        (k % 16) == 0 && cols == 512 && (rows % 16) == 0 &&
+        (k % 16) == 0 && cols >= 16 && (rows % 16) == 0 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_wmma16_provider)) {
         return &device_context->mul_mat_vec_bf16_wmma16_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_ROWS2_COLS16_PROMPT") &&
-        cols == 512 && (rows % 2) == 0 &&
+        cols >= 16 && (cols % 16) == 0 && (rows % 2) == 0 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_rows2_cols16_provider)) {
         return &device_context->mul_mat_vec_bf16_rows2_cols16_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_COLS32_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols32_provider)) {
+        cols >= 32 && (cols % 32) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols32_provider)) {
         return &device_context->mul_mat_vec_bf16_cols32_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_COLS16_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols16_provider)) {
+        cols >= 16 && (cols % 16) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols16_provider)) {
         return &device_context->mul_mat_vec_bf16_cols16_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_COLS8_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols8_provider)) {
+        cols >= 8 && (cols % 8) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols8_provider)) {
         return &device_context->mul_mat_vec_bf16_cols8_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_COLS4_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols4_provider)) {
+        cols >= 4 && (cols % 4) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_cols4_provider)) {
         return &device_context->mul_mat_vec_bf16_cols4_provider;
     }
 
@@ -3966,25 +3970,28 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
     }
     if (!ggml_backend_hrx_approximate_kernels_disabled() &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_SWIGLU_WMMA16_PROMPT") &&
-        (k % 16) == 0 && cols == 512 && (rows % 16) == 0 &&
+        (k % 16) == 0 && cols >= 16 && (rows % 16) == 0 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_wmma16_provider)) {
         return &device_context->mul_mat_vec_bf16_swiglu_wmma16_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_SWIGLU_ROWS2_COLS8_PROMPT") &&
-        cols == 512 && (rows % 2) == 0 &&
+        cols >= 8 && (cols % 8) == 0 && (rows % 2) == 0 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_rows2_cols8_provider)) {
         return &device_context->mul_mat_vec_bf16_swiglu_rows2_cols8_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_SWIGLU_COLS16_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_cols16_provider)) {
+        cols >= 16 && (cols % 16) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_cols16_provider)) {
         return &device_context->mul_mat_vec_bf16_swiglu_cols16_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_SWIGLU_COLS8_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_cols8_provider)) {
+        cols >= 8 && (cols % 8) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_cols8_provider)) {
         return &device_context->mul_mat_vec_bf16_swiglu_cols8_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_BF16_SWIGLU_COLS4_PROMPT") &&
-        cols == 512 && ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_cols4_provider)) {
+        cols >= 4 && (cols % 4) == 0 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_vec_bf16_swiglu_cols4_provider)) {
         return &device_context->mul_mat_vec_bf16_swiglu_cols4_provider;
     }
 
@@ -4011,17 +4018,17 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
             return &device_context->mul_mat_vec_f16_batched_cols1_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F16_BATCHED_COLS16_PROMPT") &&
-            src1->ne[1] == 512 &&
+            src1->ne[1] >= 16 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f16_batched_cols16_provider)) {
             return &device_context->mul_mat_vec_f16_batched_cols16_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F16_BATCHED_COLS8_PROMPT") &&
-            src1->ne[1] == 512 &&
+            src1->ne[1] >= 8 && (src1->ne[1] % 8) == 0 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f16_batched_cols8_provider)) {
             return &device_context->mul_mat_vec_f16_batched_cols8_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F16_BATCHED_COLS4_PROMPT") &&
-            src1->ne[1] == 512 &&
+            src1->ne[1] >= 4 && (src1->ne[1] % 4) == 0 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f16_batched_cols4_provider)) {
             return &device_context->mul_mat_vec_f16_batched_cols4_provider;
         }
@@ -4038,17 +4045,17 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
             return &device_context->mul_mat_vec_f32_batched_cols1_ne2_1_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F32_BATCHED_ROWS2_COLS8_PROMPT") &&
-            src1->ne[1] == 512 && (src0->ne[1] % 2) == 0 &&
+            src1->ne[1] >= 8 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f32_batched_rows2_cols8_provider)) {
             return &device_context->mul_mat_vec_f32_batched_rows2_cols8_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F32_BATCHED_COLS16_PROMPT") &&
-            src1->ne[1] == 512 &&
+            src1->ne[1] >= 16 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f32_batched_cols16_provider)) {
             return &device_context->mul_mat_vec_f32_batched_cols16_provider;
         }
         if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_F32_BATCHED_COLS8_PROMPT") &&
-            src1->ne[1] == 512 &&
+            src1->ne[1] >= 8 && (src1->ne[1] % 8) == 0 &&
             ggml_backend_hrx_provider_available(device_context->mul_mat_vec_f32_batched_cols8_provider)) {
             return &device_context->mul_mat_vec_f32_batched_cols8_provider;
         }
@@ -4271,10 +4278,9 @@ static bool ggml_backend_hrx_supports_mul_mat_vec_q8_0_q8_1_x4_mmq128x32_prompt(
            op->ne[2] == 1 && op->ne[3] == 1 &&
            src0->ne[0] > 0 &&
            src0->ne[1] > 0 &&
-           src1->ne[1] == 512 &&
+           src1->ne[1] >= 32 &&
            (src0->ne[0] % 128) == 0 &&
            (src0->ne[1] % 128) == 0 &&
-           (src1->ne[1] % 32) == 0 &&
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(src1) &&
            ggml_is_contiguous(op);
@@ -4309,7 +4315,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQL128") &&
-                rows % 128 == 0 && cols % 128 == 0 &&
+                rows % 128 == 0 && cols >= 128 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_provider;
@@ -4320,7 +4326,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQ64") &&
-                rows % 64 == 0 && cols % 64 == 0 &&
+                rows % 64 == 0 && cols >= 64 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_provider;
@@ -4361,7 +4367,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_Q8_1_X4_MMQL128") &&
-                rows % 128 == 0 && cols % 64 == 0 &&
+                rows % 128 == 0 && cols >= 64 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_provider;
@@ -4588,7 +4594,7 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         int64_t n_tokens) {
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
-        k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens == 512 &&
+        k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens > 1 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
@@ -4596,14 +4602,14 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         return &device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_GROUPED_PROMPT") &&
-        k == 512 && rows % 2 == 0 && n_ids == 8 && n_tokens == 512 &&
+        k == 512 && rows % 2 == 0 && n_ids == 8 && n_tokens > 1 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider)) {
         return &device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_ROW4_PROMPT") &&
-        k == 512 && rows % 4 == 0 && n_ids > 0 && n_tokens == 512 &&
+        k == 512 && rows % 4 == 0 && n_ids > 0 && n_tokens > 1 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_row4_wg64_provider)) {
         return &device_context->mul_mat_id_q4_k_row4_wg64_provider;
     }
@@ -4645,7 +4651,7 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         int64_t n_tokens) {
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
-        k == 2048 && rows % 16 == 0 && n_ids == 8 && n_tokens == 512 &&
+        k == 2048 && rows % 16 == 0 && n_ids == 8 && n_tokens > 1 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
@@ -4659,14 +4665,14 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         return &device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT") &&
-        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens == 512 &&
+        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens > 1 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider)) {
         return &device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_ROW4_PROMPT") &&
-        k == 2048 && rows % 4 == 0 && n_ids == 8 && n_tokens == 512 &&
+        k == 2048 && rows % 4 == 0 && n_ids == 8 && n_tokens > 1 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_row4_wg64_provider)) {
         return &device_context->mul_mat_id_q4_k_swiglu_row4_wg64_provider;
     }

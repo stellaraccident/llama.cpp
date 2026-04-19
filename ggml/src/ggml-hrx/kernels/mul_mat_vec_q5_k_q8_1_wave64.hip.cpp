@@ -49,14 +49,23 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32(
         #pragma unroll
         for (int k_step = 0; k_step < BK_STEP; ++k_step) {
             for (int r = loadc_a; r < BM; r += loadstride_a) {
-                hrx_q5_k_mmqv_load_a(
-                    buf_a,
-                    k_step * BM + r,
-                    src0,
-                    row_base + r,
-                    kb_base + k_step,
-                    loadr_a,
-                    blocks_per_row);
+                const int buf_idx = k_step * BM + r;
+                if (row_base + r < rows) {
+                    hrx_q5_k_mmqv_load_a(
+                        buf_a,
+                        buf_idx,
+                        src0,
+                        row_base + r,
+                        kb_base + k_step,
+                        loadr_a,
+                        blocks_per_row);
+                } else {
+                    buf_a[buf_idx].qs[loadr_a] = 0;
+                    if (loadr_a == 0) {
+                        buf_a[buf_idx].d = 0.0f;
+                        buf_a[buf_idx].min = 0.0f;
+                    }
+                }
             }
         }
 
@@ -66,14 +75,26 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32(
         #pragma unroll
         for (int k_step = 0; k_step < BK_STEP; ++k_step) {
             for (int c = loadc_b; c < BN; c += loadstride_b) {
-                hrx_q5_k_mmqv_load_b(
-                    buf_b,
-                    k_step * BN + c,
-                    src1,
-                    col_base + c,
-                    kb_base + k_step,
-                    loadr_b,
-                    q8_blocks_per_col);
+                const int buf_idx = k_step * BN + c;
+                if (col_base + c < cols) {
+                    hrx_q5_k_mmqv_load_b(
+                        buf_b,
+                        buf_idx,
+                        src1,
+                        col_base + c,
+                        kb_base + k_step,
+                        loadr_b,
+                        q8_blocks_per_col);
+                } else {
+                    #pragma unroll
+                    for (int j = 0; j < 4; ++j) {
+                        buf_b[buf_idx].qs[loadr_b * 4 + j] = 0;
+                    }
+                    if (loadr_b == 0) {
+                        buf_b[buf_idx].d = 0.0f;
+                        buf_b[buf_idx].s = 0.0f;
+                    }
+                }
             }
         }
         __syncthreads();
@@ -118,7 +139,9 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmql128x128_wg256_f32(
             #pragma unroll
             for (int cc = 0; cc < TN; ++cc) {
                 const long long col = col_base + warp_c * WN + wsic * WSUBN + tiwc * TN + cc;
-                dst[col * rows + row] = sum[(wsic * TN + cc) * TM + cr];
+                if (row < rows && col < cols) {
+                    dst[col * rows + row] = sum[(wsic * TN + cc) * TM + cr];
+                }
             }
         }
     }
@@ -136,12 +159,15 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32(
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const int row_lane = static_cast<int>(tid & 63u);
     const int col_lane = static_cast<int>(tid >> 6);
+    const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
+    const long long col_block_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN;
     const long long row = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM + row_lane;
     const long long col_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN +
         static_cast<long long>(col_lane * COLS_PER_THREAD);
-    if (row >= rows || col_base + COLS_PER_THREAD - 1 >= cols) {
+    if (row_base >= rows || col_block_base >= cols) {
         return;
     }
+    const bool row_valid = row < rows;
 
     __shared__ int b_qs[BN][8];
     __shared__ unsigned short b_d[BN];
@@ -149,8 +175,7 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32(
 
     const long long blocks_per_row = k / 256;
     const long long q8_blocks_per_col = k / 32;
-    const long long col_block_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN;
-    const hrx_block_q5_K_q8_1_lhs * row_blocks = src0 + row * blocks_per_row;
+    const hrx_block_q5_K_q8_1_lhs * row_blocks = src0 + (row_valid ? row : row_base) * blocks_per_row;
     float sum[COLS_PER_THREAD] = {};
 
     for (long long kb = 0; kb < q8_blocks_per_col; ++kb) {
@@ -158,30 +183,40 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32(
         for (int load_idx = static_cast<int>(tid); load_idx < BN * 8; load_idx += 256) {
             const int c = load_idx >> 3;
             const int iqs = load_idx & 7;
-            const long long linear_block = (col_block_base + c) * q8_blocks_per_col + kb;
-            const hrx_block_q8_1_x4_rhs_q5 * rhs = src1 + (linear_block >> 2);
-            const int inner = static_cast<int>(linear_block & 3);
-            b_qs[c][iqs] = rhs->qs[inner * 8 + iqs];
-            if (iqs == 0) {
-                b_d[c] = rhs->ds[inner * 2 + 0];
-                b_s[c] = rhs->ds[inner * 2 + 1];
+            if (col_block_base + c < cols) {
+                const long long linear_block = (col_block_base + c) * q8_blocks_per_col + kb;
+                const hrx_block_q8_1_x4_rhs_q5 * rhs = src1 + (linear_block >> 2);
+                const int inner = static_cast<int>(linear_block & 3);
+                b_qs[c][iqs] = rhs->qs[inner * 8 + iqs];
+                if (iqs == 0) {
+                    b_d[c] = rhs->ds[inner * 2 + 0];
+                    b_s[c] = rhs->ds[inner * 2 + 1];
+                }
+            } else {
+                b_qs[c][iqs] = 0;
+                if (iqs == 0) {
+                    b_d[c] = 0;
+                    b_s[c] = 0;
+                }
             }
         }
         __syncthreads();
 
-        const hrx_block_q5_K_q8_1_lhs * block = row_blocks + (kb >> 3);
         const int group = static_cast<int>(kb & 7);
 
         uint8_t sc = 0;
         uint8_t m = 0;
-        hrx_get_scale_min_k4_q5_q8_1(group, block->scales, &sc, &m);
-        const float d = __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc);
-        const float min = __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m);
+        const hrx_block_q5_K_q8_1_lhs * block = row_blocks + (kb >> 3);
+        if (row_valid) {
+            hrx_get_scale_min_k4_q5_q8_1(group, block->scales, &sc, &m);
+        }
+        const float d = row_valid ? __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc) : 0.0f;
+        const float min = row_valid ? __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m) : 0.0f;
 
         int qsum[COLS_PER_THREAD] = {};
         #pragma unroll
         for (int iqs = 0; iqs < 8; ++iqs) {
-            const uint32_t qpack = hrx_q5_k_pack4(block, group, iqs);
+            const uint32_t qpack = row_valid ? hrx_q5_k_pack4(block, group, iqs) : 0;
             #pragma unroll
             for (int col = 0; col < COLS_PER_THREAD; ++col) {
                 qsum[col] += hrx_sudot4_q5_q8_1(qpack, b_qs[col_lane * COLS_PER_THREAD + col][iqs]);
@@ -200,6 +235,8 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_q8_1_x4_mmq64x64_wg256_f32(
 
     #pragma unroll
     for (int col = 0; col < COLS_PER_THREAD; ++col) {
-        dst[(col_base + col) * rows + row] = sum[col];
+        if (row_valid && col_base + col < cols) {
+            dst[(col_base + col) * rows + row] = sum[col];
+        }
     }
 }
