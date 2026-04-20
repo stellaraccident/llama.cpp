@@ -365,6 +365,73 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols1_wg32_f32(
     }
 }
 
+template <int COLS>
+static __device__ __forceinline__ void hrx_mul_mat_vec_q6_k_rows2_cols_wg32_f32_impl(
+        const hrx_block_q6_K * src0, const float * src1, float * dst,
+        long long k, long long rows, long long cols) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * COLS;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row0 + 1 >= rows || col0 >= cols) {
+        return;
+    }
+    const int valid_cols = static_cast<int>(cols - col0 < COLS ? cols - col0 : COLS);
+    const bool full_cols = col0 + COLS <= cols;
+
+    const long long blocks_per_row = k / 256;
+    const hrx_block_q6_K * row0_blocks = src0 + row0 * blocks_per_row;
+    const hrx_block_q6_K * row1_blocks = row0_blocks + blocks_per_row;
+
+    const int itid = tid & 15;
+    const int block_slot = tid >> 4;
+    float sum[2 * COLS] = {};
+
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 2) {
+        if (full_cols) {
+            #pragma unroll
+            for (int col = 0; col < COLS; ++col) {
+                const float * src_block = src1 + (col0 + col) * k + block_idx * 256;
+                sum[col] += hrx_q6_k_dot16(row0_blocks + block_idx, src_block, itid);
+                sum[COLS + col] += hrx_q6_k_dot16(row1_blocks + block_idx, src_block, itid);
+            }
+        } else {
+            #pragma unroll
+            for (int col = 0; col < COLS; ++col) {
+                if (col < valid_cols) {
+                    const float * src_block = src1 + (col0 + col) * k + block_idx * 256;
+                    sum[col] += hrx_q6_k_dot16(row0_blocks + block_idx, src_block, itid);
+                    sum[COLS + col] += hrx_q6_k_dot16(row1_blocks + block_idx, src_block, itid);
+                }
+            }
+        }
+    }
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        #pragma unroll
+        for (int col = 0; col < 2 * COLS; ++col) {
+            sum[col] += __shfl_down(sum[col], offset);
+        }
+    }
+
+    if (tid == 0) {
+        if (full_cols) {
+            #pragma unroll
+            for (int col = 0; col < COLS; ++col) {
+                dst[(col0 + col) * rows + row0] = sum[col];
+                dst[(col0 + col) * rows + row0 + 1] = sum[COLS + col];
+            }
+        } else {
+            #pragma unroll
+            for (int col = 0; col < COLS; ++col) {
+                if (col < valid_cols) {
+                    dst[(col0 + col) * rows + row0] = sum[col];
+                    dst[(col0 + col) * rows + row0 + 1] = sum[COLS + col];
+                }
+            }
+        }
+    }
+}
+
 template <int COLS, int WG_SIZE>
 static __device__ __forceinline__ void hrx_mul_mat_vec_q6_k_rows2_cols_f32_impl(
         const hrx_block_q6_K * src0, const float * src1, float * dst,
@@ -453,3 +520,20 @@ HRX_Q6_ROWS2_COLS_ENTRY(7)
 HRX_Q6_ROWS2_COLS_ENTRY(8)
 
 #undef HRX_Q6_ROWS2_COLS_ENTRY
+
+#define HRX_Q6_ROWS2_COLS_WG32_ENTRY(COLS) \
+extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols##COLS##_wg32_f32( \
+        const hrx_block_q6_K * src0, const float * src1, float * dst, \
+        long long k, long long rows, long long cols) { \
+    hrx_mul_mat_vec_q6_k_rows2_cols_wg32_f32_impl<COLS>(src0, src1, dst, k, rows, cols); \
+}
+
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(2)
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(3)
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(4)
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(5)
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(6)
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(7)
+HRX_Q6_ROWS2_COLS_WG32_ENTRY(8)
+
+#undef HRX_Q6_ROWS2_COLS_WG32_ENTRY

@@ -1409,6 +1409,15 @@ for _cols in range(2, 9):
         "constants_size": 24,
         "workgroup_size": (64, 1, 1),
     })
+    KERNELS.append({
+        "name": f"hrx_mul_mat_vec_q6_k_rows2_cols{_cols}_wg32_f32",
+        "source": "mul_mat_vec_q6_k.hip.cpp",
+        "format": None,
+        "binding_count": 3,
+        "parameter_count": 6,
+        "constants_size": 24,
+        "workgroup_size": (32, 1, 1),
+    })
 
 DOT8_ARCH_PREFIXES = ("gfx11",)
 DOT8_SOURCES = {
