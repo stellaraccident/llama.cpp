@@ -1362,6 +1362,15 @@ KERNELS = [
         "workgroup_size": (256, 1, 1),
     },
     {
+        "name": "hrx_mul_mat_vec_q6_k_q8_1_x4_mmql64x128_wg256_f32",
+        "source": "mul_mat_vec_q6_k_q8_1_wave64.hip.cpp",
+        "format": None,
+        "binding_count": 3,
+        "parameter_count": 6,
+        "constants_size": 24,
+        "workgroup_size": (256, 1, 1),
+    },
+    {
         "name": "hrx_mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_f32",
         "source": "mul_mat_vec_q6_k_q8_1.hip.cpp",
         "format": None,

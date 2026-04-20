@@ -1,12 +1,11 @@
 #include "mul_mat_vec_q6_k_q8_1_common.hip.inc"
 
-extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
+template <int BM, int BN>
+static __device__ __forceinline__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql_wg256_impl(
         const hrx_block_q6_K_q8_1_lhs * src0,
         const hrx_block_q8_1_x4_rhs_q6 * src1,
         float * dst,
         long long k, long long rows, long long cols) {
-    constexpr int BM = 128;
-    constexpr int BN = 64;
     constexpr int BK_STEP = 4;
     constexpr int BLOCK_SIZE = 256;
     constexpr int WARP = 64;
@@ -21,6 +20,8 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
     constexpr int LOAD_VEC_A = 4;
     constexpr int LOAD_VEC_B = 16;
 
+    static_assert(BM == 64 || BM == 128, "unexpected Q6 MMQ row tile");
+    static_assert(BN == 64 || BN == 128, "unexpected Q6 MMQ column tile");
     static_assert(WNITER == 4, "unexpected Q6 MMQ 128x64 tile shape");
     static_assert(WSUBM == 64 && WSUBN == 8, "unexpected Vulkan large Q6 MMQ subtile shape");
 
@@ -178,4 +179,20 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
             }
         }
     }
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
+        const hrx_block_q6_K_q8_1_lhs * src0,
+        const hrx_block_q8_1_x4_rhs_q6 * src1,
+        float * dst,
+        long long k, long long rows, long long cols) {
+    hrx_mul_mat_vec_q6_k_q8_1_x4_mmql_wg256_impl<128, 64>(src0, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql64x128_wg256_f32(
+        const hrx_block_q6_K_q8_1_lhs * src0,
+        const hrx_block_q8_1_x4_rhs_q6 * src1,
+        float * dst,
+        long long k, long long rows, long long cols) {
+    hrx_mul_mat_vec_q6_k_q8_1_x4_mmql_wg256_impl<64, 128>(src0, src1, dst, k, rows, cols);
 }
