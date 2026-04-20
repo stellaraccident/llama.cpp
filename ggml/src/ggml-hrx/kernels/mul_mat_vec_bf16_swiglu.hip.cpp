@@ -299,6 +299,89 @@ static __device__ __forceinline__ void hrx_mul_mat_vec_bf16_swiglu_f32_impl(
     }
 }
 
+template <int COLS>
+static __device__ __forceinline__ void hrx_reduce_cols_bf16_swiglu(float (&sum)[COLS], float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = 256 / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+#pragma unroll
+        for (int col = 0; col < COLS; ++col) {
+            sum[col] += __shfl_down(sum[col], offset);
+        }
+    }
+    if (lane == 0) {
+#pragma unroll
+        for (int col = 0; col < COLS; ++col) {
+            shared[col * waves + wave] = sum[col];
+        }
+    }
+    __syncthreads();
+
+#pragma unroll
+    for (int col = 0; col < COLS; ++col) {
+        sum[col] = lane < waves ? shared[col * waves + lane] : 0.0f;
+    }
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+#pragma unroll
+            for (int col = 0; col < COLS; ++col) {
+                sum[col] += __shfl_down(sum[col], offset);
+            }
+        }
+    }
+}
+
+template <int COLS>
+static __device__ __forceinline__ void hrx_mul_mat_vec_bf16_swiglu_cols_f32_impl(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    const long long row = __builtin_amdgcn_workgroup_id_x();
+    const long long col0 = __builtin_amdgcn_workgroup_id_y() * COLS;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    if (row >= rows || col0 + COLS > cols) {
+        return;
+    }
+
+    __shared__ float gate_sumsh[COLS * (256 / 32)];
+    __shared__ float up_sumsh[COLS * (256 / 32)];
+
+    const uint16_t * gate_row = gate + row * k;
+    const uint16_t * up_row = up + row * k;
+    const float * src1_col0 = src1 + col0 * k;
+    float gate_sum[COLS] = {};
+    float up_sum[COLS] = {};
+    for (long long i = tid; i < k; i += 256) {
+        const float g = hrx_bf16_swiglu_to_f32(gate_row[i]);
+        const float u = hrx_bf16_swiglu_to_f32(up_row[i]);
+#pragma unroll
+        for (int col = 0; col < COLS; ++col) {
+            const float b = src1_col0[col * k + i];
+            gate_sum[col] += g * b;
+            up_sum[col] += u * b;
+        }
+    }
+
+    hrx_reduce_cols_bf16_swiglu<COLS>(gate_sum, gate_sumsh);
+    hrx_reduce_cols_bf16_swiglu<COLS>(up_sum, up_sumsh);
+
+    if (tid == 0) {
+        float * dst_col0 = dst + col0 * rows + row;
+#pragma unroll
+        for (int col = 0; col < COLS; ++col) {
+            const float silu_gate = gate_sum[col] / (1.0f + __expf(-gate_sum[col]));
+            dst_col0[col * rows] = up_sum[col] * silu_gate;
+        }
+    }
+}
+
 extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_f32(
         const uint16_t * gate,
         const uint16_t * up,
@@ -541,6 +624,28 @@ extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_rows4_k2048_cols1_lds_wg2
     }
 }
 
+extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols2_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    hrx_mul_mat_vec_bf16_swiglu_cols_f32_impl<2>(gate, up, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols3_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    hrx_mul_mat_vec_bf16_swiglu_cols_f32_impl<3>(gate, up, src1, dst, k, rows, cols);
+}
+
 extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols4_f32(
         const uint16_t * gate,
         const uint16_t * up,
@@ -601,6 +706,39 @@ extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols4_f32(
         dst_col0[2 * rows] = up_sum2 * silu_gate2;
         dst_col0[3 * rows] = up_sum3 * silu_gate3;
     }
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols5_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    hrx_mul_mat_vec_bf16_swiglu_cols_f32_impl<5>(gate, up, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols6_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    hrx_mul_mat_vec_bf16_swiglu_cols_f32_impl<6>(gate, up, src1, dst, k, rows, cols);
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols7_f32(
+        const uint16_t * gate,
+        const uint16_t * up,
+        const float * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    hrx_mul_mat_vec_bf16_swiglu_cols_f32_impl<7>(gate, up, src1, dst, k, rows, cols);
 }
 
 extern "C" __global__ void hrx_mul_mat_vec_bf16_swiglu_cols8_f32(
