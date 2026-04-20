@@ -901,6 +901,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "hrx_mul_mat_id_q4_k_swiglu_packed_wg32_f32",
+        "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
+        "format": None,
+        "binding_count": 5,
+        "constants_size": 120,
+        "workgroup_size": (32, 1, 1),
+    },
+    {
         "name": "hrx_mul_mat_id_q4_k_mul_q8_1_f32",
         "source": "mul_mat_id_q4_k_mul_q8_1.hip.cpp",
         "format": None,

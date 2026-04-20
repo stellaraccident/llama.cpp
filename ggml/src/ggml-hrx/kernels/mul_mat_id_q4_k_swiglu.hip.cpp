@@ -1189,7 +1189,8 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_f
     }
 }
 
-extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
+template <int WG_SIZE>
+static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_swiglu_packed_f32_impl(
         const hrx_block_q4_K_id_swiglu * gate,
         const hrx_block_q4_K_id_swiglu * up,
         const float * src1,
@@ -1215,8 +1216,8 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
         return;
     }
 
-    __shared__ float gate_sumsh[2];
-    __shared__ float up_sumsh[2];
+    __shared__ float gate_sumsh[(WG_SIZE + 31) / 32];
+    __shared__ float up_sumsh[(WG_SIZE + 31) / 32];
 
     const char * gate_row_base = reinterpret_cast<const char *>(gate) + expert * c.gate_nb2 + row * c.gate_nb1;
     const char * up_row_base = reinterpret_cast<const char *>(up) + expert * c.up_nb2 + row * c.up_nb1;
@@ -1239,11 +1240,9 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
     const int g1 = g0 + 1;
     const int g2 = g0 + 4;
     const int g3 = g2 + 1;
+    constexpr int block_slots = WG_SIZE / 16;
 
-    (void) blocks_per_row;
-    #pragma unroll
-    for (int block_iter = 0; block_iter < 2; ++block_iter) {
-        const long long block_idx = static_cast<long long>(block_slot + block_iter * 4);
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += block_slots) {
         const hrx_block_q4_K_id_swiglu * gate_block = reinterpret_cast<const hrx_block_q4_K_id_swiglu *>(
             gate_row_base + block_idx * sizeof(hrx_block_q4_K_id_swiglu));
         const hrx_block_q4_K_id_swiglu * up_block = reinterpret_cast<const hrx_block_q4_K_id_swiglu *>(
@@ -1345,8 +1344,8 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
         up_sum += (up_d3 * hrx_q4_k_swiglu_q_from_pack<3>(up_q23, true) - up_min3) * y3.w;
     }
 
-    gate_sum = hrx_reduce_wg_swiglu<64>(gate_sum, gate_sumsh);
-    up_sum = hrx_reduce_wg_swiglu<64>(up_sum, up_sumsh);
+    gate_sum = hrx_reduce_wg_swiglu<WG_SIZE>(gate_sum, gate_sumsh);
+    up_sum = hrx_reduce_wg_swiglu<WG_SIZE>(up_sum, up_sumsh);
 
     if (tid == 0) {
         const float silu_gate = gate_sum / (1.0f + __expf(-gate_sum));
@@ -1354,6 +1353,26 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
             reinterpret_cast<char *>(dst) + row * sizeof(float) + id_pos * c.dst_nb1 + token * c.dst_nb2) =
             up_sum * silu_gate;
     }
+}
+
+extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32(
+        const hrx_block_q4_K_id_swiglu * gate,
+        const hrx_block_q4_K_id_swiglu * up,
+        const float * src1,
+        const int * ids,
+        float * dst,
+        hrx_mul_mat_id_q4_k_swiglu_constants c) {
+    hrx_mul_mat_id_q4_k_swiglu_packed_f32_impl<64>(gate, up, src1, ids, dst, c);
+}
+
+extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_packed_wg32_f32(
+        const hrx_block_q4_K_id_swiglu * gate,
+        const hrx_block_q4_K_id_swiglu * up,
+        const float * src1,
+        const int * ids,
+        float * dst,
+        hrx_mul_mat_id_q4_k_swiglu_constants c) {
+    hrx_mul_mat_id_q4_k_swiglu_packed_f32_impl<32>(gate, up, src1, ids, dst, c);
 }
 
 static __global__ void hrx_mul_mat_id_q4_k_swiglu_rows2_x16_wg32_f32(

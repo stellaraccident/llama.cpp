@@ -1022,6 +1022,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_row4_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider;
+    ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_packed_wg32_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_mul_q8_1_provider;
     ggml_backend_hrx_op_provider quantize_q8_1_provider;
@@ -1182,6 +1183,7 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->mul_mat_id_q4_k_swiglu_row4_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider.reset();
+    device_context->mul_mat_id_q4_k_swiglu_packed_wg32_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_mul_q8_1_provider.reset();
     device_context->quantize_q8_1_provider.reset();
@@ -2803,6 +2805,9 @@ static bool ggml_backend_hrx_load_mul_mat_id_providers(ggml_backend_hrx_device_c
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32",
         &device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_mul_mat_id_q4_k_swiglu_packed_wg32_f32",
+        &device_context->mul_mat_id_q4_k_swiglu_packed_wg32_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_id_q4_k_swiglu_packed_wg64_f32",
         &device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider) || ok;
@@ -4915,6 +4920,14 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
     // W7900/Qwen small-prefill profiling shows the packed route wins through
     // p8; grouped routes are reserved for larger prompts where route compaction
     // amortizes.
+    // Within that packed family, WG32 wins consistently for p5..p8 but is
+    // marginal or noisy below p5, so leave p1..p4 on the original WG64 split.
+    if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_PACKED_Q4_K_SWIGLU") &&
+        !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_PACKED_Q4_K_SWIGLU_WG32") &&
+        k == 2048 && rows == 512 && n_ids == 8 && n_tokens >= 5 && n_tokens <= 8 &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_packed_wg32_provider)) {
+        return &device_context->mul_mat_id_q4_k_swiglu_packed_wg32_provider;
+    }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_PACKED_Q4_K_SWIGLU") &&
         k == 2048 && rows == 512 && n_ids == 8 && n_tokens >= 1 && n_tokens <= 8 &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider)) {
