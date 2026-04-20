@@ -1447,11 +1447,12 @@ static hrx_status_t ggml_backend_hrx_maybe_submit_batch_after_dispatch(hrx_strea
         return hrx_ok_status();
     }
 
+    context->submitted_dispatches++;
+
     const ggml_tensor * node = g_hrx_active_graph_node;
     if (node && node != context->submit_last_node) {
         const uint64_t matmul_bytes = ggml_backend_hrx_node_mul_mat_bytes(node);
         context->submit_last_node = node;
-        context->submitted_dispatches++;
         context->mul_mat_bytes += matmul_bytes;
         context->total_mul_mat_bytes += matmul_bytes;
     }
