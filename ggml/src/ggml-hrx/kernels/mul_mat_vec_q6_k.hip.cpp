@@ -159,6 +159,46 @@ static __device__ __forceinline__ void hrx_q6_k_dot4_cols8_acc(
     }
 }
 
+static __device__ __forceinline__ void hrx_q6_k_dot4_cols8_acc_full(
+        const hrx_block_q6_K * block,
+        const float * src0,
+        long long k,
+        float d,
+        int group,
+        int lane,
+        float (&sum)[16],
+        int sum_offset) {
+    const int half = group >> 2;
+    const int group_in_half = group & 3;
+    const int ql_base = half * 64 + ((group_in_half & 1) ? 32 : 0) + lane;
+    const int qh_base = half * 32 + lane;
+    const int qh_shift = (group_in_half & 3) * 2;
+    const bool high_nibble = group_in_half >= 2;
+
+    const uint32_t ql_word =
+        static_cast<uint32_t>(block->ql[ql_base]) |
+        (static_cast<uint32_t>(block->ql[ql_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->ql[ql_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->ql[ql_base + 3]) << 24);
+    const uint32_t qh_word =
+        static_cast<uint32_t>(block->qh[qh_base]) |
+        (static_cast<uint32_t>(block->qh[qh_base + 1]) << 8) |
+        (static_cast<uint32_t>(block->qh[qh_base + 2]) << 16) |
+        (static_cast<uint32_t>(block->qh[qh_base + 3]) << 24);
+
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int ql_shift = 8 * j + (high_nibble ? 4 : 0);
+        const int ql = (ql_word >> ql_shift) & 0x0F;
+        const int qh = (qh_word >> (8 * j + qh_shift)) & 0x03;
+        const float q = d * static_cast<float>((ql | (qh << 4)) - 32);
+        #pragma unroll
+        for (int col = 0; col < 8; ++col) {
+            sum[sum_offset + col] += q * src0[col * k + j];
+        }
+    }
+}
+
 static __device__ __forceinline__ uint32_t hrx_load_u32(const uint8_t * base) {
     return static_cast<uint32_t>(base[0]) |
         (static_cast<uint32_t>(base[1]) << 8) |
@@ -340,6 +380,7 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
     const hrx_block_q6_K * row0_blocks = src0 + row0 * blocks_per_row;
     const hrx_block_q6_K * row1_blocks = row0_blocks + blocks_per_row;
     const float * src1_col0 = src1 + col0 * k;
+    const bool full_cols = col0 + 8 <= cols;
     float sum[16] = {};
 
     const int block_lane = tid & 63;
@@ -357,18 +398,31 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32(
         const float d1 = __half2float(__ushort_as_half(block1->d)) *
             static_cast<float>(hrx_q6_k_scale(block1, group, lane));
 
-        hrx_q6_k_dot4_cols8_acc(block0, src1_col0 + src_base, k, d0, group, lane, sum, 0, valid_cols);
-        hrx_q6_k_dot4_cols8_acc(block1, src1_col0 + src_base, k, d1, group, lane, sum, 8, valid_cols);
+        if (full_cols) {
+            hrx_q6_k_dot4_cols8_acc_full(block0, src1_col0 + src_base, k, d0, group, lane, sum, 0);
+            hrx_q6_k_dot4_cols8_acc_full(block1, src1_col0 + src_base, k, d1, group, lane, sum, 8);
+        } else {
+            hrx_q6_k_dot4_cols8_acc(block0, src1_col0 + src_base, k, d0, group, lane, sum, 0, valid_cols);
+            hrx_q6_k_dot4_cols8_acc(block1, src1_col0 + src_base, k, d1, group, lane, sum, 8, valid_cols);
+        }
     }
 
     hrx_reduce_wg16<128>(sum, sumsh);
 
     if (tid == 0) {
-        #pragma unroll
-        for (int col = 0; col < 8; ++col) {
-            if (col < valid_cols) {
+        if (full_cols) {
+            #pragma unroll
+            for (int col = 0; col < 8; ++col) {
                 dst[(col0 + col) * rows + row0] = sum[col];
                 dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
+            }
+        } else {
+            #pragma unroll
+            for (int col = 0; col < 8; ++col) {
+                if (col < valid_cols) {
+                    dst[(col0 + col) * rows + row0] = sum[col];
+                    dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
+                }
             }
         }
     }
