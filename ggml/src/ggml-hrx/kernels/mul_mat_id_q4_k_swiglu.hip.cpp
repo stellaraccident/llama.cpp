@@ -790,7 +790,7 @@ static __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_row4_wg64_f32(
     }
 }
 
-static __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_f32(
+extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_f32(
         const hrx_block_q4_K_id_swiglu * gate,
         const hrx_block_q4_K_id_swiglu * up,
         const float * src1,

@@ -1027,6 +1027,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider compact_moe_routes_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_grouped_row2_route8_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider;
+    ggml_backend_hrx_op_provider mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_q8_1_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_mul_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_mul_wg64_provider;
@@ -1037,7 +1038,9 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_row2_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_row4_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider;
+    ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider;
+    ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_packed_wg32_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_mul_q8_1_provider;
@@ -1204,6 +1207,7 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->compact_moe_routes_provider.reset();
     device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider.reset();
+    device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_q8_1_provider.reset();
     device_context->mul_mat_id_q4_k_mul_provider.reset();
     device_context->mul_mat_id_q4_k_mul_wg64_provider.reset();
@@ -1214,7 +1218,9 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_row4_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider.reset();
+    device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider.reset();
+    device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_packed_wg32_provider.reset();
     device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider.reset();
     device_context->mul_mat_id_q4_k_mul_q8_1_provider.reset();
@@ -2850,6 +2856,9 @@ static bool ggml_backend_hrx_load_mul_mat_id_providers(ggml_backend_hrx_device_c
         device_context, "hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32",
         &device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_f32",
+        &device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_id_q4_k_q8_1_f32",
         &device_context->mul_mat_id_q4_k_q8_1_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
@@ -2880,8 +2889,14 @@ static bool ggml_backend_hrx_load_mul_mat_id_providers(ggml_backend_hrx_device_c
         device_context, "hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_f32",
         &device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_f32",
+        &device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32",
         &device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_f32",
+        &device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_id_q4_k_swiglu_packed_wg32_f32",
         &device_context->mul_mat_id_q4_k_swiglu_packed_wg32_provider) || ok;
@@ -4994,6 +5009,16 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
     // W7900/Qwen small-prefill profiling shows the rows2_x16 route is faster
     // below p32; grouped routes amortize their routing/tile structure from p32 up.
     static constexpr int64_t grouped_min_prompt_tokens = 32;
+    if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_Q8_1_X4_MMQ16_PROMPT") &&
+        !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
+        k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens >= grouped_min_prompt_tokens &&
+        n_tokens <= 128 &&
+        ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
+        ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
+        ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider)) {
+        return &device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider;
+    }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
         k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens >= grouped_min_prompt_tokens &&
@@ -5063,10 +5088,21 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         int64_t n_tokens) {
     // W7900/Qwen profiling shows the Q8_1 x4 SWIGLU route loses to the grouped F32 route
     // below this prompt size.
-    static constexpr int64_t q8_1_x4_min_prompt_tokens = 224;
+    static constexpr int64_t q8_1_x4_min_prompt_tokens = 192;
+    const bool q8_1_x4_bn16_prompt_shape = n_tokens == 128 || n_tokens >= q8_1_x4_min_prompt_tokens;
+    if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_Q8_1_X4_BN16_PROMPT") &&
+        !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
+        k == 2048 && rows % 16 == 0 && n_ids == 8 && q8_1_x4_bn16_prompt_shape &&
+        ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
+        ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
+        ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
+        ggml_backend_hrx_provider_available(
+            device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider)) {
+        return &device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider;
+    }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_Q8_1_X4_MMQ_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
-        k == 2048 && rows % 16 == 0 && n_ids == 8 && n_tokens >= q8_1_x4_min_prompt_tokens &&
+        k == 2048 && rows % 16 == 0 && n_ids == 8 && q8_1_x4_bn16_prompt_shape &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
@@ -5096,6 +5132,16 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         return &device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT") &&
+        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
+        (n_tokens <= 32 ||
+         ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT")) &&
+        ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
+        ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
+        ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider)) {
+        return &device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider;
+    }
+    if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT") &&
+        !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT") &&
         k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
@@ -8057,9 +8103,13 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k(
 
     const bool use_grouped =
         provider == &context->device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider ||
-        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider;
+        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider;
     const bool use_q8_1_x4_mmq =
-        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider;
+        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider;
+    const bool use_q8_1_x4_mmq16 =
+        provider == &context->device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_provider;
     if (use_grouped) {
         const size_t route_capacity = static_cast<size_t>(constants.n_ids * constants.n_tokens);
         const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
@@ -8153,8 +8203,12 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k(
             constants.dst_nb2,
         };
         hrx_dispatch_config_t grouped_config = {
-            { static_cast<uint32_t>(use_q8_1_x4_mmq ? (grouped_constants.rows + 63) / 64 : (grouped_constants.rows + 1) / 2),
-              static_cast<uint32_t>(use_q8_1_x4_mmq ? (grouped_constants.n_tokens + 31) / 32 : grouped_constants.n_experts),
+            { static_cast<uint32_t>(
+                  use_q8_1_x4_mmq ? (grouped_constants.rows + 63) / 64 :
+                  (grouped_constants.rows + 1) / 2),
+              static_cast<uint32_t>(
+                  use_q8_1_x4_mmq16 ? (grouped_constants.n_tokens + 15) / 16 :
+                  use_q8_1_x4_mmq ? (grouped_constants.n_tokens + 31) / 32 : grouped_constants.n_experts),
               static_cast<uint32_t>(use_q8_1_x4_mmq ? grouped_constants.n_experts : 1) },
             { provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : 64, 1, 1 },
             0,
@@ -8375,9 +8429,14 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k_swiglu(
         context->device_context, constants.k, constants.rows, constants.n_ids, constants.n_tokens);
     const bool use_grouped =
         provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider ||
-        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider;
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider;
     const bool use_q8_1_x4_mmq =
-        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider;
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_provider ||
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider;
+    const bool use_q8_1_x4_mmq_bn16 =
+        provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_provider;
     if (use_grouped) {
         const size_t route_capacity = static_cast<size_t>(constants.n_ids * constants.n_tokens);
         const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
@@ -8455,8 +8514,12 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k_swiglu(
             constants.up_nb2, constants.src1_nb1, constants.src1_nb2, constants.dst_nb1, constants.dst_nb2,
         };
         hrx_dispatch_config_t grouped_config = {
-            { static_cast<uint32_t>(use_q8_1_x4_mmq ? (grouped_constants.rows + 15) / 16 : (grouped_constants.rows + 1) / 2),
-              static_cast<uint32_t>(use_q8_1_x4_mmq ? (grouped_constants.n_tokens + 31) / 32 : grouped_constants.n_experts),
+            { static_cast<uint32_t>(
+                  use_q8_1_x4_mmq ? (grouped_constants.rows + 15) / 16 :
+                  (grouped_constants.rows + 1) / 2),
+              static_cast<uint32_t>(
+                  use_q8_1_x4_mmq_bn16 ? (grouped_constants.n_tokens + 15) / 16 :
+                  use_q8_1_x4_mmq ? (grouped_constants.n_tokens + 31) / 32 : grouped_constants.n_experts),
               static_cast<uint32_t>(use_q8_1_x4_mmq ? grouped_constants.n_experts : 1) },
             { provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : 64, 1, 1 },
             0,

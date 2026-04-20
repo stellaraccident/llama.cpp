@@ -187,7 +187,8 @@ static __device__ __forceinline__ void hrx_q8_1_moe_mmq_commit_b(
     }
 }
 
-extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32(
+template <int BN, int TN>
+static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq_wg64_impl(
         const hrx_block_q4_K_moe_mmq * src0,
         const hrx_block_q8_1_x4_moe_mmq * src1,
         const uint32_t * counts,
@@ -195,15 +196,13 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32
         float * dst,
         hrx_mul_mat_id_q4_k_grouped_constants c) {
     constexpr int BM = 64;
-    constexpr int BN = 32;
     constexpr int BK_STEP = 1;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = 64;
-    constexpr int WN = 32;
+    constexpr int WN = BN;
     constexpr int WMITER = 1;
     constexpr int TM = 4;
-    constexpr int TN = 2;
     constexpr int WNITER = (WM * WN) / (WARP * TM * TN * WMITER);
     constexpr int WSUBM = WM / WMITER;
     constexpr int WSUBN = WN / WNITER;
@@ -212,10 +211,12 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32
     constexpr int LOAD_STRIDE_A = BLOCK_SIZE * LOAD_VEC_A / 32;
     constexpr int LOAD_STRIDE_B = BLOCK_SIZE * LOAD_VEC_B / 32;
     constexpr int LOADS_A = BM / LOAD_STRIDE_A;
-    constexpr int LOADS_B = BN / LOAD_STRIDE_B;
+    constexpr int LOADS_B = (BN + LOAD_STRIDE_B - 1) / LOAD_STRIDE_B;
 
-    static_assert(WNITER == 4, "unexpected Q4 MoE MMQ tile shape");
-    static_assert(WSUBM == 64 && WSUBN == 8, "unexpected Q4 MoE MMQ subtile shape");
+    static_assert(BN == 16 || BN == 32, "unexpected Q4 MoE MMQ route tile");
+    static_assert(TN == 1 || TN == 2, "unexpected Q4 MoE MMQ thread route tile");
+    static_assert(WNITER * WARP * TM * TN * WMITER == WM * WN, "invalid Q4 MoE MMQ tile");
+    static_assert(WSUBM == 64, "unexpected Q4 MoE MMQ M subtile shape");
     static_assert(LOADS_A == 8 && LOADS_B == 1, "unexpected Q4 MoE MMQ load shape");
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
@@ -268,14 +269,16 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32
                 #pragma unroll
                 for (int load_i = 0; load_i < LOADS_B; ++load_i) {
                     const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                    pending_b[load_i] = hrx_q8_1_moe_mmq_fetch_b(
-                        src1,
-                        expert_routes,
-                        count,
-                        route_base + col,
-                        kb_base + k_step,
-                        loadr_b,
-                        q8_blocks_per_col);
+                    pending_b[load_i] = col < BN ?
+                        hrx_q8_1_moe_mmq_fetch_b(
+                            src1,
+                            expert_routes,
+                            count,
+                            route_base + col,
+                            kb_base + k_step,
+                            loadr_b,
+                            q8_blocks_per_col) :
+                        hrx_q8_1_moe_b_pending {};
                 }
                 #pragma unroll
                 for (int load_i = 0; load_i < LOADS_A; ++load_i) {
@@ -285,7 +288,9 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32
                 #pragma unroll
                 for (int load_i = 0; load_i < LOADS_B; ++load_i) {
                     const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                    hrx_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
+                    if (col < BN) {
+                        hrx_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
+                    }
                 }
             }
             __syncthreads();
@@ -347,7 +352,28 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32
     }
 }
 
-extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32(
+extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_f32(
+        const hrx_block_q4_K_moe_mmq * src0,
+        const hrx_block_q8_1_x4_moe_mmq * src1,
+        const uint32_t * counts,
+        const uint32_t * routes,
+        float * dst,
+        hrx_mul_mat_id_q4_k_grouped_constants c) {
+    hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq_wg64_impl<32, 2>(src0, src1, counts, routes, dst, c);
+}
+
+extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_f32(
+        const hrx_block_q4_K_moe_mmq * src0,
+        const hrx_block_q8_1_x4_moe_mmq * src1,
+        const uint32_t * counts,
+        const uint32_t * routes,
+        float * dst,
+        hrx_mul_mat_id_q4_k_grouped_constants c) {
+    hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq_wg64_impl<16, 1>(src0, src1, counts, routes, dst, c);
+}
+
+template <int BM, int BN, int TM, int TN>
+static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl(
         const hrx_block_q4_K_moe_mmq * gate,
         const hrx_block_q4_K_moe_mmq * up,
         const hrx_block_q8_1_x4_moe_mmq * src1,
@@ -355,16 +381,12 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_w
         const uint32_t * routes,
         float * dst,
         hrx_mul_mat_id_q4_k_swiglu_grouped_constants c) {
-    constexpr int BM = 16;
-    constexpr int BN = 32;
     constexpr int BK_STEP = 1;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
-    constexpr int WM = 16;
-    constexpr int WN = 32;
+    constexpr int WM = BM;
+    constexpr int WN = BN;
     constexpr int WMITER = 1;
-    constexpr int TM = 2;
-    constexpr int TN = 2;
     constexpr int WNITER = (WM * WN) / (WARP * TM * TN * WMITER);
     constexpr int WSUBM = WM / WMITER;
     constexpr int WSUBN = WN / WNITER;
@@ -373,11 +395,16 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_w
     constexpr int LOAD_STRIDE_A = BLOCK_SIZE * LOAD_VEC_A / 32;
     constexpr int LOAD_STRIDE_B = BLOCK_SIZE * LOAD_VEC_B / 32;
     constexpr int LOADS_A = BM / LOAD_STRIDE_A;
-    constexpr int LOADS_B = BN / LOAD_STRIDE_B;
+    constexpr int LOADS_B = (BN + LOAD_STRIDE_B - 1) / LOAD_STRIDE_B;
 
-    static_assert(WNITER == 2, "unexpected Q4 MoE SWIGLU MMQ tile shape");
-    static_assert(WSUBM == 16 && WSUBN == 16, "unexpected Q4 MoE SWIGLU MMQ subtile shape");
-    static_assert(LOADS_A == 2 && LOADS_B == 1, "unexpected Q4 MoE SWIGLU MMQ load shape");
+    static_assert(BM == 16 || BM == 32, "unexpected Q4 MoE SWIGLU MMQ row tile");
+    static_assert(BN == 16 || BN == 32, "unexpected Q4 MoE SWIGLU MMQ route tile");
+    static_assert(TM == 2, "unexpected Q4 MoE SWIGLU MMQ thread row tile");
+    static_assert(TN == 1 || TN == 2, "unexpected Q4 MoE SWIGLU MMQ thread route tile");
+    static_assert(WNITER * WARP * TM * TN * WMITER == WM * WN, "invalid Q4 MoE SWIGLU MMQ tile");
+    static_assert(WSUBM == BM, "unexpected Q4 MoE SWIGLU MMQ M subtile");
+    static_assert(LOADS_A * LOAD_STRIDE_A == BM, "unexpected Q4 MoE SWIGLU MMQ A load shape");
+    static_assert(LOADS_B == 1, "unexpected Q4 MoE SWIGLU MMQ B load shape");
 
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
@@ -441,14 +468,16 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_w
                 #pragma unroll
                 for (int load_i = 0; load_i < LOADS_B; ++load_i) {
                     const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                    pending_b[load_i] = hrx_q8_1_moe_mmq_fetch_b(
-                        src1,
-                        expert_routes,
-                        count,
-                        route_base + col,
-                        kb_base + k_step,
-                        loadr_b,
-                        q8_blocks_per_col);
+                    pending_b[load_i] = col < BN ?
+                        hrx_q8_1_moe_mmq_fetch_b(
+                            src1,
+                            expert_routes,
+                            count,
+                            route_base + col,
+                            kb_base + k_step,
+                            loadr_b,
+                            q8_blocks_per_col) :
+                        hrx_q8_1_moe_b_pending {};
                 }
                 #pragma unroll
                 for (int load_i = 0; load_i < LOADS_A; ++load_i) {
@@ -459,7 +488,9 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_w
                 #pragma unroll
                 for (int load_i = 0; load_i < LOADS_B; ++load_i) {
                     const int col = loadc_b + load_i * LOAD_STRIDE_B;
-                    hrx_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
+                    if (col < BN) {
+                        hrx_q8_1_moe_mmq_commit_b(buf_b, k_step * BN + col, pending_b[load_i], loadr_b);
+                    }
                 }
             }
             __syncthreads();
@@ -529,4 +560,28 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_w
             }
         }
     }
+}
+
+extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32(
+        const hrx_block_q4_K_moe_mmq * gate,
+        const hrx_block_q4_K_moe_mmq * up,
+        const hrx_block_q8_1_x4_moe_mmq * src1,
+        const uint32_t * counts,
+        const uint32_t * routes,
+        float * dst,
+        hrx_mul_mat_id_q4_k_swiglu_grouped_constants c) {
+    hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl<16, 32, 2, 2>(
+        gate, up, src1, counts, routes, dst, c);
+}
+
+extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_f32(
+        const hrx_block_q4_K_moe_mmq * gate,
+        const hrx_block_q4_K_moe_mmq * up,
+        const hrx_block_q8_1_x4_moe_mmq * src1,
+        const uint32_t * counts,
+        const uint32_t * routes,
+        float * dst,
+        hrx_mul_mat_id_q4_k_swiglu_grouped_constants c) {
+    hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl<16, 16, 2, 1>(
+        gate, up, src1, counts, routes, dst, c);
 }

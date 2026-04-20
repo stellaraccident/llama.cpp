@@ -940,6 +940,14 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_f32",
+        "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
+        "format": None,
+        "binding_count": 5,
+        "constants_size": 96,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "hrx_mul_mat_id_q4_k_q8_1_f32",
         "source": "mul_mat_id_q4_k_q8_1.hip.cpp",
         "format": None,
@@ -1020,7 +1028,23 @@ KERNELS = [
         "workgroup_size": (64, 1, 1),
     },
     {
+        "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_f32",
+        "source": "mul_mat_id_q4_k_swiglu.hip.cpp",
+        "format": None,
+        "binding_count": 6,
+        "constants_size": 112,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
         "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_wg64_f32",
+        "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
+        "format": None,
+        "binding_count": 6,
+        "constants_size": 112,
+        "workgroup_size": (64, 1, 1),
+    },
+    {
+        "name": "hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_f32",
         "source": "mul_mat_id_q4_k_q8_1_x4_mmq.hip.cpp",
         "format": None,
         "binding_count": 6,
