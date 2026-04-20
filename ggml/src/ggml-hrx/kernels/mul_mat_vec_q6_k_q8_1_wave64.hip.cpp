@@ -39,6 +39,7 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
     const long long q8_blocks_per_col = k / 32;
     const long long row_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
     const long long col_base = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN;
+    const bool full_tile = row_base + BM <= rows && col_base + BN <= cols;
 
     float sum[WNITER * TM * TN] = {};
 
@@ -46,51 +47,79 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
         const int loadr_a = static_cast<int>(tid % (32 / LOAD_VEC_A));
         const int loadc_a = static_cast<int>(tid / (32 / LOAD_VEC_A));
         const int loadstride_a = BLOCK_SIZE * LOAD_VEC_A / 32;
-        for (int r = loadc_a; r < BM; r += loadstride_a) {
-            #pragma unroll
-            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-                const int buf_idx = k_step * BM + r;
-                if (row_base + r < rows) {
+        const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
+        const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
+        const int loadstride_b = BLOCK_SIZE * LOAD_VEC_B / 32;
+        if (full_tile) {
+            for (int r = loadc_a; r < BM; r += loadstride_a) {
+                #pragma unroll
+                for (int k_step = 0; k_step < BK_STEP; ++k_step) {
                     hrx_q6_k_mmqv_load_a(
                         buf_a,
-                        buf_idx,
+                        k_step * BM + r,
                         src0,
                         row_base + r,
                         kb_base + k_step,
                         loadr_a,
                         blocks_per_row);
-                } else {
-                    buf_a[buf_idx].qs[loadr_a] = 0;
-                    if (loadr_a == 0 || loadr_a == 4) {
-                        buf_a[buf_idx].d[loadr_a >> 2] = 0.0f;
-                    }
                 }
             }
-        }
-
-        const int loadr_b = static_cast<int>(tid % (32 / LOAD_VEC_B));
-        const int loadc_b = static_cast<int>(tid / (32 / LOAD_VEC_B));
-        const int loadstride_b = BLOCK_SIZE * LOAD_VEC_B / 32;
-        for (int c = loadc_b; c < BN; c += loadstride_b) {
-            #pragma unroll
-            for (int k_step = 0; k_step < BK_STEP; ++k_step) {
-                const int buf_idx = k_step * BN + c;
-                if (col_base + c < cols) {
+            for (int c = loadc_b; c < BN; c += loadstride_b) {
+                #pragma unroll
+                for (int k_step = 0; k_step < BK_STEP; ++k_step) {
                     hrx_q6_k_mmqv_load_b(
                         buf_b,
-                        buf_idx,
+                        k_step * BN + c,
                         src1,
                         col_base + c,
                         kb_base + k_step,
                         loadr_b,
                         q8_blocks_per_col);
-                } else {
-                    #pragma unroll
-                    for (int j = 0; j < 4; ++j) {
-                        buf_b[buf_idx].qs[loadr_b * 4 + j] = 0;
+                }
+            }
+        } else {
+            for (int r = loadc_a; r < BM; r += loadstride_a) {
+                #pragma unroll
+                for (int k_step = 0; k_step < BK_STEP; ++k_step) {
+                    const int buf_idx = k_step * BM + r;
+                    if (row_base + r < rows) {
+                        hrx_q6_k_mmqv_load_a(
+                            buf_a,
+                            buf_idx,
+                            src0,
+                            row_base + r,
+                            kb_base + k_step,
+                            loadr_a,
+                            blocks_per_row);
+                    } else {
+                        buf_a[buf_idx].qs[loadr_a] = 0;
+                        if (loadr_a == 0 || loadr_a == 4) {
+                            buf_a[buf_idx].d[loadr_a >> 2] = 0.0f;
+                        }
                     }
-                    if (loadr_b == 0) {
-                        buf_b[buf_idx].d = 0.0f;
+                }
+            }
+            for (int c = loadc_b; c < BN; c += loadstride_b) {
+                #pragma unroll
+                for (int k_step = 0; k_step < BK_STEP; ++k_step) {
+                    const int buf_idx = k_step * BN + c;
+                    if (col_base + c < cols) {
+                        hrx_q6_k_mmqv_load_b(
+                            buf_b,
+                            buf_idx,
+                            src1,
+                            col_base + c,
+                            kb_base + k_step,
+                            loadr_b,
+                            q8_blocks_per_col);
+                    } else {
+                        #pragma unroll
+                        for (int j = 0; j < 4; ++j) {
+                            buf_b[buf_idx].qs[loadr_b * 4 + j] = 0;
+                        }
+                        if (loadr_b == 0) {
+                            buf_b[buf_idx].d = 0.0f;
+                        }
                     }
                 }
             }
@@ -143,7 +172,7 @@ extern "C" __global__ void hrx_mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_f32(
             #pragma unroll
             for (int cc = 0; cc < TN; ++cc) {
                 const long long col = col_base + warp_c * WN + wsic * WSUBN + tiwc * TN + cc;
-                if (row < rows && col < cols) {
+                if (full_tile || (row < rows && col < cols)) {
                     dst[col * rows + row] = sum[(wsic * TM + cr) * TN + cc];
                 }
             }
