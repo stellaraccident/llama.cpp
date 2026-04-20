@@ -5552,7 +5552,7 @@ static bool ggml_backend_hrx_supports_topk_moe_f32(
         soft_max->src[0]->ne[0] > 256 ||
         (soft_max->src[0]->ne[0] & (soft_max->src[0]->ne[0] - 1)) != 0 ||
         n_logit_rows <= 0 ||
-        (n_logit_rows != 1 && !ggml_backend_hrx_env_enabled("GGML_HRX_ENABLE_PROMPT_TOPK_MOE")) ||
+        (n_logit_rows > 4 && !ggml_backend_hrx_env_enabled("GGML_HRX_ENABLE_PROMPT_TOPK_MOE")) ||
         ggml_nelements(weights) % n_logit_rows != 0 ||
         ggml_nelements(weights) != ggml_nelements(ids) ||
         n_expert_used <= 0 ||
@@ -9285,11 +9285,19 @@ static bool ggml_backend_hrx_tensors_overlap(const ggml_tensor * a, const ggml_t
 
 static bool ggml_backend_hrx_topk_moe_fusion_memory_safe(
         const ggml_cgraph * cgraph,
+        const ggml_backend_hrx_device_context * device_context,
         const ggml_backend_hrx_topk_moe_fusion & fusion) {
     const ggml_tensor * logits = fusion.soft_max ? fusion.soft_max->src[0] : nullptr;
-    if (logits && ggml_nrows(logits) == 1) {
+    const int64_t n_rows = logits ? ggml_nrows(logits) : 0;
+    if (n_rows == 1) {
         return true;
     }
+    const auto variant = ggml_backend_hrx_topk_moe_variant_from_env();
+    const bool prompt_shared4_safe =
+        n_rows > 1 && n_rows <= 4 &&
+        (variant == ggml_backend_hrx_topk_moe_variant::auto_select ||
+         variant == ggml_backend_hrx_topk_moe_variant::shared4) &&
+        ggml_backend_hrx_provider_available(device_context->topk_moe_f32_shared4_provider);
 
     const int output_idxs[2] = { fusion.ids_idx, fusion.weights_idx };
     for (int output_idx : output_idxs) {
@@ -9311,6 +9319,14 @@ static bool ggml_backend_hrx_topk_moe_fusion_memory_safe(
                     }
                 }
                 if (!elided_source) {
+                    // For p2..p4 prompt MoE, the selected shared4 TopK kernel
+                    // reads all rows in the workgroup into registers before any
+                    // output write. This makes compact weights that alias the
+                    // logits buffer safe for the one-workgroup prompt case. For
+                    // p5+ multiple workgroups would race on compact output.
+                    if (prompt_shared4_safe && src == logits) {
+                        continue;
+                    }
                     return false;
                 }
             }
@@ -9417,7 +9433,7 @@ static bool ggml_backend_hrx_try_topk_moe_fusion(
         fusion->ops.data(),
         outputs,
         2) &&
-        ggml_backend_hrx_topk_moe_fusion_memory_safe(cgraph, *fusion);
+        ggml_backend_hrx_topk_moe_fusion_memory_safe(cgraph, device_context, *fusion);
 }
 
 struct ggml_backend_hrx_ssm_conv_update_fusion {
