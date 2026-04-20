@@ -4134,6 +4134,11 @@ int main() {
             run_topk_moe_case(backend.get(), 32, 5, 8, true, "topk_moe_shared4_norm");
         }
         {
+            scoped_env_var topk_variant("GGML_HRX_TOPK_MOE_VARIANT", "shared8");
+            scoped_env_var disable_argsort("GGML_HRX_DISABLE_ARGSORT", "1");
+            run_topk_moe_case(backend.get(), 32, 8, 8, true, "topk_moe_shared8_norm");
+        }
+        {
             scoped_env_var topk_variant("GGML_HRX_TOPK_MOE_VARIANT", "wave32");
             scoped_env_var disable_argsort("GGML_HRX_DISABLE_ARGSORT", "1");
             run_topk_moe_case(backend.get(), 256, 1, 32, true, "topk_moe_wave32_norm");

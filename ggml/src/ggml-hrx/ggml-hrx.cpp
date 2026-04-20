@@ -50,6 +50,7 @@ enum class ggml_backend_hrx_topk_moe_variant {
     auto_select,
     baseline,
     shared4,
+    shared8,
     wave32,
 };
 
@@ -1088,6 +1089,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider argsort_f32_provider;
     ggml_backend_hrx_op_provider topk_moe_f32_provider;
     ggml_backend_hrx_op_provider topk_moe_f32_shared4_provider;
+    ggml_backend_hrx_op_provider topk_moe_f32_shared8_provider;
     ggml_backend_hrx_op_provider topk_moe_f32_wave32_provider;
     ggml_backend_hrx_op_provider rope_f32_provider;
     ggml_backend_hrx_op_provider rope_set_rows_f32_f16_provider;
@@ -1274,6 +1276,7 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->argsort_f32_provider.reset();
     device_context->topk_moe_f32_provider.reset();
     device_context->topk_moe_f32_shared4_provider.reset();
+    device_context->topk_moe_f32_shared8_provider.reset();
     device_context->topk_moe_f32_wave32_provider.reset();
     device_context->rope_f32_provider.reset();
     device_context->rope_set_rows_f32_f16_provider.reset();
@@ -1526,6 +1529,9 @@ static ggml_backend_hrx_topk_moe_variant ggml_backend_hrx_topk_moe_variant_from_
     }
     if (std::strcmp(value, "shared4") == 0 || std::strcmp(value, "shared") == 0) {
         return ggml_backend_hrx_topk_moe_variant::shared4;
+    }
+    if (std::strcmp(value, "shared8") == 0) {
+        return ggml_backend_hrx_topk_moe_variant::shared8;
     }
     if (std::strcmp(value, "wave32") == 0) {
         return ggml_backend_hrx_topk_moe_variant::wave32;
@@ -2944,6 +2950,8 @@ static bool ggml_backend_hrx_load_topk_moe_f32_providers(ggml_backend_hrx_device
         device_context, "hrx_topk_moe_f32", &device_context->topk_moe_f32_provider);
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_topk_moe_f32_shared4", &device_context->topk_moe_f32_shared4_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_topk_moe_f32_shared8", &device_context->topk_moe_f32_shared8_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_topk_moe_f32_wave32", &device_context->topk_moe_f32_wave32_provider) || ok;
     return ok;
@@ -5552,7 +5560,7 @@ static bool ggml_backend_hrx_supports_topk_moe_f32(
         soft_max->src[0]->ne[0] > 256 ||
         (soft_max->src[0]->ne[0] & (soft_max->src[0]->ne[0] - 1)) != 0 ||
         n_logit_rows <= 0 ||
-        (n_logit_rows > 4 && !ggml_backend_hrx_env_enabled("GGML_HRX_ENABLE_PROMPT_TOPK_MOE")) ||
+        (n_logit_rows > 8 && !ggml_backend_hrx_env_enabled("GGML_HRX_ENABLE_PROMPT_TOPK_MOE")) ||
         ggml_nelements(weights) % n_logit_rows != 0 ||
         ggml_nelements(weights) != ggml_nelements(ids) ||
         n_expert_used <= 0 ||
@@ -5592,6 +5600,11 @@ static const ggml_backend_hrx_op_provider & ggml_backend_hrx_select_topk_moe_f32
                 return device_context->topk_moe_f32_shared4_provider;
             }
             break;
+        case ggml_backend_hrx_topk_moe_variant::shared8:
+            if (provider_available(device_context->topk_moe_f32_shared8_provider)) {
+                return device_context->topk_moe_f32_shared8_provider;
+            }
+            break;
         case ggml_backend_hrx_topk_moe_variant::wave32:
             if (provider_available(device_context->topk_moe_f32_wave32_provider)) {
                 return device_context->topk_moe_f32_wave32_provider;
@@ -5600,6 +5613,10 @@ static const ggml_backend_hrx_op_provider & ggml_backend_hrx_select_topk_moe_f32
         case ggml_backend_hrx_topk_moe_variant::auto_select:
             if (n_rows == 1 && provider_available(device_context->topk_moe_f32_wave32_provider)) {
                 return device_context->topk_moe_f32_wave32_provider;
+            }
+            if (n_rows > 4 && n_rows <= 8 &&
+                provider_available(device_context->topk_moe_f32_shared8_provider)) {
+                return device_context->topk_moe_f32_shared8_provider;
             }
             if (provider_available(device_context->topk_moe_f32_shared4_provider)) {
                 return device_context->topk_moe_f32_shared4_provider;
@@ -9298,6 +9315,11 @@ static bool ggml_backend_hrx_topk_moe_fusion_memory_safe(
         (variant == ggml_backend_hrx_topk_moe_variant::auto_select ||
          variant == ggml_backend_hrx_topk_moe_variant::shared4) &&
         ggml_backend_hrx_provider_available(device_context->topk_moe_f32_shared4_provider);
+    const bool prompt_shared8_safe =
+        n_rows > 4 && n_rows <= 8 &&
+        (variant == ggml_backend_hrx_topk_moe_variant::auto_select ||
+         variant == ggml_backend_hrx_topk_moe_variant::shared8) &&
+        ggml_backend_hrx_provider_available(device_context->topk_moe_f32_shared8_provider);
 
     const int output_idxs[2] = { fusion.ids_idx, fusion.weights_idx };
     for (int output_idx : output_idxs) {
@@ -9319,12 +9341,11 @@ static bool ggml_backend_hrx_topk_moe_fusion_memory_safe(
                     }
                 }
                 if (!elided_source) {
-                    // For p2..p4 prompt MoE, the selected shared4 TopK kernel
+                    // For skinny prompt MoE, the selected shared TopK kernel
                     // reads all rows in the workgroup into registers before any
                     // output write. This makes compact weights that alias the
-                    // logits buffer safe for the one-workgroup prompt case. For
-                    // p5+ multiple workgroups would race on compact output.
-                    if (prompt_shared4_safe && src == logits) {
+                    // logits buffer safe for the one-workgroup prompt case.
+                    if ((prompt_shared4_safe || prompt_shared8_safe) && src == logits) {
                         continue;
                     }
                     return false;

@@ -1500,6 +1500,14 @@ KERNELS = [
         "workgroup_size": (64, 4, 1),
     },
     {
+        "name": "hrx_topk_moe_f32_shared8",
+        "source": "topk_moe_f32_shared.hip.cpp",
+        "format": None,
+        "binding_count": 3,
+        "constants_size": 80,
+        "workgroup_size": (64, 8, 1),
+    },
+    {
         "name": "hrx_topk_moe_f32_wave32",
         "source": "topk_moe_f32_wave32.hip.cpp",
         "format": None,

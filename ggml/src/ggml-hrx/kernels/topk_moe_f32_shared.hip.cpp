@@ -120,13 +120,14 @@ extern "C" __global__ void hrx_topk_moe_f32(
     }
 }
 
-extern "C" __global__ void hrx_topk_moe_f32_shared4(
+template<int rows_per_group>
+__device__ void hrx_topk_moe_f32_shared_rows(
         const float * logits, float * weights, int * ids,
         hrx_topk_moe_f32_constants c) {
-    __shared__ float values[4][64];
-    __shared__ int indices[4][64];
-    __shared__ float top_values[4][32];
-    __shared__ float selected_sums[4];
+    __shared__ float values[rows_per_group][64];
+    __shared__ int indices[rows_per_group][64];
+    __shared__ float top_values[rows_per_group][32];
+    __shared__ float selected_sums[rows_per_group];
 
     const int tid = static_cast<int>(__builtin_amdgcn_workitem_id_x());
     const int row_in_group = static_cast<int>(__builtin_amdgcn_workitem_id_y());
@@ -242,4 +243,16 @@ extern "C" __global__ void hrx_topk_moe_f32_shared4(
         const float out = c.with_norm ? value / denom : value;
         *reinterpret_cast<float *>(weights_row + tid * c.weights_nb_k) = out;
     }
+}
+
+extern "C" __global__ void hrx_topk_moe_f32_shared4(
+        const float * logits, float * weights, int * ids,
+        hrx_topk_moe_f32_constants c) {
+    hrx_topk_moe_f32_shared_rows<4>(logits, weights, ids, c);
+}
+
+extern "C" __global__ void hrx_topk_moe_f32_shared8(
+        const float * logits, float * weights, int * ids,
+        hrx_topk_moe_f32_constants c) {
+    hrx_topk_moe_f32_shared_rows<8>(logits, weights, ids, c);
 }
