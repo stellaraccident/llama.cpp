@@ -1295,6 +1295,12 @@ struct ggml_backend_hrx_context {
     hrx_stream_t stream = nullptr;
     std::string name;
     std::vector<ggml_backend_hrx_scratch_buffer> scratch_buffers;
+    hrx_buffer_t scratch_q8_1 = nullptr;
+    size_t scratch_q8_1_size = 0;
+    std::vector<hrx_buffer_t> retired_scratch_q8_1;
+    hrx_buffer_t scratch_routes = nullptr;
+    size_t scratch_routes_size = 0;
+    std::vector<hrx_buffer_t> retired_scratch_routes;
     uint64_t last_total_mul_mat_bytes = 0;
     uint64_t submitted_dispatches = 0;
     uint64_t mul_mat_bytes = 0;
@@ -1302,6 +1308,7 @@ struct ggml_backend_hrx_context {
     uint64_t mul_mat_bytes_per_submit = 0;
     uint64_t submit_count = 0;
     uint64_t submit_flush_count = 0;
+    const ggml_tensor * submit_last_node = nullptr;
 };
 
 static thread_local ggml_backend_hrx_context * g_hrx_active_graph_context = nullptr;
@@ -1374,6 +1381,7 @@ static void ggml_backend_hrx_begin_submit_batch(ggml_backend_hrx_context * conte
     context->mul_mat_bytes_per_submit = std::min(max_bytes, last_scaled);
     context->submit_count = 0;
     context->submit_flush_count = 0;
+    context->submit_last_node = nullptr;
 }
 
 static hrx_status_t ggml_backend_hrx_maybe_submit_batch_after_dispatch(hrx_stream_t stream) {
@@ -1383,8 +1391,9 @@ static hrx_status_t ggml_backend_hrx_maybe_submit_batch_after_dispatch(hrx_strea
     }
 
     const ggml_tensor * node = g_hrx_active_graph_node;
-    if (node) {
+    if (node && node != context->submit_last_node) {
         const uint64_t matmul_bytes = ggml_backend_hrx_node_mul_mat_bytes(node);
+        context->submit_last_node = node;
         context->submitted_dispatches++;
         context->mul_mat_bytes += matmul_bytes;
         context->total_mul_mat_bytes += matmul_bytes;
@@ -1562,6 +1571,98 @@ static void ggml_backend_hrx_release_scratch_buffers(ggml_backend_hrx_context * 
         scratch.state = ggml_backend_hrx_scratch_state::available;
     }
     context->scratch_buffers.clear();
+}
+
+static void ggml_backend_hrx_release_retired_persistent_scratch_buffers(ggml_backend_hrx_context * context) {
+    for (hrx_buffer_t buffer : context->retired_scratch_q8_1) {
+        hrx_buffer_release(buffer);
+    }
+    context->retired_scratch_q8_1.clear();
+    for (hrx_buffer_t buffer : context->retired_scratch_routes) {
+        hrx_buffer_release(buffer);
+    }
+    context->retired_scratch_routes.clear();
+}
+
+static void ggml_backend_hrx_release_persistent_scratch_buffers(ggml_backend_hrx_context * context) {
+    if (context->scratch_q8_1) {
+        hrx_buffer_release(context->scratch_q8_1);
+        context->scratch_q8_1 = nullptr;
+        context->scratch_q8_1_size = 0;
+    }
+    if (context->scratch_routes) {
+        hrx_buffer_release(context->scratch_routes);
+        context->scratch_routes = nullptr;
+        context->scratch_routes_size = 0;
+    }
+    ggml_backend_hrx_release_retired_persistent_scratch_buffers(context);
+}
+
+static bool ggml_backend_hrx_ensure_persistent_scratch_buffer(
+        ggml_backend_hrx_context * context,
+        size_t size,
+        hrx_buffer_t * buffer,
+        size_t * buffer_size,
+        std::vector<hrx_buffer_t> * retired_buffers,
+        hrx_buffer_ref_t * out_ref) {
+    if (size == 0) {
+        return false;
+    }
+
+    if (*buffer_size < size) {
+        if (*buffer) {
+            retired_buffers->push_back(*buffer);
+            *buffer = nullptr;
+            *buffer_size = 0;
+        }
+        hrx_buffer_params_t params = {
+            /* .type           = */ HRX_MEMORY_TYPE_DEVICE_LOCAL,
+            /* .access         = */ HRX_MEMORY_ACCESS_ALL,
+            /* .usage          = */ HRX_BUFFER_USAGE_DEFAULT,
+            /* .queue_affinity = */ 0,
+        };
+        if (!GGML_HRX_CHECK(hrx_allocator_allocate_buffer(
+                hrx_device_allocator(context->device_context->device),
+                params,
+                size,
+                buffer))) {
+            return false;
+        }
+        *buffer_size = size;
+    }
+
+    *out_ref = {
+        /* .buffer = */ *buffer,
+        /* .offset = */ 0,
+        /* .length = */ size,
+    };
+    return true;
+}
+
+static bool ggml_backend_hrx_ensure_q8_1_scratch(
+        ggml_backend_hrx_context * context,
+        size_t size,
+        hrx_buffer_ref_t * out_ref) {
+    return ggml_backend_hrx_ensure_persistent_scratch_buffer(
+        context,
+        size,
+        &context->scratch_q8_1,
+        &context->scratch_q8_1_size,
+        &context->retired_scratch_q8_1,
+        out_ref);
+}
+
+static bool ggml_backend_hrx_ensure_route_scratch(
+        ggml_backend_hrx_context * context,
+        size_t size,
+        hrx_buffer_ref_t * out_ref) {
+    return ggml_backend_hrx_ensure_persistent_scratch_buffer(
+        context,
+        size,
+        &context->scratch_routes,
+        &context->scratch_routes_size,
+        &context->retired_scratch_routes,
+        out_ref);
 }
 
 static bool ggml_backend_hrx_request_scratch_buffer(
@@ -2974,6 +3075,7 @@ static void ggml_backend_hrx_free(ggml_backend_t backend) {
     if (context->stream) {
         GGML_HRX_CHECK(hrx_stream_synchronize(context->stream));
         ggml_backend_hrx_release_scratch_buffers(context);
+        ggml_backend_hrx_release_persistent_scratch_buffers(context);
         ggml_backend_hrx_unregister_stream(context->device_context, context->stream);
         hrx_stream_release(context->stream);
     }
@@ -2986,6 +3088,7 @@ static void ggml_backend_hrx_synchronize(ggml_backend_t backend) {
     if (context->stream) {
         GGML_HRX_CHECK(hrx_stream_synchronize(context->stream));
         ggml_backend_hrx_recycle_scratch_buffers(context);
+        ggml_backend_hrx_release_retired_persistent_scratch_buffers(context);
         std::lock_guard<std::mutex> lock(context->device_context->streams_mutex);
         if (auto * arena = ggml_backend_hrx_find_staging_arena_locked(context->device_context, context->stream)) {
             ggml_backend_hrx_reset_staging_arena_locked(*arena);
@@ -7603,7 +7706,7 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k(
         const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
         const size_t routes_size = static_cast<size_t>(constants.n_experts) * route_capacity * sizeof(uint32_t);
         hrx_buffer_ref_t scratch_ref = {};
-        if (!ggml_backend_hrx_request_scratch_buffer(context, counts_size + routes_size, &scratch_ref)) {
+        if (!ggml_backend_hrx_ensure_route_scratch(context, counts_size + routes_size, &scratch_ref)) {
             return GGML_STATUS_FAILED;
         }
         hrx_buffer_ref_t counts_ref = { scratch_ref.buffer, scratch_ref.offset, counts_size };
@@ -7647,7 +7750,7 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k(
         if (use_q8_1_x4_mmq) {
             const int64_t q8_1_blocks = constants.n_tokens * constants.n_ids * (constants.k / 32);
             const size_t q8_1_size = static_cast<size_t>(((q8_1_blocks + 3) / 4) * 144);
-            if (!ggml_backend_hrx_request_scratch_buffer(context, q8_1_size, &src1_compute_ref)) {
+            if (!ggml_backend_hrx_ensure_q8_1_scratch(context, q8_1_size, &src1_compute_ref)) {
                 return GGML_STATUS_FAILED;
             }
             hrx_buffer_ref_t quant_bindings[2] = { bindings[1], src1_compute_ref };
@@ -7916,7 +8019,7 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k_swiglu(
         const size_t counts_size = static_cast<size_t>(constants.n_experts) * sizeof(uint32_t);
         const size_t routes_size = static_cast<size_t>(constants.n_experts) * route_capacity * sizeof(uint32_t);
         hrx_buffer_ref_t scratch_ref = {};
-        if (!ggml_backend_hrx_request_scratch_buffer(context, counts_size + routes_size, &scratch_ref)) {
+        if (!ggml_backend_hrx_ensure_route_scratch(context, counts_size + routes_size, &scratch_ref)) {
             return GGML_STATUS_FAILED;
         }
         hrx_buffer_ref_t counts_ref = { scratch_ref.buffer, scratch_ref.offset, counts_size };
@@ -7953,7 +8056,7 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k_swiglu(
         if (use_q8_1_x4_mmq) {
             const int64_t q8_1_blocks = constants.n_tokens * constants.n_ids * (constants.k / 32);
             const size_t q8_1_size = static_cast<size_t>(((q8_1_blocks + 3) / 4) * 144);
-            if (!ggml_backend_hrx_request_scratch_buffer(context, q8_1_size, &src1_compute_ref)) {
+            if (!ggml_backend_hrx_ensure_q8_1_scratch(context, q8_1_size, &src1_compute_ref)) {
                 return GGML_STATUS_FAILED;
             }
             hrx_buffer_ref_t quant_bindings[2] = { bindings[2], src1_compute_ref };
@@ -10056,6 +10159,12 @@ static ggml_backend_t ggml_backend_hrx_device_init_backend(ggml_backend_dev_t de
         /* .stream          = */ stream,
         /* .name            = */ device_context->name,
         /* .scratch_buffers = */ {},
+        /* .scratch_q8_1    = */ nullptr,
+        /* .scratch_q8_1_size = */ 0,
+        /* .retired_scratch_q8_1 = */ {},
+        /* .scratch_routes  = */ nullptr,
+        /* .scratch_routes_size = */ 0,
+        /* .retired_scratch_routes = */ {},
     };
     if (!context) {
         hrx_stream_release(stream);
