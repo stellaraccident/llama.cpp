@@ -4678,8 +4678,10 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider)) {
         return &device_context->mul_mat_id_q4_k_swiglu_packed_wg64_provider;
     }
+    // W7900/Qwen profiling shows the grouped row2 route starts winning over the
+    // row4 fallback at p8; smaller prompts are dispatch/occupancy limited.
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT") &&
-        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens > 1 &&
+        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider)) {
