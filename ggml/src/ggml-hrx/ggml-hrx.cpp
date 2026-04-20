@@ -4706,9 +4706,12 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         int64_t rows,
         int64_t n_ids,
         int64_t n_tokens) {
+    // W7900/Qwen small-prefill profiling shows the row4 route is faster below
+    // p32; grouped routes amortize their routing/tile structure from p32 up.
+    static constexpr int64_t grouped_min_prompt_tokens = 32;
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_Q8_1_X4_MMQ_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
-        k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens > 1 &&
+        k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens >= grouped_min_prompt_tokens &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
@@ -4716,7 +4719,7 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         return &device_context->mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x64_wg64_provider;
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_GROUPED_PROMPT") &&
-        k == 512 && rows % 2 == 0 && n_ids == 8 && n_tokens > 1 &&
+        k == 512 && rows % 2 == 0 && n_ids == 8 && n_tokens >= grouped_min_prompt_tokens &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_grouped_row2_route8_wg64_provider)) {
