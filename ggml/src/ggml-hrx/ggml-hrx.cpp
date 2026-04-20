@@ -1028,7 +1028,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_wg128_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_wg64_provider;
-    ggml_backend_hrx_op_provider mul_mat_vec_q5_k_rows2_cols8_wg128_provider;
+    std::array<ggml_backend_hrx_op_provider, 7> mul_mat_vec_q5_k_rows2_cols2_8_wg128_providers;
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_q8_1_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider;
@@ -1038,7 +1038,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider mul_mat_vec_q6_k_wg128_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q6_k_wg64_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q6_k_rows2_cols1_wg32_provider;
-    ggml_backend_hrx_op_provider mul_mat_vec_q6_k_rows2_cols8_wg128_provider;
+    std::array<ggml_backend_hrx_op_provider, 7> mul_mat_vec_q6_k_rows2_cols2_8_wg128_providers;
     ggml_backend_hrx_op_provider mul_mat_vec_q6_k_q8_1_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider;
@@ -1182,7 +1182,9 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->mul_mat_vec_q5_k_provider.reset();
     device_context->mul_mat_vec_q5_k_wg128_provider.reset();
     device_context->mul_mat_vec_q5_k_wg64_provider.reset();
-    device_context->mul_mat_vec_q5_k_rows2_cols8_wg128_provider.reset();
+    for (auto & provider : device_context->mul_mat_vec_q5_k_rows2_cols2_8_wg128_providers) {
+        provider.reset();
+    }
     device_context->mul_mat_vec_q5_k_q8_1_provider.reset();
     device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider.reset();
     device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider.reset();
@@ -1192,7 +1194,9 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->mul_mat_vec_q6_k_wg128_provider.reset();
     device_context->mul_mat_vec_q6_k_wg64_provider.reset();
     device_context->mul_mat_vec_q6_k_rows2_cols1_wg32_provider.reset();
-    device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider.reset();
+    for (auto & provider : device_context->mul_mat_vec_q6_k_rows2_cols2_8_wg128_providers) {
+        provider.reset();
+    }
     device_context->mul_mat_vec_q6_k_q8_1_provider.reset();
     device_context->mul_mat_vec_q6_k_q8_1_x4_mmql128x64_wg256_provider.reset();
     device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider.reset();
@@ -2642,9 +2646,13 @@ static bool ggml_backend_hrx_load_mul_mat_vec_providers(ggml_backend_hrx_device_
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q5_k_wg64_f32",
         &device_context->mul_mat_vec_q5_k_wg64_provider) || ok;
-    ok = ggml_backend_hrx_load_catalog_provider(
-        device_context, "hrx_mul_mat_vec_q5_k_rows2_cols8_wg128_f32",
-        &device_context->mul_mat_vec_q5_k_rows2_cols8_wg128_provider) || ok;
+    for (int cols = 2; cols <= 8; ++cols) {
+        char name[96];
+        std::snprintf(name, sizeof(name), "hrx_mul_mat_vec_q5_k_rows2_cols%d_wg128_f32", cols);
+        ok = ggml_backend_hrx_load_catalog_provider(
+            device_context, name,
+            &device_context->mul_mat_vec_q5_k_rows2_cols2_8_wg128_providers[cols - 2]) || ok;
+    }
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q5_k_q8_1_f32", &device_context->mul_mat_vec_q5_k_q8_1_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
@@ -2670,9 +2678,13 @@ static bool ggml_backend_hrx_load_mul_mat_vec_providers(ggml_backend_hrx_device_
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q6_k_rows2_cols1_wg32_f32",
         &device_context->mul_mat_vec_q6_k_rows2_cols1_wg32_provider) || ok;
-    ok = ggml_backend_hrx_load_catalog_provider(
-        device_context, "hrx_mul_mat_vec_q6_k_rows2_cols8_wg128_f32",
-        &device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider) || ok;
+    for (int cols = 2; cols <= 8; ++cols) {
+        char name[96];
+        std::snprintf(name, sizeof(name), "hrx_mul_mat_vec_q6_k_rows2_cols%d_wg128_f32", cols);
+        ok = ggml_backend_hrx_load_catalog_provider(
+            device_context, name,
+            &device_context->mul_mat_vec_q6_k_rows2_cols2_8_wg128_providers[cols - 2]) || ok;
+    }
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q6_k_q8_1_f32", &device_context->mul_mat_vec_q6_k_q8_1_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
@@ -4183,6 +4195,44 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
     return &device_context->mul_mat_vec_q8_0_provider;
 }
 
+static int ggml_backend_hrx_select_mul_mat_vec_rows2_prompt_cols(int64_t cols) {
+    if (cols < 2) {
+        return 0;
+    }
+    if (cols <= 8) {
+        return int(cols);
+    }
+    // Exact-width entries remove wasted skinny prompt work through p9. Past that
+    // the original cols8 schedule wins on the W7900/Qwen profile despite some
+    // tail padding, so keep the selector deliberately narrow.
+    if (cols <= 9) {
+        return 3;
+    }
+    return 8;
+}
+
+static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_rows2_prompt_provider(
+        const std::array<ggml_backend_hrx_op_provider, 7> & providers,
+        int64_t cols) {
+    const int provider_cols = ggml_backend_hrx_select_mul_mat_vec_rows2_prompt_cols(cols);
+    if (provider_cols < 2 || provider_cols > 8) {
+        return nullptr;
+    }
+    const ggml_backend_hrx_op_provider & provider = providers[provider_cols - 2];
+    return ggml_backend_hrx_provider_available(provider) ? &provider : nullptr;
+}
+
+static uint32_t ggml_backend_hrx_mul_mat_vec_rows2_prompt_provider_cols(
+        const std::array<ggml_backend_hrx_op_provider, 7> & providers,
+        const ggml_backend_hrx_op_provider * provider) {
+    for (int cols = 2; cols <= 8; ++cols) {
+        if (provider == &providers[cols - 2]) {
+            return uint32_t(cols);
+        }
+    }
+    return 0;
+}
+
 static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_k_provider(
         const ggml_backend_hrx_device_context * device_context,
         ggml_type type,
@@ -4192,10 +4242,15 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
     (void) k;
     switch (type) {
         case GGML_TYPE_Q5_K: {
-            if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_ROWS2_COLS8_PROMPT") &&
-                cols >= 8 && rows >= 2 &&
-                ggml_backend_hrx_provider_available(device_context->mul_mat_vec_q5_k_rows2_cols8_wg128_provider)) {
-                return &device_context->mul_mat_vec_q5_k_rows2_cols8_wg128_provider;
+            if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_ROWS2_COLS2_8_PROMPT") &&
+                !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_ROWS2_COLS8_PROMPT") &&
+                cols >= 2 && rows >= 2) {
+                const ggml_backend_hrx_op_provider * provider =
+                    ggml_backend_hrx_select_mul_mat_vec_rows2_prompt_provider(
+                        device_context->mul_mat_vec_q5_k_rows2_cols2_8_wg128_providers, cols);
+                if (provider) {
+                    return provider;
+                }
             }
 
             const int workgroup_size = ggml_backend_hrx_select_mul_mat_vec_k_workgroup_size(type, rows);
@@ -4218,10 +4273,15 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_vec_
                 ggml_backend_hrx_provider_available(device_context->mul_mat_vec_q6_k_rows2_cols1_wg32_provider)) {
                 return &device_context->mul_mat_vec_q6_k_rows2_cols1_wg32_provider;
             }
-            if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_ROWS2_COLS8_PROMPT") &&
-                cols >= 8 && (rows % 2) == 0 &&
-                ggml_backend_hrx_provider_available(device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider)) {
-                return &device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider;
+            if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_ROWS2_COLS2_8_PROMPT") &&
+                !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_ROWS2_COLS8_PROMPT") &&
+                cols >= 2 && (rows % 2) == 0) {
+                const ggml_backend_hrx_op_provider * provider =
+                    ggml_backend_hrx_select_mul_mat_vec_rows2_prompt_provider(
+                        device_context->mul_mat_vec_q6_k_rows2_cols2_8_wg128_providers, cols);
+                if (provider) {
+                    return provider;
+                }
             }
 
             const int workgroup_size = ggml_backend_hrx_select_mul_mat_vec_k_workgroup_size(type, rows);
@@ -7406,9 +7466,15 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_vec(
         return GGML_STATUS_FAILED;
     }
 
+    const uint32_t q5_k_rows2_prompt_cols =
+        ggml_backend_hrx_mul_mat_vec_rows2_prompt_provider_cols(
+            context->device_context->mul_mat_vec_q5_k_rows2_cols2_8_wg128_providers, provider);
+    const uint32_t q6_k_rows2_prompt_cols =
+        ggml_backend_hrx_mul_mat_vec_rows2_prompt_provider_cols(
+            context->device_context->mul_mat_vec_q6_k_rows2_cols2_8_wg128_providers, provider);
     const uint32_t provider_cols_per_workgroup =
-        provider == &context->device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider ? 8 :
-        provider == &context->device_context->mul_mat_vec_q5_k_rows2_cols8_wg128_provider ? 8 :
+        q6_k_rows2_prompt_cols ? q6_k_rows2_prompt_cols :
+        q5_k_rows2_prompt_cols ? q5_k_rows2_prompt_cols :
         provider == &context->device_context->mul_mat_vec_bf16_wmma16_provider ? 16 :
         provider == &context->device_context->mul_mat_vec_bf16_cols32_provider ? 32 :
         provider == &context->device_context->mul_mat_vec_bf16_rows2_cols16_provider ? 16 :
@@ -7417,9 +7483,9 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_vec(
         provider == &context->device_context->mul_mat_vec_bf16_cols4_provider ? 4 :
         provider == &context->device_context->mul_mat_vec_q8_0_cols8_provider ? 8 : 1;
     const uint32_t provider_rows_per_workgroup =
-        provider == &context->device_context->mul_mat_vec_q5_k_rows2_cols8_wg128_provider ? 2 :
+        q5_k_rows2_prompt_cols ? 2 :
         provider == &context->device_context->mul_mat_vec_q6_k_rows2_cols1_wg32_provider ? 2 :
-        provider == &context->device_context->mul_mat_vec_q6_k_rows2_cols8_wg128_provider ? 2 :
+        q6_k_rows2_prompt_cols ? 2 :
         provider == &context->device_context->mul_mat_vec_bf16_wmma16_provider ? 16 :
         provider == &context->device_context->mul_mat_vec_bf16_rows4_k512_cols1_provider ? 4 :
         provider == &context->device_context->mul_mat_vec_bf16_rows4_k2048_cols1_provider ? 4 :

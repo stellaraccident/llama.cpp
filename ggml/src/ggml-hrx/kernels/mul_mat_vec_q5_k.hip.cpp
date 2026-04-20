@@ -78,8 +78,8 @@ static __device__ __forceinline__ float hrx_reduce_wg(float sum, float * shared)
     return sum;
 }
 
-template <int WG_SIZE>
-static __device__ __forceinline__ void hrx_reduce_wg16(float (&sum)[16], float * shared) {
+template <int WG_SIZE, int N>
+static __device__ __forceinline__ void hrx_reduce_wg_array(float (&sum)[N], float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     const unsigned int lane = tid & (warpSize - 1);
     const unsigned int wave = tid / warpSize;
@@ -87,32 +87,33 @@ static __device__ __forceinline__ void hrx_reduce_wg16(float (&sum)[16], float *
 
     for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
         #pragma unroll
-        for (int col = 0; col < 16; ++col) {
+        for (int col = 0; col < N; ++col) {
             sum[col] += __shfl_down(sum[col], offset);
         }
     }
     if (lane == 0) {
         #pragma unroll
-        for (int col = 0; col < 16; ++col) {
+        for (int col = 0; col < N; ++col) {
             shared[wave + col * waves] = sum[col];
         }
     }
     __syncthreads();
 
     #pragma unroll
-    for (int col = 0; col < 16; ++col) {
+    for (int col = 0; col < N; ++col) {
         sum[col] = lane < waves ? shared[lane + col * waves] : 0.0f;
     }
     if (wave == 0) {
         for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
             #pragma unroll
-            for (int col = 0; col < 16; ++col) {
+            for (int col = 0; col < N; ++col) {
                 sum[col] += __shfl_down(sum[col], offset);
             }
         }
     }
 }
 
+template <int COLS>
 static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc(
         const hrx_block_q5_K * block,
         const float * src0,
@@ -122,7 +123,7 @@ static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc(
         uint32_t qs_word,
         uint32_t qh_word,
         bool high_nibble,
-        float (&sum)[16],
+        float (&sum)[2 * COLS],
         int sum_offset,
         int valid_cols) {
     uint8_t sc = 0;
@@ -141,7 +142,7 @@ static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc(
         const uint8_t high = (static_cast<uint8_t>((qh_word >> (8 * j)) & 0xFF) & qh_mask) ? 16 : 0;
         const float q = d * static_cast<float>(low + high) - min;
         #pragma unroll
-        for (int col = 0; col < 8; ++col) {
+        for (int col = 0; col < COLS; ++col) {
             if (col < valid_cols) {
                 sum[sum_offset + col] += q * src0[col * k + group * 32 + lane + rhs_offset];
             }
@@ -149,6 +150,7 @@ static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc(
     }
 }
 
+template <int COLS>
 static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc_full(
         const hrx_block_q5_K * block,
         const float * src0,
@@ -158,7 +160,7 @@ static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc_full(
         uint32_t qs_word,
         uint32_t qh_word,
         bool high_nibble,
-        float (&sum)[16],
+        float (&sum)[2 * COLS],
         int sum_offset) {
     uint8_t sc = 0;
     uint8_t m = 0;
@@ -176,7 +178,7 @@ static __device__ __forceinline__ void hrx_q5_k_dot4_cols8_acc_full(
         const uint8_t high = (static_cast<uint8_t>((qh_word >> (8 * j)) & 0xFF) & qh_mask) ? 16 : 0;
         const float q = d * static_cast<float>(low + high) - min;
         #pragma unroll
-        for (int col = 0; col < 8; ++col) {
+        for (int col = 0; col < COLS; ++col) {
             sum[sum_offset + col] += q * src0[col * k + group * 32 + lane + rhs_offset];
         }
     }
@@ -249,26 +251,27 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_wg64_f32(
     hrx_mul_mat_vec_q5_k_f32_impl<64>(src0, src1, dst, k, rows, cols);
 }
 
-extern "C" __global__ void hrx_mul_mat_vec_q5_k_rows2_cols8_wg128_f32(
+template <int COLS>
+static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32_impl(
         const hrx_block_q5_K * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
     const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
-    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * 8;
+    const long long col0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * COLS;
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
     if (row0 >= rows || col0 >= cols) {
         return;
     }
     const bool row1_valid = row0 + 1 < rows;
-    const int valid_cols = static_cast<int>(cols - col0 < 8 ? cols - col0 : 8);
-    const bool full_cols = col0 + 8 <= cols;
+    const int valid_cols = static_cast<int>(cols - col0 < COLS ? cols - col0 : COLS);
+    const bool full_cols = col0 + COLS <= cols;
 
-    __shared__ float sumsh[16 * (128 / 32)];
+    __shared__ float sumsh[2 * COLS * (128 / 32)];
 
     const long long blocks_per_row = k / 256;
     const hrx_block_q5_K * row0_blocks = src0 + row0 * blocks_per_row;
     const hrx_block_q5_K * row1_blocks = row0_blocks + blocks_per_row;
     const float * src1_col0 = src1 + col0 * k;
-    float sum[16] = {};
+    float sum[2 * COLS] = {};
 
     const int block_lane = static_cast<int>(tid & 15u);
     const int block_slot = static_cast<int>(tid >> 4);
@@ -288,15 +291,15 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_rows2_cols8_wg128_f32(
         const uint32_t qh0 = hrx_q5_load_u32_strided16(block0->qh, lane);
 
         if (full_cols) {
-            hrx_q5_k_dot4_cols8_acc_full(block0, src_block, k, group0,     lane, qs00, qh0, false, sum, 0);
-            hrx_q5_k_dot4_cols8_acc_full(block0, src_block, k, group0 + 1, lane, qs00, qh0, true,  sum, 0);
-            hrx_q5_k_dot4_cols8_acc_full(block0, src_block, k, group4,     lane, qs04, qh0, false, sum, 0);
-            hrx_q5_k_dot4_cols8_acc_full(block0, src_block, k, group4 + 1, lane, qs04, qh0, true,  sum, 0);
+            hrx_q5_k_dot4_cols8_acc_full<COLS>(block0, src_block, k, group0,     lane, qs00, qh0, false, sum, 0);
+            hrx_q5_k_dot4_cols8_acc_full<COLS>(block0, src_block, k, group0 + 1, lane, qs00, qh0, true,  sum, 0);
+            hrx_q5_k_dot4_cols8_acc_full<COLS>(block0, src_block, k, group4,     lane, qs04, qh0, false, sum, 0);
+            hrx_q5_k_dot4_cols8_acc_full<COLS>(block0, src_block, k, group4 + 1, lane, qs04, qh0, true,  sum, 0);
         } else {
-            hrx_q5_k_dot4_cols8_acc(block0, src_block, k, group0,     lane, qs00, qh0, false, sum, 0, valid_cols);
-            hrx_q5_k_dot4_cols8_acc(block0, src_block, k, group0 + 1, lane, qs00, qh0, true,  sum, 0, valid_cols);
-            hrx_q5_k_dot4_cols8_acc(block0, src_block, k, group4,     lane, qs04, qh0, false, sum, 0, valid_cols);
-            hrx_q5_k_dot4_cols8_acc(block0, src_block, k, group4 + 1, lane, qs04, qh0, true,  sum, 0, valid_cols);
+            hrx_q5_k_dot4_cols8_acc<COLS>(block0, src_block, k, group0,     lane, qs00, qh0, false, sum, 0, valid_cols);
+            hrx_q5_k_dot4_cols8_acc<COLS>(block0, src_block, k, group0 + 1, lane, qs00, qh0, true,  sum, 0, valid_cols);
+            hrx_q5_k_dot4_cols8_acc<COLS>(block0, src_block, k, group4,     lane, qs04, qh0, false, sum, 0, valid_cols);
+            hrx_q5_k_dot4_cols8_acc<COLS>(block0, src_block, k, group4 + 1, lane, qs04, qh0, true,  sum, 0, valid_cols);
         }
 
         if (row1_valid) {
@@ -306,40 +309,57 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_rows2_cols8_wg128_f32(
             const uint32_t qh1 = hrx_q5_load_u32_strided16(block1->qh, lane);
 
             if (full_cols) {
-                hrx_q5_k_dot4_cols8_acc_full(block1, src_block, k, group0,     lane, qs10, qh1, false, sum, 8);
-                hrx_q5_k_dot4_cols8_acc_full(block1, src_block, k, group0 + 1, lane, qs10, qh1, true,  sum, 8);
-                hrx_q5_k_dot4_cols8_acc_full(block1, src_block, k, group4,     lane, qs14, qh1, false, sum, 8);
-                hrx_q5_k_dot4_cols8_acc_full(block1, src_block, k, group4 + 1, lane, qs14, qh1, true,  sum, 8);
+                hrx_q5_k_dot4_cols8_acc_full<COLS>(block1, src_block, k, group0,     lane, qs10, qh1, false, sum, COLS);
+                hrx_q5_k_dot4_cols8_acc_full<COLS>(block1, src_block, k, group0 + 1, lane, qs10, qh1, true,  sum, COLS);
+                hrx_q5_k_dot4_cols8_acc_full<COLS>(block1, src_block, k, group4,     lane, qs14, qh1, false, sum, COLS);
+                hrx_q5_k_dot4_cols8_acc_full<COLS>(block1, src_block, k, group4 + 1, lane, qs14, qh1, true,  sum, COLS);
             } else {
-                hrx_q5_k_dot4_cols8_acc(block1, src_block, k, group0,     lane, qs10, qh1, false, sum, 8, valid_cols);
-                hrx_q5_k_dot4_cols8_acc(block1, src_block, k, group0 + 1, lane, qs10, qh1, true,  sum, 8, valid_cols);
-                hrx_q5_k_dot4_cols8_acc(block1, src_block, k, group4,     lane, qs14, qh1, false, sum, 8, valid_cols);
-                hrx_q5_k_dot4_cols8_acc(block1, src_block, k, group4 + 1, lane, qs14, qh1, true,  sum, 8, valid_cols);
+                hrx_q5_k_dot4_cols8_acc<COLS>(block1, src_block, k, group0,     lane, qs10, qh1, false, sum, COLS, valid_cols);
+                hrx_q5_k_dot4_cols8_acc<COLS>(block1, src_block, k, group0 + 1, lane, qs10, qh1, true,  sum, COLS, valid_cols);
+                hrx_q5_k_dot4_cols8_acc<COLS>(block1, src_block, k, group4,     lane, qs14, qh1, false, sum, COLS, valid_cols);
+                hrx_q5_k_dot4_cols8_acc<COLS>(block1, src_block, k, group4 + 1, lane, qs14, qh1, true,  sum, COLS, valid_cols);
             }
         }
     }
 
-    hrx_reduce_wg16<128>(sum, sumsh);
+    hrx_reduce_wg_array<128, 2 * COLS>(sum, sumsh);
 
     if (tid == 0) {
         if (full_cols) {
             #pragma unroll
-            for (int col = 0; col < 8; ++col) {
+            for (int col = 0; col < COLS; ++col) {
                 dst[(col0 + col) * rows + row0] = sum[col];
                 if (row1_valid) {
-                    dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
+                    dst[(col0 + col) * rows + row0 + 1] = sum[COLS + col];
                 }
             }
         } else {
             #pragma unroll
-            for (int col = 0; col < 8; ++col) {
+            for (int col = 0; col < COLS; ++col) {
                 if (col < valid_cols) {
                     dst[(col0 + col) * rows + row0] = sum[col];
                     if (row1_valid) {
-                        dst[(col0 + col) * rows + row0 + 1] = sum[8 + col];
+                        dst[(col0 + col) * rows + row0 + 1] = sum[COLS + col];
                     }
                 }
             }
         }
     }
 }
+
+#define HRX_Q5_ROWS2_COLS_ENTRY(COLS) \
+extern "C" __global__ void hrx_mul_mat_vec_q5_k_rows2_cols##COLS##_wg128_f32( \
+        const hrx_block_q5_K * src0, const float * src1, float * dst, \
+        long long k, long long rows, long long cols) { \
+    hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32_impl<COLS>(src0, src1, dst, k, rows, cols); \
+}
+
+HRX_Q5_ROWS2_COLS_ENTRY(2)
+HRX_Q5_ROWS2_COLS_ENTRY(3)
+HRX_Q5_ROWS2_COLS_ENTRY(4)
+HRX_Q5_ROWS2_COLS_ENTRY(5)
+HRX_Q5_ROWS2_COLS_ENTRY(6)
+HRX_Q5_ROWS2_COLS_ENTRY(7)
+HRX_Q5_ROWS2_COLS_ENTRY(8)
+
+#undef HRX_Q5_ROWS2_COLS_ENTRY
