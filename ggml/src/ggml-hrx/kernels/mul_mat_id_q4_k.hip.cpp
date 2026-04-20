@@ -64,6 +64,12 @@ static __device__ __forceinline__ void hrx_get_scale_min_k4_id(
     }
 }
 
+template <int I>
+static __device__ __forceinline__ float hrx_q4_k_q_from_pack(unsigned long long pack, bool high) {
+    const unsigned int byte = static_cast<unsigned int>((pack >> (8 * I)) & 0xFFu);
+    return high ? static_cast<float>(byte >> 4) : static_cast<float>(byte & 0x0Fu);
+}
+
 template <int WG_SIZE>
 static __device__ __forceinline__ float hrx_reduce_wg(float sum, float * shared) {
     const unsigned int tid = __builtin_amdgcn_workitem_id_x();
@@ -116,6 +122,112 @@ static __device__ __forceinline__ void hrx_reduce_wg2(float & sum0, float & sum1
         for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
             sum0 += __shfl_down(sum0, offset);
             sum1 += __shfl_down(sum1, offset);
+        }
+    }
+}
+
+template <int WG_SIZE>
+static __device__ __forceinline__ void hrx_reduce_wg4(
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = (WG_SIZE + 31) / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+        sum2 += __shfl_down(sum2, offset);
+        sum3 += __shfl_down(sum3, offset);
+    }
+    if (WG_SIZE <= warpSize) {
+        return;
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+        shared[wave + 2 * waves] = sum2;
+        shared[wave + 3 * waves] = sum3;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    sum2 = lane < waves ? shared[lane + 2 * waves] : 0.0f;
+    sum3 = lane < waves ? shared[lane + 3 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+            sum2 += __shfl_down(sum2, offset);
+            sum3 += __shfl_down(sum3, offset);
+        }
+    }
+}
+
+template <int WG_SIZE>
+static __device__ __forceinline__ void hrx_reduce_wg8(
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float & sum4,
+        float & sum5,
+        float & sum6,
+        float & sum7,
+        float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = (WG_SIZE + 31) / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+        sum2 += __shfl_down(sum2, offset);
+        sum3 += __shfl_down(sum3, offset);
+        sum4 += __shfl_down(sum4, offset);
+        sum5 += __shfl_down(sum5, offset);
+        sum6 += __shfl_down(sum6, offset);
+        sum7 += __shfl_down(sum7, offset);
+    }
+    if (WG_SIZE <= warpSize) {
+        return;
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+        shared[wave + 2 * waves] = sum2;
+        shared[wave + 3 * waves] = sum3;
+        shared[wave + 4 * waves] = sum4;
+        shared[wave + 5 * waves] = sum5;
+        shared[wave + 6 * waves] = sum6;
+        shared[wave + 7 * waves] = sum7;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    sum2 = lane < waves ? shared[lane + 2 * waves] : 0.0f;
+    sum3 = lane < waves ? shared[lane + 3 * waves] : 0.0f;
+    sum4 = lane < waves ? shared[lane + 4 * waves] : 0.0f;
+    sum5 = lane < waves ? shared[lane + 5 * waves] : 0.0f;
+    sum6 = lane < waves ? shared[lane + 6 * waves] : 0.0f;
+    sum7 = lane < waves ? shared[lane + 7 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+            sum2 += __shfl_down(sum2, offset);
+            sum3 += __shfl_down(sum3, offset);
+            sum4 += __shfl_down(sum4, offset);
+            sum5 += __shfl_down(sum5, offset);
+            sum6 += __shfl_down(sum6, offset);
+            sum7 += __shfl_down(sum7, offset);
         }
     }
 }
@@ -205,6 +317,74 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_wg64_f32(
     hrx_mul_mat_id_q4_k_f32_impl<64>(src0, src1, ids, dst, c);
 }
 
+extern "C" __global__ void hrx_mul_mat_id_q4_k_rows2_x16_wg32_f32(
+        const hrx_block_q4_K_id * src0, const float * src1, const int * ids, float * dst,
+        hrx_mul_mat_id_q4_k_constants c) {
+    const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const long long row = row0 + static_cast<long long>(tid >> 4);
+    const long long outer = __builtin_amdgcn_workgroup_id_y();
+    if (row >= c.rows) {
+        return;
+    }
+
+    const long long id_pos = outer % c.n_ids;
+    const long long token = outer / c.n_ids;
+    if (token >= c.n_tokens) {
+        return;
+    }
+
+    const int expert = *reinterpret_cast<const int *>(
+        reinterpret_cast<const char *>(ids) + id_pos * c.ids_nb0 + token * c.ids_nb1);
+    if (expert < 0 || expert >= c.n_experts) {
+        return;
+    }
+
+    const unsigned int lane = tid & 15;
+    const char * src0_row_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2 + row * c.src0_nb1;
+    const char * src1_col = reinterpret_cast<const char *>(src1) + id_pos * c.src1_nb1 + token * c.src1_nb2;
+    float sum = 0.0f;
+
+    #pragma unroll
+    for (int iter = 0; iter < 4; ++iter) {
+        const long long block_idx = iter >> 1;
+        const int group = ((iter & 1) << 2) + static_cast<int>(lane >> 2);
+        const int group_offset = static_cast<int>(lane & 3) << 3;
+        const long long col = static_cast<long long>(iter) * 128 + static_cast<long long>(lane) * 8;
+        const hrx_block_q4_K_id * block = reinterpret_cast<const hrx_block_q4_K_id *>(
+            src0_row_base + block_idx * sizeof(hrx_block_q4_K_id));
+
+        uint8_t sc = 0;
+        uint8_t m = 0;
+        hrx_get_scale_min_k4_id(group, block->scales, &sc, &m);
+        const float d = __half2float(__ushort_as_half(block->d)) * static_cast<float>(sc);
+        const float min = __half2float(__ushort_as_half(block->dmin)) * static_cast<float>(m);
+        const int qs_base = (group >> 1) * 32 + group_offset;
+        const bool high = (group & 1) != 0;
+        const unsigned long long qpack = *reinterpret_cast<const unsigned long long *>(block->qs + qs_base);
+        const float4 b0 = *reinterpret_cast<const float4 *>(src1_col + col * sizeof(float));
+        const float4 b1 = *reinterpret_cast<const float4 *>(src1_col + (col + 4) * sizeof(float));
+
+        sum += (d * hrx_q4_k_q_from_pack<0>(qpack, high) - min) * b0.x;
+        sum += (d * hrx_q4_k_q_from_pack<1>(qpack, high) - min) * b0.y;
+        sum += (d * hrx_q4_k_q_from_pack<2>(qpack, high) - min) * b0.z;
+        sum += (d * hrx_q4_k_q_from_pack<3>(qpack, high) - min) * b0.w;
+        sum += (d * hrx_q4_k_q_from_pack<4>(qpack, high) - min) * b1.x;
+        sum += (d * hrx_q4_k_q_from_pack<5>(qpack, high) - min) * b1.y;
+        sum += (d * hrx_q4_k_q_from_pack<6>(qpack, high) - min) * b1.z;
+        sum += (d * hrx_q4_k_q_from_pack<7>(qpack, high) - min) * b1.w;
+    }
+
+    for (int offset = 8; offset > 0; offset >>= 1) {
+        sum += __shfl_down(sum, offset, 16);
+    }
+
+    if (lane == 0) {
+        *reinterpret_cast<float *>(
+            reinterpret_cast<char *>(dst) + row * sizeof(float) + id_pos * c.dst_nb1 + token * c.dst_nb2) = sum;
+    }
+}
+
 extern "C" __global__ void hrx_mul_mat_id_q4_k_row4_wg64_f32(
         const hrx_block_q4_K_id * src0, const float * src1, const int * ids, float * dst,
         hrx_mul_mat_id_q4_k_constants c) {
@@ -227,7 +407,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_row4_wg64_f32(
         return;
     }
 
-    __shared__ float sumsh[64 / 32];
+    __shared__ float sumsh[4 * (64 / 32)];
     const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
     const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
     const char * src0_row1_base = src0_row0_base + c.src0_nb1;
@@ -296,13 +476,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_row4_wg64_f32(
         }
     }
 
-    sum0 = hrx_reduce_wg<64>(sum0, sumsh);
-    __syncthreads();
-    sum1 = hrx_reduce_wg<64>(sum1, sumsh);
-    __syncthreads();
-    sum2 = hrx_reduce_wg<64>(sum2, sumsh);
-    __syncthreads();
-    sum3 = hrx_reduce_wg<64>(sum3, sumsh);
+    hrx_reduce_wg4<64>(sum0, sum1, sum2, sum3, sumsh);
 
     if (tid == 0) {
         char * dst_base = reinterpret_cast<char *>(dst) + id_pos * c.dst_nb1 + token * c.dst_nb2;
@@ -313,7 +487,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_row4_wg64_f32(
     }
 }
 
-static __global__ void hrx_mul_mat_id_q4_k_row8_wg64_f32(
+extern "C" __global__ void hrx_mul_mat_id_q4_k_row8_wg64_f32(
         const hrx_block_q4_K_id * src0, const float * src1, const int * ids, float * dst,
         hrx_mul_mat_id_q4_k_constants c) {
     const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 8;
@@ -335,7 +509,7 @@ static __global__ void hrx_mul_mat_id_q4_k_row8_wg64_f32(
         return;
     }
 
-    __shared__ float sumsh[64 / 32];
+    __shared__ float sumsh[8 * (64 / 32)];
     const char * src0_expert_base = reinterpret_cast<const char *>(src0) + expert * c.src0_nb2;
     const char * src0_row0_base = src0_expert_base + row0 * c.src0_nb1;
     const char * src0_row1_base = src0_row0_base + c.src0_nb1;
@@ -421,43 +595,42 @@ static __global__ void hrx_mul_mat_id_q4_k_row8_wg64_f32(
         const float min7 = __half2float(__ushort_as_half(block7->dmin)) * static_cast<float>(m7);
         const long long src_base = block_idx * 256 + group * 32 + lane;
         const int qs_base = (group >> 1) * 32 + lane;
+        const float4 b4 = *reinterpret_cast<const float4 *>(src1_col + src_base * sizeof(float));
+        const uint32_t packed_qs0 = *reinterpret_cast<const uint32_t *>(block0->qs + qs_base);
+        const uint32_t packed_qs1 = *reinterpret_cast<const uint32_t *>(block1->qs + qs_base);
+        const uint32_t packed_qs2 = *reinterpret_cast<const uint32_t *>(block2->qs + qs_base);
+        const uint32_t packed_qs3 = *reinterpret_cast<const uint32_t *>(block3->qs + qs_base);
+        const uint32_t packed_qs4 = *reinterpret_cast<const uint32_t *>(block4->qs + qs_base);
+        const uint32_t packed_qs5 = *reinterpret_cast<const uint32_t *>(block5->qs + qs_base);
+        const uint32_t packed_qs6 = *reinterpret_cast<const uint32_t *>(block6->qs + qs_base);
+        const uint32_t packed_qs7 = *reinterpret_cast<const uint32_t *>(block7->qs + qs_base);
 
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const float b = *reinterpret_cast<const float *>(src1_col + (src_base + j) * sizeof(float));
-#define HRX_Q4K_ROW8_ACC(N) \
-            do { \
-                const uint8_t packed = block##N->qs[qs_base + j]; \
-                const float q = (group & 1) ? static_cast<float>(packed >> 4) : static_cast<float>(packed & 0x0F); \
-                sum##N += (d##N * q - min##N) * b; \
-            } while (0)
-            HRX_Q4K_ROW8_ACC(0);
-            HRX_Q4K_ROW8_ACC(1);
-            HRX_Q4K_ROW8_ACC(2);
-            HRX_Q4K_ROW8_ACC(3);
-            HRX_Q4K_ROW8_ACC(4);
-            HRX_Q4K_ROW8_ACC(5);
-            HRX_Q4K_ROW8_ACC(6);
-            HRX_Q4K_ROW8_ACC(7);
+#define HRX_Q4K_ROW8_ACC(N, J, FIELD) \
+        do { \
+            const uint8_t packed = static_cast<uint8_t>(packed_qs##N >> ((J) * 8)); \
+            const float q = (group & 1) ? static_cast<float>(packed >> 4) : static_cast<float>(packed & 0x0F); \
+            sum##N += (d##N * q - min##N) * b4.FIELD; \
+        } while (0)
+#define HRX_Q4K_ROW8_STEP(J, FIELD) \
+        do { \
+            HRX_Q4K_ROW8_ACC(0, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(1, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(2, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(3, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(4, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(5, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(6, J, FIELD); \
+            HRX_Q4K_ROW8_ACC(7, J, FIELD); \
+        } while (0)
+        HRX_Q4K_ROW8_STEP(0, x);
+        HRX_Q4K_ROW8_STEP(1, y);
+        HRX_Q4K_ROW8_STEP(2, z);
+        HRX_Q4K_ROW8_STEP(3, w);
 #undef HRX_Q4K_ROW8_ACC
-        }
+#undef HRX_Q4K_ROW8_STEP
     }
 
-    sum0 = hrx_reduce_wg<64>(sum0, sumsh);
-    __syncthreads();
-    sum1 = hrx_reduce_wg<64>(sum1, sumsh);
-    __syncthreads();
-    sum2 = hrx_reduce_wg<64>(sum2, sumsh);
-    __syncthreads();
-    sum3 = hrx_reduce_wg<64>(sum3, sumsh);
-    __syncthreads();
-    sum4 = hrx_reduce_wg<64>(sum4, sumsh);
-    __syncthreads();
-    sum5 = hrx_reduce_wg<64>(sum5, sumsh);
-    __syncthreads();
-    sum6 = hrx_reduce_wg<64>(sum6, sumsh);
-    __syncthreads();
-    sum7 = hrx_reduce_wg<64>(sum7, sumsh);
+    hrx_reduce_wg8<64>(sum0, sum1, sum2, sum3, sum4, sum5, sum6, sum7, sumsh);
 
     if (tid == 0) {
         char * dst_base = reinterpret_cast<char *>(dst) + id_pos * c.dst_nb1 + token * c.dst_nb2;

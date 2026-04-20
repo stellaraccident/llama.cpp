@@ -251,8 +251,8 @@ extern "C" __global__ void hrx_mul_mat_vec_q5_k_wg64_f32(
     hrx_mul_mat_vec_q5_k_f32_impl<64>(src0, src1, dst, k, rows, cols);
 }
 
-template <int COLS>
-static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32_impl(
+template <int COLS, int WG_SIZE>
+static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_f32_impl(
         const hrx_block_q5_K * src0, const float * src1, float * dst,
         long long k, long long rows, long long cols) {
     const long long row0 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * 2;
@@ -265,7 +265,7 @@ static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32
     const int valid_cols = static_cast<int>(cols - col0 < COLS ? cols - col0 : COLS);
     const bool full_cols = col0 + COLS <= cols;
 
-    __shared__ float sumsh[2 * COLS * (128 / 32)];
+    __shared__ float sumsh[2 * COLS * ((WG_SIZE + 31) / 32)];
 
     const long long blocks_per_row = k / 256;
     const hrx_block_q5_K * row0_blocks = src0 + row0 * blocks_per_row;
@@ -275,6 +275,7 @@ static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32
 
     const int block_lane = static_cast<int>(tid & 15u);
     const int block_slot = static_cast<int>(tid >> 4);
+    const int block_stride = WG_SIZE >> 4;
     const int il = block_lane >> 2;
     const int ir = block_lane & 3;
     const int v_im = il >> 1;
@@ -283,7 +284,7 @@ static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32
     const int group0 = 2 * v_im;
     const int group4 = group0 + 4;
 
-    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += 8) {
+    for (long long block_idx = block_slot; block_idx < blocks_per_row; block_idx += block_stride) {
         const hrx_block_q5_K * block0 = row0_blocks + block_idx;
         const float * src_block = src1_col0 + block_idx * 256;
         const uint32_t qs00 = hrx_q5_load_u32_strided16(block0->qs, (group0 >> 1) * 32 + lane);
@@ -322,7 +323,7 @@ static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32
         }
     }
 
-    hrx_reduce_wg_array<128, 2 * COLS>(sum, sumsh);
+    hrx_reduce_wg_array<WG_SIZE, 2 * COLS>(sum, sumsh);
 
     if (tid == 0) {
         if (full_cols) {
@@ -351,7 +352,12 @@ static __device__ __forceinline__ void hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32
 extern "C" __global__ void hrx_mul_mat_vec_q5_k_rows2_cols##COLS##_wg128_f32( \
         const hrx_block_q5_K * src0, const float * src1, float * dst, \
         long long k, long long rows, long long cols) { \
-    hrx_mul_mat_vec_q5_k_rows2_cols_wg128_f32_impl<COLS>(src0, src1, dst, k, rows, cols); \
+    hrx_mul_mat_vec_q5_k_rows2_cols_f32_impl<COLS, 128>(src0, src1, dst, k, rows, cols); \
+} \
+extern "C" __global__ void hrx_mul_mat_vec_q5_k_rows2_cols##COLS##_wg64_f32( \
+        const hrx_block_q5_K * src0, const float * src1, float * dst, \
+        long long k, long long rows, long long cols) { \
+    hrx_mul_mat_vec_q5_k_rows2_cols_f32_impl<COLS, 64>(src0, src1, dst, k, rows, cols); \
 }
 
 HRX_Q5_ROWS2_COLS_ENTRY(2)

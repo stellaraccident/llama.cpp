@@ -131,6 +131,69 @@ static __device__ __forceinline__ void hrx_reduce_wg4_swiglu(
 }
 
 template <int WG_SIZE>
+static __device__ __forceinline__ void hrx_reduce_wg8_swiglu(
+        float & sum0,
+        float & sum1,
+        float & sum2,
+        float & sum3,
+        float & sum4,
+        float & sum5,
+        float & sum6,
+        float & sum7,
+        float * shared) {
+    const unsigned int tid = __builtin_amdgcn_workitem_id_x();
+    const unsigned int lane = tid & (warpSize - 1);
+    const unsigned int wave = tid / warpSize;
+    constexpr int waves = (WG_SIZE + 31) / 32;
+
+    for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+        sum0 += __shfl_down(sum0, offset);
+        sum1 += __shfl_down(sum1, offset);
+        sum2 += __shfl_down(sum2, offset);
+        sum3 += __shfl_down(sum3, offset);
+        sum4 += __shfl_down(sum4, offset);
+        sum5 += __shfl_down(sum5, offset);
+        sum6 += __shfl_down(sum6, offset);
+        sum7 += __shfl_down(sum7, offset);
+    }
+    if (WG_SIZE <= warpSize) {
+        return;
+    }
+    if (lane == 0) {
+        shared[wave + 0 * waves] = sum0;
+        shared[wave + 1 * waves] = sum1;
+        shared[wave + 2 * waves] = sum2;
+        shared[wave + 3 * waves] = sum3;
+        shared[wave + 4 * waves] = sum4;
+        shared[wave + 5 * waves] = sum5;
+        shared[wave + 6 * waves] = sum6;
+        shared[wave + 7 * waves] = sum7;
+    }
+    __syncthreads();
+
+    sum0 = lane < waves ? shared[lane + 0 * waves] : 0.0f;
+    sum1 = lane < waves ? shared[lane + 1 * waves] : 0.0f;
+    sum2 = lane < waves ? shared[lane + 2 * waves] : 0.0f;
+    sum3 = lane < waves ? shared[lane + 3 * waves] : 0.0f;
+    sum4 = lane < waves ? shared[lane + 4 * waves] : 0.0f;
+    sum5 = lane < waves ? shared[lane + 5 * waves] : 0.0f;
+    sum6 = lane < waves ? shared[lane + 6 * waves] : 0.0f;
+    sum7 = lane < waves ? shared[lane + 7 * waves] : 0.0f;
+    if (wave == 0) {
+        for (int offset = warpSize >> 1; offset > 0; offset >>= 1) {
+            sum0 += __shfl_down(sum0, offset);
+            sum1 += __shfl_down(sum1, offset);
+            sum2 += __shfl_down(sum2, offset);
+            sum3 += __shfl_down(sum3, offset);
+            sum4 += __shfl_down(sum4, offset);
+            sum5 += __shfl_down(sum5, offset);
+            sum6 += __shfl_down(sum6, offset);
+            sum7 += __shfl_down(sum7, offset);
+        }
+    }
+}
+
+template <int WG_SIZE>
 static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_swiglu_f32_impl(
         const hrx_block_q4_K_id_swiglu * gate,
         const hrx_block_q4_K_id_swiglu * up,
@@ -249,7 +312,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_wg64_f32(
     hrx_mul_mat_id_q4_k_swiglu_f32_impl<64>(gate, up, src1, ids, dst, c);
 }
 
-static __global__ void hrx_mul_mat_id_q4_k_swiglu_row2_wg64_f32(
+extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_row2_wg64_f32(
         const hrx_block_q4_K_id_swiglu * gate,
         const hrx_block_q4_K_id_swiglu * up,
         const float * src1,
@@ -275,7 +338,7 @@ static __global__ void hrx_mul_mat_id_q4_k_swiglu_row2_wg64_f32(
         return;
     }
 
-    __shared__ float sumsh[64 / 32];
+    __shared__ float sumsh[4 * (64 / 32)];
     const char * gate_expert_base = reinterpret_cast<const char *>(gate) + expert * c.gate_nb2;
     const char * up_expert_base = reinterpret_cast<const char *>(up) + expert * c.up_nb2;
     const char * gate_row0_base = gate_expert_base + row0 * c.gate_nb1;
@@ -353,13 +416,7 @@ static __global__ void hrx_mul_mat_id_q4_k_swiglu_row2_wg64_f32(
         }
     }
 
-    gate_sum0 = hrx_reduce_wg_swiglu<64>(gate_sum0, sumsh);
-    __syncthreads();
-    up_sum0 = hrx_reduce_wg_swiglu<64>(up_sum0, sumsh);
-    __syncthreads();
-    gate_sum1 = hrx_reduce_wg_swiglu<64>(gate_sum1, sumsh);
-    __syncthreads();
-    up_sum1 = hrx_reduce_wg_swiglu<64>(up_sum1, sumsh);
+    hrx_reduce_wg4_swiglu<64>(gate_sum0, up_sum0, gate_sum1, up_sum1, sumsh);
 
     if (tid == 0) {
         char * dst_base = reinterpret_cast<char *>(dst) + id_pos * c.dst_nb1 + token * c.dst_nb2;
@@ -396,14 +453,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_row4_wg64_f32(
         return;
     }
 
-    __shared__ float gate_sumsh0[64 / 32];
-    __shared__ float up_sumsh0[64 / 32];
-    __shared__ float gate_sumsh1[64 / 32];
-    __shared__ float up_sumsh1[64 / 32];
-    __shared__ float gate_sumsh2[64 / 32];
-    __shared__ float up_sumsh2[64 / 32];
-    __shared__ float gate_sumsh3[64 / 32];
-    __shared__ float up_sumsh3[64 / 32];
+    __shared__ float sumsh[8 * (64 / 32)];
     const char * gate_expert_base = reinterpret_cast<const char *>(gate) + expert * c.gate_nb2;
     const char * up_expert_base = reinterpret_cast<const char *>(up) + expert * c.up_nb2;
     const char * gate_row0_base = gate_expert_base + row0 * c.gate_nb1;
@@ -511,14 +561,12 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_row4_wg64_f32(
         }
     }
 
-    gate_sum0 = hrx_reduce_wg_swiglu<64>(gate_sum0, gate_sumsh0);
-    up_sum0 = hrx_reduce_wg_swiglu<64>(up_sum0, up_sumsh0);
-    gate_sum1 = hrx_reduce_wg_swiglu<64>(gate_sum1, gate_sumsh1);
-    up_sum1 = hrx_reduce_wg_swiglu<64>(up_sum1, up_sumsh1);
-    gate_sum2 = hrx_reduce_wg_swiglu<64>(gate_sum2, gate_sumsh2);
-    up_sum2 = hrx_reduce_wg_swiglu<64>(up_sum2, up_sumsh2);
-    gate_sum3 = hrx_reduce_wg_swiglu<64>(gate_sum3, gate_sumsh3);
-    up_sum3 = hrx_reduce_wg_swiglu<64>(up_sum3, up_sumsh3);
+    hrx_reduce_wg8_swiglu<64>(
+        gate_sum0, up_sum0,
+        gate_sum1, up_sum1,
+        gate_sum2, up_sum2,
+        gate_sum3, up_sum3,
+        sumsh);
 
     if (tid == 0) {
         char * dst_base = reinterpret_cast<char *>(dst) + id_pos * c.dst_nb1 + token * c.dst_nb2;
