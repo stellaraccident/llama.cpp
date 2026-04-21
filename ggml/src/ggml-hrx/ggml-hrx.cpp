@@ -4764,7 +4764,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQ32") &&
-                rows % 32 == 0 && cols > 0 && cols <= 64 && cols % 32 == 0 &&
+                rows % 8 == 0 && cols > 0 && cols <= 64 && cols % 32 == 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider;
@@ -4786,7 +4786,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_X4_MMQ32") &&
-                rows % 32 == 0 && cols % 32 == 0 &&
+                rows % 8 == 0 && cols % 32 == 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_x4_mmq32x32_wg128_provider;
@@ -4797,7 +4797,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q5_K_Q8_1_MMQ32") &&
-                rows % 32 == 0 && cols % 32 == 0 &&
+                rows % 8 == 0 && cols % 32 == 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q5_k_q8_1_mmq32x32_wg128_provider;
@@ -4842,7 +4842,7 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             if (has_q8_1_x4 &&
                 !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q6_K_Q8_1_X4_MMQ32") &&
-                rows % 32 == 0 && cols % 32 == 0 &&
+                rows % 8 == 0 && cols % 32 == 0 &&
                 ggml_backend_hrx_provider_available(
                     device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider)) {
                 variant.provider = &device_context->mul_mat_vec_q6_k_q8_1_x4_mmq32x32_wg128_provider;
@@ -5062,7 +5062,6 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_ID_Q8_1_X4_MMQ16_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
         k == 512 && rows % 64 == 0 && n_ids == 8 && n_tokens >= grouped_min_prompt_tokens &&
-        n_tokens <= 128 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->quantize_q8_1_x4_provider) &&
@@ -5138,8 +5137,8 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         int64_t n_tokens) {
     // W7900/Qwen profiling shows the Q8_1 x4 SWIGLU route loses to the grouped F32 route
     // below this prompt size.
-    static constexpr int64_t q8_1_x4_min_prompt_tokens = 192;
-    const bool q8_1_x4_bn16_prompt_shape = n_tokens == 128 || n_tokens >= q8_1_x4_min_prompt_tokens;
+    static constexpr int64_t q8_1_x4_min_prompt_tokens = 32;
+    const bool q8_1_x4_bn16_prompt_shape = n_tokens >= q8_1_x4_min_prompt_tokens;
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_Q8_1_X4_BN16_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ") &&
         k == 2048 && rows % 16 == 0 && n_ids == 8 && q8_1_x4_bn16_prompt_shape &&
@@ -5228,7 +5227,8 @@ static bool ggml_backend_hrx_supports_mul_mat_id_q4_k(
     }
 
     const ggml_backend_hrx_op_provider * provider =
-        ggml_backend_hrx_select_mul_mat_id_q4_k_provider(device_context, src0->ne[0], src0->ne[1], src2->ne[0], src2->ne[1]);
+        ggml_backend_hrx_select_mul_mat_id_q4_k_provider(
+            device_context, src0->ne[0], src0->ne[1], src2->ne[0], src2->ne[1]);
     return provider &&
            provider->kind == ggml_backend_hrx_provider_kind::hsaco &&
            src0->type == GGML_TYPE_Q4_K &&

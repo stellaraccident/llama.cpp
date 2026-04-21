@@ -372,7 +372,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq64x16_wg64_f32
     hrx_mul_mat_id_q4_k_grouped_q8_1_x4_mmq_wg64_impl<16, 1>(src0, src1, counts, routes, dst, c);
 }
 
-template <int BM, int BN, int TM, int TN>
+template <int BM, int BN, int TM, int TN, int BK_STEP = 1>
 static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl(
         const hrx_block_q4_K_moe_mmq * gate,
         const hrx_block_q4_K_moe_mmq * up,
@@ -381,7 +381,6 @@ static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x
         const uint32_t * routes,
         float * dst,
         hrx_mul_mat_id_q4_k_swiglu_grouped_constants c) {
-    constexpr int BK_STEP = 1;
     constexpr int BLOCK_SIZE = 64;
     constexpr int WARP = 64;
     constexpr int WM = BM;
@@ -401,6 +400,7 @@ static __device__ __forceinline__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x
     static_assert(BN == 16 || BN == 32, "unexpected Q4 MoE SWIGLU MMQ route tile");
     static_assert(TM == 2, "unexpected Q4 MoE SWIGLU MMQ thread row tile");
     static_assert(TN == 1 || TN == 2, "unexpected Q4 MoE SWIGLU MMQ thread route tile");
+    static_assert(BK_STEP == 1 || BK_STEP == 2 || BK_STEP == 4, "unexpected Q4 MoE SWIGLU MMQ K tile");
     static_assert(WNITER * WARP * TM * TN * WMITER == WM * WN, "invalid Q4 MoE SWIGLU MMQ tile");
     static_assert(WSUBM == BM, "unexpected Q4 MoE SWIGLU MMQ M subtile");
     static_assert(LOADS_A * LOAD_STRIDE_A == BM, "unexpected Q4 MoE SWIGLU MMQ A load shape");
@@ -570,7 +570,7 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq32x64_w
         const uint32_t * routes,
         float * dst,
         hrx_mul_mat_id_q4_k_swiglu_grouped_constants c) {
-    hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl<16, 32, 2, 2>(
+    hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl<16, 32, 2, 2, 2>(
         gate, up, src1, counts, routes, dst, c);
 }
 
@@ -582,6 +582,6 @@ extern "C" __global__ void hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_bn16_wg64_
         const uint32_t * routes,
         float * dst,
         hrx_mul_mat_id_q4_k_swiglu_grouped_constants c) {
-    hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl<16, 16, 2, 1>(
+    hrx_mul_mat_id_q4_k_swiglu_grouped_q8_1_x4_mmq_wg64_impl<16, 16, 2, 1, 2>(
         gate, up, src1, counts, routes, dst, c);
 }
