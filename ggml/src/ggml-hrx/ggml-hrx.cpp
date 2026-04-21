@@ -59,6 +59,7 @@ struct ggml_backend_hrx_op_provider {
     hrx_executable_t executable = nullptr;
     uint32_t export_ordinal = 0;
     hrx_executable_export_info_t export_info = {};
+    std::string name;
 
     ggml_backend_hrx_op_provider() = default;
     ggml_backend_hrx_op_provider(const ggml_backend_hrx_op_provider &) = delete;
@@ -72,6 +73,7 @@ struct ggml_backend_hrx_op_provider {
         executable = nullptr;
         export_ordinal = 0;
         export_info = {};
+        name.clear();
     }
 
     ~ggml_backend_hrx_op_provider() {
@@ -2434,6 +2436,7 @@ static bool ggml_backend_hrx_load_catalog_provider(
     provider->export_info.workgroup_size[0] = entry->workgroup_size[0];
     provider->export_info.workgroup_size[1] = entry->workgroup_size[1];
     provider->export_info.workgroup_size[2] = entry->workgroup_size[2];
+    provider->name = entry->name;
     return true;
 }
 
@@ -3260,6 +3263,22 @@ static bool ggml_backend_hrx_flash_attn_ext_decode_disabled() {
 }
 
 static bool ggml_backend_hrx_tensors_overlap(const ggml_tensor * a, const ggml_tensor * b);
+
+static bool ggml_backend_hrx_provider_matches_env(
+        const char * env_name,
+        const ggml_backend_hrx_op_provider * provider,
+        const char * op_name) {
+    const char * expected = std::getenv(env_name);
+    if (!expected || expected[0] == '\0') {
+        return true;
+    }
+    const char * actual = provider && !provider->name.empty() ? provider->name.c_str() : "<none>";
+    if (std::strcmp(expected, actual) == 0) {
+        return true;
+    }
+    GGML_LOG_ERROR("%s: expected %s provider %s, selected %s\n", __func__, op_name, expected, actual);
+    return false;
+}
 
 static bool ggml_backend_hrx_supports_rms_norm(
         const ggml_backend_hrx_device_context * device_context,
@@ -5162,8 +5181,12 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider)) {
         return &device_context->mul_mat_id_q4_k_swiglu_row2_wg64_provider;
     }
+    const bool q8_1_mmvq_disabled = ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q8_1_MMVQ");
+    // The scalar grouped providers launch rows/2 by n_experts workgroups even for very sparse
+    // route sets. Keep them as q8-disabled validation fallbacks, but avoid them in default
+    // small prompt routing where non-grouped row kernels scale with actual routes.
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT") &&
-        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
+        q8_1_mmvq_disabled && k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
         (n_tokens <= 32 ||
          ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT")) &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
@@ -5173,7 +5196,7 @@ static const ggml_backend_hrx_op_provider * ggml_backend_hrx_select_mul_mat_id_q
     }
     if (!ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_PROMPT") &&
         !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_Q4_K_SWIGLU_GROUPED_ROW2_ROUTE8_PROMPT") &&
-        k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
+        q8_1_mmvq_disabled && k == 2048 && rows % 2 == 0 && n_ids == 8 && n_tokens >= 8 &&
         ggml_backend_hrx_provider_available(device_context->clear_u32_provider) &&
         ggml_backend_hrx_provider_available(device_context->compact_moe_routes_provider) &&
         ggml_backend_hrx_provider_available(device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider)) {
@@ -8458,6 +8481,11 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_id_q4_k_swiglu(
     };
     const ggml_backend_hrx_op_provider * provider = ggml_backend_hrx_select_mul_mat_id_q4_k_swiglu_provider(
         context->device_context, constants.k, constants.rows, constants.n_ids, constants.n_tokens);
+    if (!provider ||
+        !ggml_backend_hrx_provider_matches_env(
+            "GGML_HRX_EXPECT_MUL_MAT_ID_SWIGLU_PROVIDER", provider, "MUL_MAT_ID_SWIGLU")) {
+        return GGML_STATUS_FAILED;
+    }
     const bool use_grouped =
         provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route8_wg64_provider ||
         provider == &context->device_context->mul_mat_id_q4_k_swiglu_grouped_row2_route4_wg64_provider ||

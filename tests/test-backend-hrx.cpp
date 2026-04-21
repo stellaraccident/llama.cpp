@@ -2832,6 +2832,16 @@ static void run_mul_mat_id_q4_k_swiglu_fusion_case(
     expect_near(actual, gate_expected, tolerance, label);
 }
 
+static void run_mul_mat_id_q4_k_swiglu_sparse_small_prompt_case(ggml_backend_t backend) {
+    scoped_env_var expect_provider(
+        "GGML_HRX_EXPECT_MUL_MAT_ID_SWIGLU_PROVIDER",
+        "hrx_mul_mat_id_q4_k_swiglu_row4_wg64_f32");
+    run_mul_mat_id_q4_k_swiglu_fusion_case(
+        backend,
+        "mul_mat_id_q4_k_swiglu_sparse_small_prompt",
+        2048, 64, 8, 9, 256, 8.0e-3f, true);
+}
+
 static void run_bf16_mul_mat_swiglu_fusion_case(ggml_backend_t backend, const char * label) {
     scoped_env_var disable_swiglu("GGML_HRX_DISABLE_SWIGLU", "1");
     scoped_env_var disable_wmma("GGML_HRX_DISABLE_BF16_SWIGLU_WMMA16_PROMPT", "1");
@@ -3627,6 +3637,15 @@ int main() {
     ggml_backend_ptr backend(ggml_backend_dev_init(dev, nullptr));
     GGML_ASSERT(backend != nullptr);
 
+    if (const char * test_only = std::getenv("GGML_HRX_TEST_ONLY")) {
+        if (std::strcmp(test_only, "mul_mat_id_q4_k_swiglu_sparse_small_prompt") == 0) {
+            run_mul_mat_id_q4_k_swiglu_sparse_small_prompt_case(backend.get());
+            return 0;
+        }
+        std::fprintf(stderr, "unknown GGML_HRX_TEST_ONLY=%s\n", test_only);
+        return 1;
+    }
+
     ggml_context_ptr ctx = make_context();
     ggml_tensor * src  = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 8);
     ggml_tensor * view = ggml_view_1d(ctx.get(), src, 4, 2 * sizeof(float));
@@ -4085,6 +4104,7 @@ int main() {
         run_mul_mat_id_q4_k_swiglu_fusion_case(
             backend.get(), "mul_mat_id_q4_k_swiglu_grouped_q8_1_tail_tokens33",
             2048, 16, 8, 33, 4, 2.0e-1f, true);
+        run_mul_mat_id_q4_k_swiglu_sparse_small_prompt_case(backend.get());
         {
             scoped_env_var disable_q8_1("GGML_HRX_DISABLE_Q8_1_MMVQ", "1");
             run_mul_mat_id_q4_k_swiglu_fusion_case(
