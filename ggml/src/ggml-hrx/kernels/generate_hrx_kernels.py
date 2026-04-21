@@ -308,7 +308,7 @@ KERNELS = [
         "source": "ssm_conv_update_f32.hip.cpp",
         "format": None,
         "binding_count": 5,
-        "constants_size": 112,
+        "constants_size": 144,
         "workgroup_size": (256, 1, 1),
     },
     {

@@ -822,13 +822,17 @@ struct ggml_backend_hrx_ssm_conv_update_constants {
     int64_t input_nb0;
     int64_t input_nb1;
     int64_t weight_nb1;
+    int64_t state_dst_nb0;
+    int64_t state_dst_nb1;
+    int64_t state_dst_nb2;
     int64_t dst_nb1;
     int64_t dst_nb2;
     int32_t apply_silu;
-    int32_t pad;
+    int32_t write_output;
+    int32_t pad[2];
 };
 
-static_assert(sizeof(ggml_backend_hrx_ssm_conv_update_constants) == 112);
+static_assert(sizeof(ggml_backend_hrx_ssm_conv_update_constants) == 144);
 
 struct ggml_backend_hrx_gated_delta_net_constants {
     int64_t S_v;
@@ -5886,7 +5890,6 @@ static bool ggml_backend_hrx_supports_ssm_conv_update(
         state_update->src[0] != state_view ||
         !state_update->src[1] ||
         state_update->type != GGML_TYPE_F32 ||
-        !ggml_is_contiguous(state_update) ||
         !ssm ||
         !ggml_backend_hrx_supports_ssm_conv(device_context, ssm) ||
         ssm->src[0] != concat) {
@@ -5913,9 +5916,18 @@ static bool ggml_backend_hrx_supports_ssm_conv_update(
         state_view->nb[0] != sizeof(float) ||
         state_view->nb[1] != concat->nb[1] ||
         state_view->view_offs != static_cast<size_t>(n_tokens) * sizeof(float) ||
-        ggml_nbytes(state_update) != static_cast<size_t>(conv_state_width * conv_state->ne[1]) * sizeof(float) ||
+        ggml_nelements(state_update) != conv_state_width * conv_state->ne[1] ||
+        state_update->nb[0] != sizeof(float) ||
         ggml_backend_hrx_tensors_overlap(state_update, conv_state) ||
         ggml_backend_hrx_tensors_overlap(state_update, input)) {
+        return false;
+    }
+
+    if (!ggml_is_contiguous(state_update) &&
+        (state_update->ne[0] != conv_state_width ||
+         state_update->ne[1] != conv_state->ne[1] ||
+         state_update->ne[2] != 1 ||
+         state_update->ne[3] != 1)) {
         return false;
     }
 
@@ -9129,18 +9141,36 @@ static ggml_status ggml_backend_hrx_dispatch_ssm_conv_update(
         const ggml_tensor * state_update,
         const ggml_tensor * ssm,
         const ggml_tensor * fused_dst,
-        bool apply_silu) {
+        bool apply_silu,
+        bool write_output) {
     const ggml_tensor * conv_state = concat->src[0];
     const ggml_tensor * input = concat->src[1];
     const ggml_tensor * weight = ssm->src[1];
     const ggml_tensor * out = fused_dst ? fused_dst : ssm;
+    const bool materialize_concat = input->nb[0] != sizeof(float);
+    if (materialize_concat &&
+        ggml_backend_hrx_dispatch_concat_f32(context, concat) != GGML_STATUS_SUCCESS) {
+        return GGML_STATUS_FAILED;
+    }
+
     hrx_buffer_ref_t bindings[5] = {};
-    if (!ggml_backend_hrx_tensor_buffer_ref(conv_state, &bindings[0]) ||
-        !ggml_backend_hrx_tensor_buffer_ref(input, &bindings[1]) ||
-        !ggml_backend_hrx_tensor_buffer_ref(weight, &bindings[2]) ||
+    if (!ggml_backend_hrx_tensor_buffer_ref(weight, &bindings[2]) ||
         !ggml_backend_hrx_tensor_buffer_ref(state_update, &bindings[3]) ||
         !ggml_backend_hrx_tensor_buffer_ref(out, &bindings[4])) {
         GGML_LOG_ERROR("%s: SSM_CONV_UPDATE tensor is not backed by a HRX buffer\n", __func__);
+        return GGML_STATUS_FAILED;
+    }
+    if (materialize_concat) {
+        if (!ggml_backend_hrx_tensor_buffer_ref(concat, &bindings[0])) {
+            GGML_LOG_ERROR("%s: materialized CONCAT tensor is not backed by a HRX buffer\n", __func__);
+            return GGML_STATUS_FAILED;
+        }
+        bindings[1] = bindings[0];
+        bindings[1].offset += static_cast<size_t>(conv_state->ne[0]) * sizeof(float);
+        bindings[1].length -= static_cast<size_t>(conv_state->ne[0]) * sizeof(float);
+    } else if (!ggml_backend_hrx_tensor_buffer_ref(conv_state, &bindings[0]) ||
+               !ggml_backend_hrx_tensor_buffer_ref(input, &bindings[1])) {
+        GGML_LOG_ERROR("%s: SSM_CONV_UPDATE source tensor is not backed by a HRX buffer\n", __func__);
         return GGML_STATUS_FAILED;
     }
 
@@ -9150,16 +9180,24 @@ static ggml_status ggml_backend_hrx_dispatch_ssm_conv_update(
         /* .d_inner          = */ conv_state->ne[1],
         /* .n_tokens         = */ ssm->ne[1],
         /* .n_seqs           = */ ssm->ne[2],
-        /* .state_nb0        = */ static_cast<int64_t>(conv_state->nb[0]),
-        /* .state_nb1        = */ static_cast<int64_t>(conv_state->nb[1]),
-        /* .state_nb2        = */ static_cast<int64_t>(conv_state->nb[2]),
-        /* .input_nb0        = */ static_cast<int64_t>(input->nb[0]),
-        /* .input_nb1        = */ static_cast<int64_t>(input->nb[1]),
+        /* .state_nb0        = */ static_cast<int64_t>(materialize_concat ? concat->nb[0] : conv_state->nb[0]),
+        /* .state_nb1        = */ static_cast<int64_t>(materialize_concat ? concat->nb[1] : conv_state->nb[1]),
+        /* .state_nb2        = */ static_cast<int64_t>(materialize_concat ? concat->nb[2] : conv_state->nb[2]),
+        /* .input_nb0        = */ static_cast<int64_t>(materialize_concat ? concat->nb[0] : input->nb[0]),
+        /* .input_nb1        = */ static_cast<int64_t>(materialize_concat ? concat->nb[1] : input->nb[1]),
         /* .weight_nb1       = */ static_cast<int64_t>(weight->nb[1]),
+        /* .state_dst_nb0    = */ static_cast<int64_t>(state_update->nb[0]),
+        /* .state_dst_nb1    = */ ggml_is_contiguous(state_update) && state_update->ne[0] != conv_state->ne[0] ?
+            static_cast<int64_t>(conv_state->ne[0] * sizeof(float)) :
+            static_cast<int64_t>(state_update->nb[1]),
+        /* .state_dst_nb2    = */ ggml_is_contiguous(state_update) && state_update->ne[0] != conv_state->ne[0] ?
+            static_cast<int64_t>(conv_state->ne[0] * conv_state->ne[1] * sizeof(float)) :
+            static_cast<int64_t>(state_update->nb[2]),
         /* .dst_nb1          = */ static_cast<int64_t>(out->nb[1]),
         /* .dst_nb2          = */ static_cast<int64_t>(out->nb[2]),
         /* .apply_silu       = */ apply_silu ? 1 : 0,
-        /* .pad              = */ 0,
+        /* .write_output     = */ write_output ? 1 : 0,
+        /* .pad              = */ { 0, 0 },
     };
 
     const auto & provider = context->device_context->ssm_conv_update_provider;
@@ -9418,9 +9456,9 @@ struct ggml_backend_hrx_topk_moe_fusion {
 
 static bool ggml_backend_hrx_tensors_overlap(const ggml_tensor * a, const ggml_tensor * b) {
     const uintptr_t a_start = reinterpret_cast<uintptr_t>(a->data);
-    const uintptr_t a_end = a_start + ggml_nbytes(a);
+    const uintptr_t a_end = a_start + ggml_backend_hrx_tensor_span_size(a);
     const uintptr_t b_start = reinterpret_cast<uintptr_t>(b->data);
-    const uintptr_t b_end = b_start + ggml_nbytes(b);
+    const uintptr_t b_end = b_start + ggml_backend_hrx_tensor_span_size(b);
     return (b_start <= a_start && a_start < b_end) ||
            (a_start <= b_start && b_start < a_end);
 }
@@ -9594,6 +9632,17 @@ struct ggml_backend_hrx_ssm_conv_update_fusion {
     int last_idx = -1;
     bool apply_silu = false;
 };
+
+static bool ggml_backend_hrx_ssm_conv_update_output_memory_safe(
+        const ggml_backend_hrx_ssm_conv_update_fusion & fusion,
+        const ggml_tensor * concat) {
+    const ggml_tensor * conv_state = concat->src[0];
+    const ggml_tensor * input = concat->src[1];
+    return fusion.out &&
+           !ggml_backend_hrx_tensors_overlap(fusion.out, conv_state) &&
+           !ggml_backend_hrx_tensors_overlap(fusion.out, input) &&
+           !ggml_backend_hrx_tensors_overlap(fusion.out, concat);
+}
 
 static bool ggml_backend_hrx_try_ssm_conv_update_fusion(
         const ggml_cgraph * cgraph,
@@ -9899,14 +9948,20 @@ static ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_c
         if (node->op == GGML_OP_CONCAT &&
             !ggml_backend_hrx_env_enabled("GGML_HRX_DISABLE_FUSION") &&
             ggml_backend_hrx_try_ssm_conv_update_fusion(cgraph, i, context->device_context, &ssm_update)) {
+            const bool write_output = ggml_backend_hrx_ssm_conv_update_output_memory_safe(ssm_update, node);
             if (ggml_backend_hrx_dispatch_ssm_conv_update(
                     context,
                     node,
                     ssm_update.state_update,
                     ssm_update.ssm,
-                    ssm_update.apply_silu ? ssm_update.out : nullptr,
-                    ssm_update.apply_silu) != GGML_STATUS_SUCCESS) {
+                    write_output ? (ssm_update.apply_silu ? ssm_update.out : nullptr) : ssm_update.ssm,
+                    write_output ? ssm_update.apply_silu : false,
+                    write_output) != GGML_STATUS_SUCCESS) {
                 return GGML_STATUS_FAILED;
+            }
+            if (!write_output) {
+                i = ssm_update.state_update_idx;
+                continue;
             }
             i = ssm_update.last_idx;
             continue;

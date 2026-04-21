@@ -13,10 +13,14 @@ struct hrx_ssm_conv_update_constants {
     long long input_nb0;
     long long input_nb1;
     long long weight_nb1;
+    long long state_dst_nb0;
+    long long state_dst_nb1;
+    long long state_dst_nb2;
     long long dst_nb1;
     long long dst_nb2;
     int apply_silu;
-    int pad;
+    int write_output;
+    int pad[2];
 };
 
 static __device__ __forceinline__ float hrx_ssm_conv_update_load(
@@ -57,6 +61,19 @@ extern "C" __global__ void hrx_ssm_conv_update_f32(
     const long long token = t1 % c.n_tokens;
     const long long seq = t1 / c.n_tokens;
 
+    if (token == 0) {
+        char * state_base =
+            reinterpret_cast<char *>(state_dst) + channel * c.state_dst_nb1 + seq * c.state_dst_nb2;
+        for (long long i = 0; i < c.conv_state_width; ++i) {
+            *reinterpret_cast<float *>(state_base + i * c.state_dst_nb0) =
+                hrx_ssm_conv_update_load(conv_state, input, c, channel, seq, c.n_tokens + i);
+        }
+    }
+
+    if (!c.write_output) {
+        return;
+    }
+
     const char * weight_base = reinterpret_cast<const char *>(weight) + channel * c.weight_nb1;
 
     float sum = 0.0f;
@@ -77,13 +94,6 @@ extern "C" __global__ void hrx_ssm_conv_update_f32(
 
     if (c.apply_silu) {
         sum = sum / (1.0f + __builtin_expf(-sum));
-    }
-
-    if (token == 0) {
-        for (long long i = 0; i < c.conv_state_width; ++i) {
-            state_dst[channel * c.conv_state_width + i] =
-                hrx_ssm_conv_update_load(conv_state, input, c, channel, seq, c.n_tokens + i);
-        }
     }
 
     *reinterpret_cast<float *>(

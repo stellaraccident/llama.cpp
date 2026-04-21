@@ -3159,7 +3159,9 @@ static void run_ssm_conv_update_fusion_case(
         int64_t d_inner,
         int64_t n_tokens,
         bool apply_silu,
-        bool strided_conv_state = false) {
+        bool strided_conv_state = false,
+        bool strided_state_dst = false,
+        bool transposed_input = false) {
     ggml_context_ptr ctx = make_context();
     const int64_t state_width = d_conv - 1;
     ggml_tensor * conv_state_base = strided_conv_state ?
@@ -3170,12 +3172,29 @@ static void run_ssm_conv_update_fusion_case(
     if (strided_conv_state) {
         GGML_ASSERT(conv_state->nb[0] != sizeof(float));
     }
-    ggml_tensor * input = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, n_tokens, d_inner);
+    ggml_tensor * input_base = transposed_input ?
+        ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, d_inner, n_tokens) : nullptr;
+    ggml_tensor * input = transposed_input ?
+        ggml_transpose(ctx.get(), input_base) :
+        ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, n_tokens, d_inner);
+    if (transposed_input) {
+        GGML_ASSERT(input->nb[0] != sizeof(float));
+        GGML_ASSERT(input->nb[1] == sizeof(float));
+    }
     ggml_tensor * weight = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, d_conv, d_inner);
     ggml_tensor * concat = ggml_concat(ctx.get(), conv_state, input, 0);
     ggml_tensor * state_view = ggml_view_2d(
         ctx.get(), concat, state_width, d_inner, concat->nb[1], static_cast<size_t>(n_tokens) * sizeof(float));
-    ggml_tensor * state_dst = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, state_width, d_inner);
+    ggml_tensor * state_dst_base = strided_state_dst ?
+        ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, state_width + 5, d_inner) : nullptr;
+    ggml_tensor * state_dst = strided_state_dst ?
+        ggml_view_2d(ctx.get(), state_dst_base, state_width, d_inner, state_dst_base->nb[1], sizeof(float)) :
+        (transposed_input ?
+            ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, state_width * d_inner) :
+            ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, state_width, d_inner));
+    if (strided_state_dst) {
+        GGML_ASSERT(state_dst->nb[1] != static_cast<size_t>(state_width) * sizeof(float));
+    }
     ggml_tensor * state_update = ggml_cpy(ctx.get(), state_view, state_dst);
     ggml_tensor * ssm = ggml_ssm_conv(ctx.get(), concat, weight);
     ggml_tensor * out = apply_silu ? ggml_silu(ctx.get(), ssm) : ssm;
@@ -3212,7 +3231,18 @@ static void run_ssm_conv_update_fusion_case(
     } else {
         ggml_backend_tensor_set(conv_state, conv_state_data.data(), 0, conv_state_data.size() * sizeof(float));
     }
-    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    if (transposed_input) {
+        std::vector<float> input_base_data(static_cast<size_t>(n_tokens * d_inner));
+        for (int64_t channel = 0; channel < d_inner; ++channel) {
+            for (int64_t token = 0; token < n_tokens; ++token) {
+                input_base_data[static_cast<size_t>(token * d_inner + channel)] =
+                    input_data[static_cast<size_t>(channel * n_tokens + token)];
+            }
+        }
+        ggml_backend_tensor_set(input_base, input_base_data.data(), 0, input_base_data.size() * sizeof(float));
+    } else {
+        ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    }
     ggml_backend_tensor_set(weight, weight_data.data(), 0, weight_data.size() * sizeof(float));
 
     scoped_env_var disable_concat("GGML_HRX_DISABLE_CONCAT", "1");
@@ -3244,14 +3274,24 @@ static void run_ssm_conv_update_fusion_case(
         }
     }
 
-    const char * out_label = strided_conv_state ?
+    const char * out_label = strided_conv_state || strided_state_dst ?
         (apply_silu ? "ssm_conv_update_strided_silu_fusion_out" : "ssm_conv_update_strided_fusion_out") :
         (apply_silu ? "ssm_conv_update_silu_fusion_out" : "ssm_conv_update_fusion_out");
-    const char * state_label = strided_conv_state ?
+    const char * state_label = strided_conv_state || strided_state_dst ?
         (apply_silu ? "ssm_conv_update_strided_silu_fusion_state" : "ssm_conv_update_strided_fusion_state") :
         (apply_silu ? "ssm_conv_update_silu_fusion_state" : "ssm_conv_update_fusion_state");
     expect_near(tensor_to_float(out), expected_out, apply_silu ? 2.0e-5f : 2.0e-6f, out_label);
     expect_near(tensor_to_float(state_update), expected_state, 0.0f, state_label);
+}
+
+static void run_ssm_conv_update_model_shape_cases(ggml_backend_t backend) {
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 1, true);
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 2, true);
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 3, true);
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 17, true);
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 2, true, false, true);
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 2, true, false, false, true);
+    run_ssm_conv_update_fusion_case(backend, 4, 8192, 12, true, false, false, true);
 }
 
 static void run_ssm_conv_update_negative_state_offset_case(ggml_backend_t backend) {
@@ -3642,6 +3682,14 @@ int main() {
             run_mul_mat_id_q4_k_swiglu_sparse_small_prompt_case(backend.get());
             return 0;
         }
+        if (std::strcmp(test_only, "ssm_conv_update") == 0) {
+            run_ssm_conv_update_fusion_case(backend.get(), 4, 33, 17, false);
+            run_ssm_conv_update_fusion_case(backend.get(), 4, 33, 17, false, true);
+            run_ssm_conv_update_fusion_case(backend.get(), 4, 33, 17, true);
+            run_ssm_conv_update_fusion_case(backend.get(), 4, 33, 17, true, true);
+            run_ssm_conv_update_model_shape_cases(backend.get());
+            return 0;
+        }
         std::fprintf(stderr, "unknown GGML_HRX_TEST_ONLY=%s\n", test_only);
         return 1;
     }
@@ -3814,6 +3862,7 @@ int main() {
         run_ssm_conv_silu_fusion_case(backend.get());
         run_ssm_conv_update_fusion_case(backend.get(), 4, 33, 17, true);
         run_ssm_conv_update_fusion_case(backend.get(), 4, 33, 17, true, true);
+        run_ssm_conv_update_model_shape_cases(backend.get());
         run_ssm_conv_update_negative_state_offset_case(backend.get());
         run_ssm_conv_update_negative_state_overlap_case(backend.get());
         run_mul_mat_vec_case(backend.get(), dev, GGML_TYPE_F32, 17, 3, 2, 2.0e-4f, "mul_mat_vec_f32");
